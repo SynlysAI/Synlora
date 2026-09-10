@@ -6,7 +6,9 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { ChatPlaceholder, RightbarPlaceholder, SidebarPlaceholder } from './placeholders'
+import { AssistantTitle } from './AssistantTitle'
+import { RightbarPlaceholder, SidebarPlaceholder } from './placeholders'
+import { ChatPanel } from '@/components/chat'
 import { useAuthStore } from '@/stores/auth'
 
 /** 顶栏高度（px）。 */
@@ -219,9 +221,7 @@ export default function AppShell() {
           <LogoMark />
           <span className="text-[15px] font-medium tracking-tight">SynlysAgent</span>
         </div>
-        <div className="min-w-0 flex-1 truncate text-center text-[13px] text-[var(--sa-alias-label-tertiary)]">
-          当前助手：科研助手
-        </div>
+        <AssistantTitle />
         <div className="flex items-center gap-1">
           <IconButton
             label={`右栏：${
@@ -291,7 +291,7 @@ export default function AppShell() {
 
           {/* 中间 Chat */}
           <section className="relative min-h-0 min-w-0 overflow-hidden">
-            <ChatPlaceholder />
+            <ChatPanel />
           </section>
 
           {/* 右栏：三态由列模板控制宽度 */}

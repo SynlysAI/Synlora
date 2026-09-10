@@ -1,1 +1,7 @@
-// 占位模块，待后续任务填充。
+/** chat 组件汇总导出。 */
+export { default as ChatPanel } from './ChatPanel'
+export { default as MessageList } from './MessageList'
+export { default as UserMessage } from './UserMessage'
+export { default as AssistantMessage } from './AssistantMessage'
+export { default as ToolCallCard } from './ToolCallCard'
+export { default as Composer } from './Composer'

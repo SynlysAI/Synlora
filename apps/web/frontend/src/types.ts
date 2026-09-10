@@ -113,6 +113,22 @@ export interface SessionEvent {
   ts: number
 }
 
+/** tool/call 事件负载（harness agent.py：同组首个调用携带前置文本，其余为 null）。 */
+export interface ToolCallPayload {
+  tool_call: { id: string; name: string; arguments: Record<string, unknown> }
+  content: string | null
+}
+
+/** tool/result 事件负载（harness agent.py：content 为给 LLM 看的文本表示）。 */
+export interface ToolResultPayload {
+  tool_call_id: string
+  name: string
+  ok: boolean
+  content: string
+  error: string | null
+  truncated: boolean
+}
+
 /** 文件上传响应（207 简化：逐项结果 + 顶层 status）。 */
 export interface UploadResponse {
   status: 'ok' | 'partial' | 'failed'

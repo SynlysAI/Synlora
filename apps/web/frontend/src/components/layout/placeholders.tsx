@@ -1,6 +1,6 @@
 /**
  * 三栏占位组件：Task 2 布局自查用，展示栏名与关键设计 token
- * （导航项 / 气泡 / 代码块 / 按钮 / 输入框）。后续任务逐个替换为真实组件。
+ * （导航项 / 按钮）。中间 Chat 已由真实组件替换，仅剩左/右栏占位。
  */
 
 interface SidebarPlaceholderProps {
@@ -43,47 +43,6 @@ export function SidebarPlaceholder({ onNavigate }: SidebarPlaceholderProps) {
           {item.label}
         </button>
       ))}
-    </div>
-  )
-}
-
-/** 中间列占位：用户/助手气泡 + 代码块 token 演示。 */
-export function ChatPlaceholder() {
-  return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col gap-4 overflow-y-auto px-6 py-8">
-      <div
-        className="pb-2 text-center text-xs font-medium"
-        style={{ color: 'var(--sa-alias-label-caption)' }}
-      >
-        中间 · Chat
-      </div>
-      {/* 用户气泡：黑白极简主色 */}
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-[var(--sa-radius-lg)] bg-[var(--sa-alias-button-primary-fill)] px-4 py-2.5 text-[14px] leading-relaxed text-[var(--sa-alias-label-primary-foreground)]">
-          用 Python 写个打招呼函数
-        </div>
-      </div>
-      {/* 助手气泡：蓝调浅底 */}
-      <div className="flex justify-start">
-        <div className="max-w-[80%] rounded-[var(--sa-radius-lg)] bg-[var(--sa-specific-bubble)] px-4 py-2.5 text-[14px] leading-relaxed text-[var(--sa-alias-label-primary)]">
-          好的，这是一个简单的示例：
-          {/* 代码块：banner + 代码字体 token */}
-          <div className="mt-2 overflow-hidden rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l1)]">
-            <div className="bg-[var(--sa-alias-markdown-code-block-banner)] px-3 py-1.5 text-xs text-[var(--sa-alias-label-caption)]">
-              python
-            </div>
-            <pre
-              className="overflow-x-auto bg-[var(--sa-specific-code-block)] px-3 py-2.5 text-[13px] leading-relaxed text-[var(--sa-alias-label-primary)]"
-              style={{ fontFamily: 'var(--sa-font-code)' }}
-            >{`def hello(name: str) -> str:\n    return f"Hello, {name}!"`}</pre>
-          </div>
-        </div>
-      </div>
-      {/* 输入框占位：input token + 链接色演示 */}
-      <div className="mt-auto rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] px-4 py-3 text-[13px]" style={{ color: 'var(--sa-alias-label-caption)' }}>
-        输入消息…（Composer 占位，链接色演示：
-        <span className="text-[var(--sa-alias-link)]">python.run</span>）
-      </div>
     </div>
   )
 }
