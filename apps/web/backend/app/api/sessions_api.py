@@ -195,24 +195,21 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     cfg = await _resolve_provider(assistant, repos)
     service = _agent_service(request)
 
-    count = int(doc.get("message_count") or 0)
-    fields: dict = {"message_count": count + 1}
-    if count == 0 and not doc.get("title"):
-        fields["title"] = body.text[:24]  # 首条消息自动生成标题（前 24 字）
-    await repos.session.update(sid, fields)
+    # 先 chat（可能 429）：被拒消息零副作用（不计数、不生成标题），无需回滚
     try:
         run_id = await service.chat(sid, user, assistant, cfg, body.text)
     except TooManyRuns as exc:
-        # 429 回滚消息计数/标题，拒绝的消息不落痕迹
-        revert: dict = {"message_count": count}
-        if "title" in fields:
-            revert["title"] = doc.get("title", "")
-        await repos.session.update(sid, revert)
         raise HTTPException(429, str(exc)) from exc
 
     active = service.get_active(run_id)  # 紧随 chat 返回（其间无 await），run 必在注册表
     if active is None:  # 防御：仅当未来改动在 chat 与此处之间插入 await 才可能触发
         raise HTTPException(500, "运行句柄丢失")
+
+    # chat 成功后原子累加 message_count（并发请求不互相覆盖）；
+    # 累加到 1 的请求负责生成自动标题（首条消息，前 24 字）
+    updated = await repos.session.bump_message_count(sid)
+    if updated and int(updated["message_count"]) == 1 and not updated.get("title"):
+        await repos.session.update(sid, {"title": body.text[:24]})
 
     async def sse_gen():
         """SSE 事件生成器：消费 ActiveRun.queue，None 哨兵结束（断连不 cancel run）。"""

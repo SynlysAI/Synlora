@@ -5,6 +5,7 @@ get/list/delete 直接透传 store。
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -250,6 +251,37 @@ class SessionRepo(BaseRepo):
     """会话元数据（user_id/assistant_id/title/archived/message_count）。"""
 
     collection = "sessions"
+
+    def __init__(self, store: Any) -> None:
+        """保存 store 与计数串行锁。
+
+        Args:
+            store: DocumentStore 实例。
+        """
+        super().__init__(store)
+        # bump 的 get→update 之间存在 await 间隙，并发调用会读到同值互覆盖；
+        # 依赖 app 单例 repo（app.state.session_repo），实例锁即全局串行化。
+        self._count_lock = asyncio.Lock()
+
+    async def bump_message_count(self, session_id: str, delta: int = 1) -> dict | None:
+        """原子增减 message_count（锁内读-改-写，并发调用不丢更新）。
+
+        Args:
+            session_id: 会话 id。
+            delta: 增量（默认 1，可为负）。
+
+        Returns:
+            更新后的会话文档；会话不存在返回 None。
+        """
+        async with self._count_lock:
+            doc = await self.get(session_id)
+            if doc is None:
+                return None
+            count = int(doc.get("message_count", 0)) + delta
+            # 直接走 store.update 并显式补 updated_at：
+            # sessions 的索引列含 updated_at，需同步刷新。
+            return await self._store.update("sessions", session_id, {
+                "message_count": count, "updated_at": time.time()})
 
 
 class FileRepo(BaseRepo):

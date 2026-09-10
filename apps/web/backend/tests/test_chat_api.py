@@ -22,16 +22,18 @@ PROVIDER_BODY = {
 
 
 class FakeBackend:
-    """脚本化后端：每次 stream 调用按剧本顺序弹出一组事件。"""
+    """脚本化后端：每次 stream 调用按剧本顺序弹出一组事件，并记录投喂的 messages。"""
 
     script: ClassVar[list] = []
+    received: ClassVar[list] = []
 
     def __init__(self, provider):
         """记录 provider。"""
         self.provider = provider
 
     async def stream(self, messages, tools=None):
-        """按剧本产出。"""
+        """按剧本产出；记录本轮 messages（多轮记忆断言用）。"""
+        FakeBackend.received.append(list(messages))
         for ev in FakeBackend.script.pop(0):
             yield ev
 
@@ -55,10 +57,12 @@ class SlowFakeBackend:
 
 @pytest.fixture(autouse=True)
 def _reset_scripts():
-    """每个测试前后重置脚本，避免跨测试残留。"""
+    """每个测试前后重置脚本与记录，避免跨测试残留。"""
     FakeBackend.script = []
+    FakeBackend.received = []
     yield
     FakeBackend.script = []
+    FakeBackend.received = []
 
 
 def parse_sse(text: str) -> list[tuple[str, dict]]:
@@ -227,6 +231,83 @@ async def test_plain_text_chat(app, client, admin_headers, monkeypatch):
     assert types == ["turn/start", "user/message", "llm/delta", "assistant/message", "turn/end"]
     assert "tool/call" not in types and "tool/result" not in types
     assert events[-2][1]["payload"]["content"] == "你好，我是助手"
+
+
+# ---------- 多轮会话：事件 seq 连续 + 对话记忆 ----------
+
+
+async def test_multi_turn_events_persist_and_context(app, client, admin_headers, monkeypatch):
+    """同会话两轮消息：事件 seq 全程连续、DB 无碰撞、第二轮 LLM 收到第一轮上下文。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [
+        [TextDelta(text="第一答"), Usage()],
+        [TextDelta(text="第二答"), Usage()],
+    ]
+    sid = await _make_session(client, admin_headers)
+
+    r1 = await client.post(f"/api/v1/sessions/{sid}/messages",
+                           headers=admin_headers, json={"text": "第一问"})
+    assert r1.status_code == 200, r1.text
+    r2 = await client.post(f"/api/v1/sessions/{sid}/messages",
+                           headers=admin_headers, json={"text": "第二问"})
+    assert r2.status_code == 200, r2.text
+
+    # DB 副本：两轮全部 10 个事件，seq 从 0 连续无重复（碰撞会被静默吞掉 → 缺失即红）
+    r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
+    replayed = r.json()
+    assert [e["seq"] for e in replayed] == list(range(10))
+    user_texts = [e["payload"]["text"] for e in replayed
+                  if e["type"] == "user/message"]
+    assert user_texts == ["第一问", "第二问"]
+
+    # JSONL 回放源同样 seq 连续无重复
+    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    lines = jsonl.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["seq"] for line in lines] == list(range(10))
+
+    # 第二轮 LLM 收到第一轮的 user/assistant 消息（对话记忆存在）
+    msgs = FakeBackend.received[-1]
+    pairs = [(m.role.value, m.content) for m in msgs]
+    assert ("user", "第一问") in pairs
+    assert ("assistant", "第一答") in pairs
+    assert ("user", "第二问") in pairs
+
+
+# ---------- message_count 并发原子性 ----------
+
+
+async def test_concurrent_messages_count_atomic(app, client, admin_headers, monkeypatch):
+    """同会话 2 条并发消息：message_count 原子累加为 2（读-改-写互覆盖时为 1）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [
+        [TextDelta(text="答一"), Usage()],
+        [TextDelta(text="答二"), Usage()],
+    ]
+    sid = await _make_session(client, admin_headers)
+
+    r1, r2 = await asyncio.gather(
+        client.post(f"/api/v1/sessions/{sid}/messages",
+                    headers=admin_headers, json={"text": "第一条"}),
+        client.post(f"/api/v1/sessions/{sid}/messages",
+                    headers=admin_headers, json={"text": "第二条"}),
+    )
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    # 两轮 SSE 均完整收尾
+    assert parse_sse(r1.text)[-1][0] == "turn/end"
+    assert parse_sse(r2.text)[-1][0] == "turn/end"
+
+    # 并发计数不丢失（修复前：两请求都读到 count=0 再各写 1 → 互覆盖为 1）
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    mine = next(s for s in r.json() if s["_id"] == sid)
+    assert mine["message_count"] == 2
+
+    # 两轮 run 均完成落盘
+    runs = await app.state.store.list("runs", filters={"session_id": sid})
+    assert len(runs) == 2
+    assert all(run["status"] == "completed" for run in runs)
 
 
 # ---------- cancel 与并发限制 ----------

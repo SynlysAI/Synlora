@@ -134,6 +134,12 @@ class AgentService:
                 pass
 
         log = EventLog(sinks=[jsonl_sink, db_sink])
+        # 会话级 seq 连续性依赖 seed 恢复：用 DB 历史事件预填充本轮日志，
+        # 使 seq 跨轮续号（DB _id=f"{sid}:{seq}" 不碰撞）、derive_messages
+        # 能投影出前几轮消息（LLM 对话记忆）；首轮会话历史为空跳过。
+        history = await self._event_repo.list_events(session_id)
+        if history:
+            log.seed(history)
         backend = OpenAICompatibleBackend(provider_cfg)
         workspace = self._settings.data_root / "workspaces" / user["sub"]
         workspace.mkdir(parents=True, exist_ok=True)
@@ -204,7 +210,7 @@ class AgentService:
             return True
         return False
 
-    async def events_after(self, session_id: str, after_seq: int = 0) -> list[SessionEvent]:
+    async def events_after(self, session_id: str, after_seq: int = -1) -> list[SessionEvent]:
         """取 seq 大于 after_seq 的会话事件（SSE 断连重连增量补齐用）。
 
         Args:
