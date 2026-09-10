@@ -17,6 +17,7 @@ data/
 # 环境与密钥
 .env
 .env.*
+!.env.example
 
 # IDE / OS
 .idea/
