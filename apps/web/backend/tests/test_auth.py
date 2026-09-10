@@ -254,15 +254,20 @@ async def test_sqlite_login_flow(auth_app, client):
 async def test_require_admin(auth_app, client):
     """require_admin：admin 通过、role=user 403。"""
     from fastapi import Depends
+    from fastapi.routing import APIRoute
 
     from app.api.deps import require_admin
 
     app, settings = auth_app
 
-    @app.get("/api/v1/__test_admin")
     async def _admin(user=Depends(require_admin)) -> dict:
         """临时管理员端点（仅本测试注册）。"""
         return user
+
+    # 前端 dist 存在时 create_app 会在路由表尾部 mount("/")（SPA 静态托管），
+    # 动态注册的测试路由须插到表头，否则被静态挂载拦截返回 404。
+    app.router.routes.insert(
+        0, APIRoute("/api/v1/__test_admin", _admin, methods=["GET"]))
 
     ok = await client.get("/api/v1/__test_admin",
                           headers={"Authorization": "Bearer devtok"})

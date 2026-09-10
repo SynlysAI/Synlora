@@ -1,7 +1,10 @@
 """SynlysAgent Web 后端入口。"""
+import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
@@ -20,6 +23,11 @@ from app.db.repos import (
 )
 from app.db.store import create_store
 from app.services.agent_service import AgentService
+
+logger = logging.getLogger("synlys.web")
+
+# 前端构建产物目录（apps/web/frontend/dist，npm run build 生成）
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 
 @asynccontextmanager
@@ -59,6 +67,12 @@ def create_app() -> FastAPI:
     async def health() -> dict:
         """健康检查。"""
         return {"status": "ok"}
+
+    # 单端口部署：dist 存在时托管前端（必须在所有 API 路由之后挂 "/"，否则会吞掉 API 请求）
+    if (FRONTEND_DIST / "index.html").is_file():
+        app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="spa")
+    else:
+        logger.warning("未找到前端构建产物 %s（先在 apps/web/frontend 执行 npm run build），当前仅 API 模式", FRONTEND_DIST)
 
     return app
 
