@@ -65,7 +65,7 @@ async def run_python(
     text = raw.decode("utf-8", errors="replace")
     truncated = len(raw) > max_output_bytes
     if truncated:
-        text = text[:max_output_bytes]  # 按字符截断（字符数 ≥ 字节数，保守上界）
+        text = text[:max_output_bytes]  # 按字符数截断是保守界：UTF-8 下字符数 ≤ 字节数，故字符截断不超过字节上限
     if timed_out:
         return ToolResult(
             ok=False, content=f"执行超时（>{timeout_s}s），进程已终止。\n部分输出:\n{text}",

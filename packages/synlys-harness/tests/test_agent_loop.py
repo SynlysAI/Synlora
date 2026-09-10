@@ -252,6 +252,34 @@ async def test_consumer_break_still_logs_aborted_and_runs_hook():
     assert seen.get("end") is True
 
 
+async def test_context_extra_reaches_tools(tmp_path):
+    """context_extra 经 RunSession 透传到 ToolContext（http 白名单生效）。"""
+    seen = {}
+
+    @tool(name="probe", description="探测", parameters={"type": "object", "properties": {}})
+    async def probe(ctx, args):
+        """记录 extra。"""
+        seen.update(ctx.extra)
+        return ToolResult(ok=True, content="ok")
+
+    reg = ToolRegistry()
+    reg.register(probe)
+    backend = FakeBackend([
+        [ToolCallChunk(id="c1", name="probe", arguments={})],
+        [TextDelta(text="done")],
+    ])
+    log = EventLog()
+    cfg = AgentConfig(system_prompt="s", tool_names=["probe"])
+    session = RunSession(
+        config=cfg, registry=reg, pipeline=ToolPipeline(registry=reg),
+        backend=backend, event_log=log, user_id="u1", run_id="r1",
+        context_extra={"http_allowed_hosts": ["api.example.com"]},
+    )
+    events = [ev async for ev in session.run("探测")]
+    assert EventType.TOOL_RESULT in [e.type for e in events]
+    assert seen.get("http_allowed_hosts") == ["api.example.com"]
+
+
 async def test_multi_tool_calls_single_step():
     """单 step 并行双 call：2 个 tool/call + 2 个 tool_result，无文本时首个 call content 为 None。"""
     backend = FakeBackend([
