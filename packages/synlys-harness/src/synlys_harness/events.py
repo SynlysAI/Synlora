@@ -30,6 +30,20 @@ class EventLog:
         """返回最新事件（空日志返回 None）。"""
         return self._events[-1] if self._events else None
 
+    def seed(self, events: list[SessionEvent]) -> None:
+        """用历史事件预填充日志（跨轮恢复 seq 与上下文）。
+
+        Args:
+            events: 历史事件（须按 seq 升序且从 0 连续）。
+
+        Raises:
+            ValueError: seq 不连续或非升序。
+        """
+        for i, ev in enumerate(events):
+            if ev.seq != i:
+                raise ValueError(f"历史事件 seq 不连续: 期望 {i} 实际 {ev.seq}")
+        self._events = list(events)
+
     async def append(self, type_: EventType, payload: dict[str, Any]) -> SessionEvent:
         """追加事件并广播到所有 sink。
 
