@@ -64,7 +64,15 @@ class LLMBackend(Protocol):
 
 
 def _to_openai_messages(messages: list[Message]) -> list[dict]:
-    """把内部 Message 转为 OpenAI chat 格式。"""
+    """把内部 Message 转为 OpenAI chat 格式。
+
+    Args:
+        messages: 完整消息序列（可含 system/user/assistant/tool 四种角色）。
+
+    Returns:
+        OpenAI chat.completions 的 messages 参数列表；assistant 的
+        tool_calls 参数序列化为合法 JSON 字符串，tool 消息带 tool_call_id。
+    """
     out: list[dict] = []
     for m in messages:
         if m.role is Role.TOOL:
@@ -95,7 +103,10 @@ async def aggregate_stream(raw_stream: AsyncIterator[Any]) -> AsyncIterator[Stre
     calls: dict[int, dict] = {}
     async for chunk in raw_stream:
         usage = getattr(chunk, "usage", None)
-        if usage is not None:
+        if usage is not None and (
+            getattr(usage, "prompt_tokens", None) is not None
+            or getattr(usage, "completion_tokens", None) is not None
+        ):
             yield Usage(prompt_tokens=usage.prompt_tokens or 0, completion_tokens=usage.completion_tokens or 0)
         for choice in getattr(chunk, "choices", []) or []:
             delta = getattr(choice, "delta", None)
@@ -112,12 +123,15 @@ async def aggregate_stream(raw_stream: AsyncIterator[Any]) -> AsyncIterator[Stre
                     slot["name"] += tc.function.name
                 if getattr(tc.function, "arguments", None):
                     slot["args"] += tc.function.arguments
-    for slot in calls.values():
+    for idx in sorted(calls):
+        slot = calls[idx]
         error: str | None = None
         try:
             arguments = json.loads(slot["args"]) if slot["args"] else {}
         except json.JSONDecodeError as exc:
             arguments, error = {}, f"工具参数 JSON 解析失败: {exc}"
+        if error is None and not isinstance(arguments, dict):
+            arguments, error = {}, "工具参数不是 JSON 对象"
         yield ToolCallChunk(
             id=slot["id"], name=slot["name"], arguments=arguments, arguments_error=error,
         )
