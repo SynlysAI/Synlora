@@ -111,6 +111,28 @@ class ProviderRepo(BaseRepo):
         body["api_key_encrypted"] = encrypted
         return await super().create(body)
 
+    async def update_with_key(self, doc_id: str, fields: dict,
+                              api_key: str | None = None) -> dict | None:
+        """合并更新 provider（api_key 提供时重加密覆写）。
+
+        Args:
+            doc_id: provider id。
+            fields: 待合并字段（忽略其中可能混入的明文 api_key）。
+            api_key: 新明文 key（None 表示不变；空串表示清除）。
+
+        Returns:
+            更新后的完整文档（无明文 api_key 字段）；不存在返回 None。
+        """
+        body = {k: v for k, v in fields.items() if k != "api_key"}
+        if api_key is not None:
+            if api_key:
+                enc, encrypted = encrypt_key(api_key, self._fernet_key)
+            else:
+                enc, encrypted = "", False
+            body["api_key_enc"] = enc
+            body["api_key_encrypted"] = encrypted
+        return await super().update(doc_id, body)
+
     async def get_public(self, doc_id: str) -> dict | None:
         """公共视图：去掉密文字段，带 has_key 标志。
 
