@@ -55,6 +55,18 @@ class SlowFakeBackend:
             await asyncio.sleep(SlowFakeBackend.interval)
 
 
+class DelayedFakeBackend(FakeBackend):
+    """延迟启动后端：首事件前等待，为同会话并发请求制造重叠窗口。"""
+
+    delay: ClassVar[float] = 0.05
+
+    async def stream(self, messages, tools=None):
+        """先等待再按剧本产出（历史快照 seed 与事件写入的并发重叠窗口）。"""
+        await asyncio.sleep(DelayedFakeBackend.delay)
+        async for ev in super().stream(messages, tools):
+            yield ev
+
+
 @pytest.fixture(autouse=True)
 def _reset_scripts():
     """每个测试前后重置脚本与记录，避免跨测试残留。"""
@@ -274,13 +286,19 @@ async def test_multi_turn_events_persist_and_context(app, client, admin_headers,
     assert ("user", "第二问") in pairs
 
 
-# ---------- message_count 并发原子性 ----------
+# ---------- 同会话并发互斥（Critical） ----------
 
 
-async def test_concurrent_messages_count_atomic(app, client, admin_headers, monkeypatch):
-    """同会话 2 条并发消息：message_count 原子累加为 2（读-改-写互覆盖时为 1）。"""
+async def test_same_session_concurrent_rejected(app, client, admin_headers, monkeypatch):
+    """同会话 2 条并发消息：会话级互斥拒绝第二条（429），首条事件完整落盘。
+
+    修复前：两条都被放行（用户级上限按用户计数且查 DB 有竞态），各自 seed
+    同一份（空）历史从相同 seq 起号，DB _id=f"{sid}:{seq}" 碰撞写入被静默
+    吞 → 两条都 200 且事件错乱/丢失。
+    """
     await _bind_provider_to_asst_data(client, admin_headers)
-    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend",
+                        DelayedFakeBackend)
     FakeBackend.script = [
         [TextDelta(text="答一"), Usage()],
         [TextDelta(text="答二"), Usage()],
@@ -293,19 +311,76 @@ async def test_concurrent_messages_count_atomic(app, client, admin_headers, monk
         client.post(f"/api/v1/sessions/{sid}/messages",
                     headers=admin_headers, json={"text": "第二条"}),
     )
+    assert sorted([r1.status_code, r2.status_code]) == [200, 429]
+    ok = r1 if r1.status_code == 200 else r2
+    ok_events = parse_sse(ok.text)
+    assert ok_events[-1][0] == "turn/end"
+    # gather 到达顺序不定，胜者从 200 响应自身提取（被拒方文本不得出现）
+    winner_text = next(p["payload"]["text"] for t, p in ok_events
+                       if t == "user/message")
+
+    # 胜者完整落盘：GET events 的 seq 连续无重复，仅一条 user/message
+    r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
+    replayed = r.json()
+    assert [e["seq"] for e in replayed] == list(range(5))
+    user_texts = [e["payload"]["text"] for e in replayed
+                  if e["type"] == "user/message"]
+    assert user_texts == [winner_text]
+
+    # 被拒消息零副作用：不计数、不生成标题
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    mine = next(s for s in r.json() if s["_id"] == sid)
+    assert mine["message_count"] == 1
+    assert mine["title"] == winner_text
+
+    # 首条 run 结束后会话占位被摘除，同会话可正常再发
+    r3 = await client.post(f"/api/v1/sessions/{sid}/messages",
+                           headers=admin_headers, json={"text": "第三条"})
+    assert r3.status_code == 200, r3.text
+    assert parse_sse(r3.text)[-1][0] == "turn/end"
+
+
+# ---------- message_count 并发原子性 ----------
+
+
+async def test_concurrent_messages_count_atomic(app, client, admin_headers, monkeypatch):
+    """不同会话 2 条并发消息：各自 message_count 正确为 1、标题正确（并发互不串扰）。
+
+    同会话并发已被会话级互斥拒绝（见 test_same_session_concurrent_rejected），
+    同会话并发 bump 互覆盖的场景此后结构上不可能发生，原子性验证改为并发
+    路径下各会话计数不丢失、不串写。
+    """
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [
+        [TextDelta(text="答一"), Usage()],
+        [TextDelta(text="答二"), Usage()],
+    ]
+    sid1 = await _make_session(client, admin_headers)
+    sid2 = await _make_session(client, admin_headers)
+
+    r1, r2 = await asyncio.gather(
+        client.post(f"/api/v1/sessions/{sid1}/messages",
+                    headers=admin_headers, json={"text": "第一条"}),
+        client.post(f"/api/v1/sessions/{sid2}/messages",
+                    headers=admin_headers, json={"text": "第二条"}),
+    )
     assert r1.status_code == 200, r1.text
     assert r2.status_code == 200, r2.text
     # 两轮 SSE 均完整收尾
     assert parse_sse(r1.text)[-1][0] == "turn/end"
     assert parse_sse(r2.text)[-1][0] == "turn/end"
 
-    # 并发计数不丢失（修复前：两请求都读到 count=0 再各写 1 → 互覆盖为 1）
+    # 并发下各会话计数不丢失、不串写（互覆盖/串写时至少一个 count 错误）
     r = await client.get("/api/v1/sessions", headers=admin_headers)
-    mine = next(s for s in r.json() if s["_id"] == sid)
-    assert mine["message_count"] == 2
+    by_id = {s["_id"]: s for s in r.json()}
+    assert by_id[sid1]["message_count"] == 1
+    assert by_id[sid2]["message_count"] == 1
+    assert by_id[sid1]["title"] == "第一条"
+    assert by_id[sid2]["title"] == "第二条"
 
-    # 两轮 run 均完成落盘
-    runs = await app.state.store.list("runs", filters={"session_id": sid})
+    # 两个 run 均完成落盘
+    runs = await app.state.store.list("runs", filters={})
     assert len(runs) == 2
     assert all(run["status"] == "completed" for run in runs)
 
@@ -343,20 +418,25 @@ async def test_cancel_missing_run_404(client, admin_headers):
 
 
 async def test_concurrency_limit_429(app, client, admin_headers, monkeypatch):
-    """每用户并发上限 2：两个长 run 挂起中第三个 POST → 429；取消后收尾正常。"""
+    """每用户并发上限 2：两个长 run 挂起中第三个 POST → 429；取消后收尾正常。
+
+    两个长 run 分属不同会话（同会话并发已被会话级互斥先行拒绝），
+    第三条发往全新会话，确保命中的是用户级上限而非会话互斥。
+    """
     await _bind_provider_to_asst_data(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", SlowFakeBackend)
-    sid = await _make_session(client, admin_headers)
+    sids = [await _make_session(client, admin_headers) for _ in range(2)]
 
     tasks = [
         asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
                                         headers=admin_headers,
                                         json={"text": f"长任务{i}"}))
-        for i in range(2)
+        for i, sid in enumerate(sids)
     ]
     run_ids = await _wait_for_running_runs(app, 2)
 
-    r = await client.post(f"/api/v1/sessions/{sid}/messages",
+    sid3 = await _make_session(client, admin_headers)
+    r = await client.post(f"/api/v1/sessions/{sid3}/messages",
                           headers=admin_headers, json={"text": "第三个"})
     assert r.status_code == 429
 
@@ -437,6 +517,50 @@ async def test_run_completes_without_sse_consumer(app, client, admin_headers, mo
     assert "turn/end" in types
     run = await app.state.store.get("runs", run_id)
     assert run["status"] == "completed"
+
+
+# ---------- chat() 异常路径清理（Important） ----------
+
+
+async def test_chat_init_failure_releases_session_slot(app, client, admin_headers, monkeypatch):
+    """chat() 注册后初始化失败（DB 历史读取抛错）：注册回滚，同会话可立即重发。
+
+    修复前：_runs/会话占位残留失败 run，条目泄漏、哨兵永不投递，
+    同会话后续消息被残留占位卡成 429。
+    """
+    provider = await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="恢复"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+
+    svc = app.state.agent_service
+    decrypted = await app.state.provider_repo.get_decrypted(provider["_id"])
+    cfg = ModelProviderConfig(
+        name=decrypted["name"], base_url=decrypted["base_url"],
+        api_key=decrypted["api_key"], model_id=decrypted["model_id"],
+    )
+    assistant = await app.state.assistant_repo.get("asst-data")
+    user = {"sub": "u-admin", "username": "tester-admin", "role": "admin"}
+
+    async def _boom(session_id):
+        """模拟 DB 历史读取异常。"""
+        raise ValueError("DB 历史空洞")
+
+    real_list_events = app.state.event_repo.list_events
+    monkeypatch.setattr(app.state.event_repo, "list_events", _boom)
+    with pytest.raises(ValueError):
+        await svc.chat(sid, user, assistant, cfg, "会失败")
+    assert not svc._runs  # 注册表无残留
+
+    monkeypatch.setattr(app.state.event_repo, "list_events", real_list_events)
+    run_id = await svc.chat(sid, user, assistant, cfg, "重发")  # 不被残留占位卡成 429
+    run = None
+    for _ in range(100):
+        run = await app.state.store.get("runs", run_id)
+        if run and run["status"] != "running":
+            break
+        await asyncio.sleep(0.05)
+    assert run is not None and run["status"] == "completed"
 
 
 # ---------- 会话 CRUD ----------

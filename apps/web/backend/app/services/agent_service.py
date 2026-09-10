@@ -1,4 +1,7 @@
-"""AgentService：harness 组装、事件持久化（JSONL + DB 副本）与 SSE 内存队列。
+"""AgentService：harness 组装、事件持久化与 SSE 内存队列。
+
+事件事实源：DB 事件为查询/回放事实源（GET events、seed 历史均读 DB），
+JSONL 为审计副本（当前无人消费，漂移可接受）。
 
 遵守 Plan 2 harness 接入契约：
 - sink 不得抛异常（宿主 sink 全包 try/except，持久化失败不杀对话）；
@@ -11,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -30,13 +34,15 @@ from synlys_harness import (
 
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
 
+_LOGGER = logging.getLogger(__name__)
+
 _REGISTRY = ToolRegistry()
 register_builtin_tools(_REGISTRY)
 _PIPELINE = ToolPipeline(registry=_REGISTRY)
 
 
 class TooManyRuns(Exception):
-    """用户并发运行数超限。"""
+    """并发运行数超限（会话级互斥：同会话已有进行中消息；或用户级上限）。"""
 
 
 class ActiveRun:
@@ -64,6 +70,10 @@ class AgentService:
         self._settings = settings
         self._event_repo = event_repo
         self._runs: dict[str, ActiveRun] = {}
+        # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
+        self._active_by_session: dict[str, set[str]] = {}
+        # 后台驱动 task 的强引用（事件循环仅持弱引用，防 task 被 GC 中断）
+        self._bg: set[asyncio.Task] = set()
 
     def _jsonl_path(self, session_id: str) -> Path:
         """会话事件文件路径（父目录自动创建）。
@@ -104,57 +114,76 @@ class AgentService:
             run_id。
 
         Raises:
-            TooManyRuns: 该用户运行中的对话已达上限。
+            TooManyRuns: 该会话已有进行中的消息，或该用户运行中的对话已达上限。
         """
-        running = await self._store.list("runs", filters={
-            "user_id": user["sub"], "status": "running"})
-        if len(running) >= MAX_RUNS_PER_USER:
-            raise TooManyRuns(f"该用户已有 {MAX_RUNS_PER_USER} 个运行中的对话")
+        # 会话级互斥：检查与占位在同一同步段完成（中间无 await，并发请求
+        # 串行执行到此即被拒）。同会话两个并发 run 会各自 seed 同一份历史
+        # 快照、从相同 seq 起号，DB _id=f"{sid}:{seq}" 碰撞写入被 db_sink
+        # 静默吞掉 → 事件拼接错乱/丢失，必须前置拒绝。
+        session_runs = self._active_by_session.setdefault(session_id, set())
+        if session_runs:
+            raise TooManyRuns("该会话已有进行中的消息")
         run_id = uuid.uuid4().hex[:12]
-        active = ActiveRun()
-        self._runs[run_id] = active
+        session_runs.add(run_id)
+        try:
+            running = await self._store.list("runs", filters={
+                "user_id": user["sub"], "status": "running"})
+            if len(running) >= MAX_RUNS_PER_USER:
+                raise TooManyRuns(f"该用户已有 {MAX_RUNS_PER_USER} 个运行中的对话")
+            active = ActiveRun()
+            self._runs[run_id] = active
 
-        async def jsonl_sink(event: SessionEvent) -> None:
-            """事件追加 JSONL（回放源；契约：不得抛异常）。"""
-            try:
-                with self._jsonl_path(session_id).open("a", encoding="utf-8") as f:
-                    f.write(event.model_dump_json() + "\n")
-            except OSError:
-                pass
+            async def jsonl_sink(event: SessionEvent) -> None:
+                """事件追加 JSONL（审计副本；契约：不得抛异常）。"""
+                try:
+                    with self._jsonl_path(session_id).open("a", encoding="utf-8") as f:
+                        f.write(event.model_dump_json() + "\n")
+                except OSError:
+                    pass
 
-        async def db_sink(event: SessionEvent) -> None:
-            """事件写 DB 副本 + SSE 队列只 put（契约：不得抛异常、不等待消费者）。"""
-            try:
-                await self._event_repo.append(session_id, event)
-            except Exception:
-                pass
-            try:
-                active.queue.put_nowait(event)
-            except Exception:
-                pass
+            async def db_sink(event: SessionEvent) -> None:
+                """事件写 DB 副本 + SSE 队列只 put（契约：不得抛异常、不等待消费者）。"""
+                try:
+                    await self._event_repo.append(session_id, event)
+                except Exception:
+                    pass
+                try:
+                    active.queue.put_nowait(event)
+                except Exception:
+                    pass
 
-        log = EventLog(sinks=[jsonl_sink, db_sink])
-        # 会话级 seq 连续性依赖 seed 恢复：用 DB 历史事件预填充本轮日志，
-        # 使 seq 跨轮续号（DB _id=f"{sid}:{seq}" 不碰撞）、derive_messages
-        # 能投影出前几轮消息（LLM 对话记忆）；首轮会话历史为空跳过。
-        history = await self._event_repo.list_events(session_id)
-        if history:
-            log.seed(history)
-        backend = OpenAICompatibleBackend(provider_cfg)
-        workspace = self._settings.data_root / "workspaces" / user["sub"]
-        workspace.mkdir(parents=True, exist_ok=True)
-        session = RunSession(
-            config=AgentConfig(
-                system_prompt=assistant["system_prompt"],
-                tool_names=assistant.get("tool_whitelist") or [],
-            ),
-            registry=_REGISTRY, pipeline=_PIPELINE, backend=backend,
-            event_log=log, user_id=user["sub"], run_id=run_id,
-            workspace_root=workspace,
-            context_extra={"http_allowed_hosts": self._settings.allowed_hosts},
-        )
-        active.session = session
-        asyncio.create_task(self._drive(run_id, session, text, user["sub"], session_id))
+            log = EventLog(sinks=[jsonl_sink, db_sink])
+            # 会话级 seq 连续性依赖 seed 恢复：用 DB 历史事件预填充本轮日志，
+            # 使 seq 跨轮续号（DB _id=f"{sid}:{seq}" 不碰撞）、derive_messages
+            # 能投影出前几轮消息（LLM 对话记忆）；首轮会话历史为空跳过。
+            history = await self._event_repo.list_events(session_id)
+            if history:
+                log.seed(history)
+            backend = OpenAICompatibleBackend(provider_cfg)
+            workspace = self._settings.data_root / "workspaces" / user["sub"]
+            workspace.mkdir(parents=True, exist_ok=True)
+            session = RunSession(
+                config=AgentConfig(
+                    system_prompt=assistant["system_prompt"],
+                    tool_names=assistant.get("tool_whitelist") or [],
+                ),
+                registry=_REGISTRY, pipeline=_PIPELINE, backend=backend,
+                event_log=log, user_id=user["sub"], run_id=run_id,
+                workspace_root=workspace,
+                context_extra={"http_allowed_hosts": self._settings.allowed_hosts},
+            )
+            active.session = session
+            t = asyncio.create_task(
+                self._drive(run_id, session, text, user["sub"], session_id))
+            self._bg.add(t)
+            t.add_done_callback(self._bg.discard)
+        except Exception:
+            # 初始化任何一步失败（用户超限/DB 历史空洞/组装异常）都回滚注册，
+            # 防止 _runs/_active_by_session 残留失败 run（泄漏句柄 + 会话被
+            # 永久卡 429 + SSE 哨兵永不投递）
+            self._runs.pop(run_id, None)
+            session_runs.discard(run_id)
+            raise
         return run_id
 
     async def _drive(self, run_id: str, session: RunSession, text: str,
@@ -189,11 +218,19 @@ class AgentService:
         try:
             await self._store.update("runs", run_id, {
                 "status": final_status, "ended_at": time.time()})
+        except Exception:
+            # 终态落盘失败仅记录（run 记录停留 running，属存储故障降级），
+            # 不向上抛——抛出会杀掉本 task 且触发未处理异常告警
+            _LOGGER.warning("run 终态落盘失败: run_id=%s status=%s",
+                            run_id, final_status, exc_info=True)
         finally:
             active = self._runs.pop(run_id, None)
             if active:
                 active.queue.put_nowait(None)  # SSE 结束哨兵（任何路径都必须放，防 SSE 挂死）
                 active.done.set()
+            session_runs = self._active_by_session.get(session_id)
+            if session_runs is not None:
+                session_runs.discard(run_id)  # 释放会话占位（空集合保留，量级=会话数）
 
     async def cancel(self, run_id: str) -> bool:
         """取消运行（仅用户显式停止；SSE 断连不走此路径）。
