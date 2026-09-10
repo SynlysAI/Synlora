@@ -53,3 +53,25 @@ def test_unregister():
     reg.unregister("echo")
     with pytest.raises(KeyError):
         reg.get("echo")
+
+
+def test_find_unknown_returns_none():
+    """find 未知名返回 None 而不抛异常。"""
+    reg = ToolRegistry()
+    reg.register(echo)
+    assert reg.find("echo") is not None and reg.find("echo").name == "echo"
+    assert reg.find("not-registered") is None
+
+
+def test_names_sorted():
+    """names 返回排序后的工具名列表。"""
+    reg = ToolRegistry()
+    reg.register(echo)
+
+    @tool(name="aaa", description="a", parameters={"type": "object", "properties": {}})
+    async def aaa(ctx, args):
+        """a。"""
+        return ToolResult(ok=True)
+
+    reg.register(aaa)
+    assert reg.names == ["aaa", "echo"]

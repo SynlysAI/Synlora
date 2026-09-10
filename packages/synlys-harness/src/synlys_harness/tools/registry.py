@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import inspect
 
-from ..types import ToolDefinition, ToolExecuteFn
+from ..types import Permission, ToolDefinition, ToolExecuteFn
 
 
 def tool(
@@ -11,7 +11,7 @@ def tool(
     description: str,
     parameters: dict,
     timeout_s: float = 60.0,
-    permission=None,
+    permission: Permission | None = None,
     concurrency_safe: bool = True,
 ):
     """把异步函数包装为 ToolDefinition 的装饰器。
@@ -27,7 +27,6 @@ def tool(
     Returns:
         装饰器：函数原样返回，但附加 __tool_definition__ 属性。
     """
-    from ..types import Permission
     perm = permission or Permission.ALLOW
 
     def decorator(fn: ToolExecuteFn) -> ToolExecuteFn:
@@ -81,6 +80,22 @@ class ToolRegistry:
             KeyError: 工具不存在。
         """
         return self._tools[name]
+
+    def find(self, name: str) -> ToolDefinition | None:
+        """按名查找工具定义。
+
+        Args:
+            name: 工具名。
+
+        Returns:
+            工具定义；不存在时返回 None（不抛异常）。
+        """
+        return self._tools.get(name)
+
+    @property
+    def names(self) -> list[str]:
+        """已注册工具名列表（排序返回）。"""
+        return sorted(self._tools)
 
     def llm_schemas(self, allowed: list[str] | None = None) -> list[dict]:
         """生成 function calling 的 tools 数组。

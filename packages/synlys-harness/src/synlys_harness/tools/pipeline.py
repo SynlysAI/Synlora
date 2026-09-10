@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ..types import ToolContext, ToolResult
+from ..types import Permission, ToolContext, ToolResult
 from .registry import ToolRegistry
 
 
@@ -37,16 +37,21 @@ class ToolPipeline:
 
         Returns:
             ToolResult（任何失败都体现为 ok=False，不抛异常）。
+            持有 OS 资源（子进程/文件句柄）的工具必须在 execute 内自行处理取消与清理，
+            管线超时只取消等待。
         """
         # --- pre-execute ---
         def err(code: str, message: str = "") -> ToolResult:
             return ToolResult(ok=False, content=message or code, error=code)
 
-        definition = self._registry._tools.get(name)
+        definition = self._registry.find(name)
         if definition is None:
             return err("unknown_tool", f"工具不存在: {name}")
         if allowed is not None and name not in allowed:
             return err("denied", f"工具不在白名单: {name}")
+        if definition.permission is Permission.DENY:
+            return err("denied", f"工具 {name} 已被禁用")
+        # ASK_USER 预留：V2 接入宿主审批回路后再处理。
         if not isinstance(args, dict):
             return err("invalid_arguments", "参数必须是 JSON 对象")
         for key in definition.parameters.get("required", []):
@@ -62,8 +67,11 @@ class ToolPipeline:
         except Exception as exc:  # noqa: BLE001 工具错误必须对 LLM 可见
             return ToolResult(ok=False, content=f"工具执行出错: {exc}", error="tool_exception")
 
+        if not isinstance(result, ToolResult):
+            return err("invalid_result", f"工具 {name} 返回了非法结果类型: {type(result).__name__}")
+
         # --- post-execute（截断）---
-        if result.content is not None and len(result.content) > max_output_chars:
+        if len(result.content) > max_output_chars:
             result.content = result.content[:max_output_chars]
             result.truncated = True
         return result
