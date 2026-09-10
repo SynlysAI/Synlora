@@ -1,1 +1,380 @@
-/* 主题样式占位：Task 2 填充设计令牌（色彩 / 字体 / 暗色变量等）。 */
+/* =====================================================================
+   SynlysAgent 设计令牌（前缀 --sa-）
+   自 deepseek-harness packages/client/ui-theme/src/styles/ 三层体系移植：
+   1. 基础 token（:root）：字体栈 / 动效 / 圆角 / 内容字号基准
+   2. --sa-static-*   原始色板（明暗共用，色值逐字照抄 design-platform.css）
+   3. --sa-alias-*    语义别名层：body 默认浅色 + body[data-sa-dark-theme] 暗色
+   4. --sa-specific-* 组件层：气泡 / 侧栏 / 代码块 / 输入框 / tooltip
+   5. 滚动条皮肤：标准 scrollbar-color 与 ::-webkit-scrollbar 互斥门控
+   差异说明：DSH 的 deepseek-* 品牌色按设计规格 §6.3 全部替换为 blue-*
+   （accent 单蓝：blue-450 rgb(77,147,248) / blue-500 rgb(59,130,246)）。
+   ===================================================================== */
+
+:root {
+  /* 字体：系统 UI 栈含 CJK 回退；代码字体不裸写 monospace
+     （Windows 下中文会回退 SimSun） */
+  --sa-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
+    sans-serif;
+  --sa-font-code: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas,
+    'Liberation Mono', Menlo, Courier, 'PingFang SC', 'Microsoft YaHei';
+
+  /* 动效：三档时长 + 统一缓动曲线 */
+  --sa-duration-fast: 0.1s;
+  --sa-duration-base: 0.2s;
+  --sa-duration-slow: 0.3s;
+  --sa-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 圆角 */
+  --sa-radius-sm: 6px;
+  --sa-radius-md: 10px;
+  --sa-radius-lg: 16px;
+  --sa-radius-full: 9999px;
+}
+
+/* 内容字号基准：设置页以 1px 步进改写 --sa-content-font-size 并持久化，
+   未设置时回退 16px。rem 尺寸随 html 字号缩放，实现全局字号可调。 */
+html {
+  font-size: var(--sa-content-font-size, 16px);
+}
+
+/* 平滑圆角守卫：支持 corner-shape 的引擎启用 squircle；
+   不支持的引擎条件不成立自动回退普通圆角，无需 JS 判定。 */
+@supports (corner-shape: superellipse(1.5)) {
+  *,
+  *::before,
+  *::after {
+    corner-shape: superellipse(1.5);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   静态色板：neutral-bluish（带蓝调中性灰阶，DSH 清爽感的来源）
+   ------------------------------------------------------------------- */
+body {
+  --sa-static-neutral-bluish-00: rgb(255, 255, 255);
+  --sa-static-neutral-bluish-50: rgb(249, 250, 251);
+  --sa-static-neutral-bluish-60: rgb(245, 246, 247);
+  --sa-static-neutral-bluish-75: rgb(241, 243, 245);
+  --sa-static-neutral-bluish-100: rgb(235, 238, 242);
+  --sa-static-neutral-bluish-150: rgb(233, 236, 242);
+  --sa-static-neutral-bluish-200: rgb(225, 229, 238);
+  --sa-static-neutral-bluish-300: rgb(207, 211, 214);
+  --sa-static-neutral-bluish-400: rgb(173, 178, 184);
+  --sa-static-neutral-bluish-500: rgb(151, 157, 166);
+  --sa-static-neutral-bluish-600: rgb(129, 133, 140);
+  --sa-static-neutral-bluish-700: rgb(97, 102, 107);
+  --sa-static-neutral-bluish-750: rgb(67, 69, 74);
+  --sa-static-neutral-bluish-800: rgb(53, 54, 56);
+  --sa-static-neutral-bluish-850: rgb(44, 44, 46);
+  --sa-static-neutral-bluish-875: rgb(35, 35, 36);
+  --sa-static-neutral-bluish-900: rgb(27, 27, 28);
+  --sa-static-neutral-bluish-950: rgb(21, 21, 23);
+  --sa-static-neutral-bluish-1000: rgb(15, 17, 21);
+
+  /* 纯中性灰：别名层滚动条 / 行内代码取色所需（色值照抄） */
+  --sa-static-neutral-50: rgb(250, 250, 250);
+  --sa-static-neutral-200: rgb(229, 229, 229);
+  --sa-static-neutral-300: rgb(212, 212, 212);
+  --sa-static-neutral-550: rgb(101, 103, 107);
+  --sa-static-neutral-600: rgb(84, 85, 87);
+  --sa-static-neutral-700: rgb(60, 60, 61);
+  --sa-static-neutral-800: rgb(41, 41, 41);
+  --sa-static-neutral-850: rgb(33, 33, 35);
+
+  /* accent 蓝（50-950 全梯度） */
+  --sa-static-blue-50: rgb(239, 246, 255);
+  --sa-static-blue-50p: rgb(234, 243, 255);
+  --sa-static-blue-75: rgb(229, 240, 255);
+  --sa-static-blue-100: rgb(219, 234, 254);
+  --sa-static-blue-300: rgb(147, 197, 253);
+  --sa-static-blue-400: rgb(96, 165, 250);
+  --sa-static-blue-450: rgb(77, 147, 248);
+  --sa-static-blue-500: rgb(59, 130, 246);
+  --sa-static-blue-600: rgb(37, 99, 235);
+  --sa-static-blue-800: rgb(30, 64, 175);
+  --sa-static-blue-900: rgb(14, 48, 116);
+  --sa-static-blue-950: rgb(23, 37, 84);
+
+  /* 状态色：amber 警告 / green 成功 / red 错误 */
+  --sa-static-amber-100: rgb(254, 245, 231);
+  --sa-static-amber-400: rgb(247, 173, 49);
+  --sa-static-amber-500: rgb(245, 158, 11);
+  --sa-static-amber-600: rgb(221, 134, 41);
+  --sa-static-amber-900: rgb(39, 36, 31);
+  --sa-static-green-100: rgb(230, 250, 237);
+  --sa-static-green-400: rgb(78, 209, 126);
+  --sa-static-green-500: rgb(34, 197, 94);
+  --sa-static-green-900: rgb(35, 60, 44);
+  --sa-static-red-50: rgb(254, 242, 242);
+  --sa-static-red-100: rgb(254, 226, 226);
+  --sa-static-red-400: rgb(242, 90, 90);
+  --sa-static-red-500: rgb(239, 68, 68);
+  --sa-static-red-600: rgb(236, 19, 19);
+  --sa-static-red-900: rgb(87, 12, 12);
+}
+
+/* DSH 暗色下静态色板仅 neutral-bluish-60 一档微调（245,246,247 → 249,250,251），
+   其余色值明暗完全一致，故只覆盖这一项。 */
+body[data-sa-dark-theme] {
+  --sa-static-neutral-bluish-60: rgb(249, 250, 251);
+}
+
+/* ---------------------------------------------------------------------
+   组件层 token（明暗各一份，供别名层与组件直接消费）
+   ------------------------------------------------------------------- */
+body {
+  --sa-specific-bubble: var(--sa-static-blue-50);
+  --sa-specific-bubble-highlight: var(--sa-static-blue-100);
+  --sa-specific-sidebar-fill: var(--sa-static-neutral-bluish-50);
+  --sa-specific-sidebar-nav-item-active: var(--sa-static-neutral-bluish-100);
+  --sa-specific-sidebar-nav-item-active-accent: var(--sa-static-blue-100);
+  --sa-specific-sidebar-nav-item-hover: var(--sa-static-neutral-bluish-75);
+  --sa-specific-code-block: var(--sa-static-neutral-bluish-50);
+  --sa-specific-input-major: var(--sa-static-neutral-bluish-00);
+  --sa-specific-selector: var(--sa-static-neutral-bluish-60);
+  --sa-specific-tooltip: var(--sa-static-neutral-bluish-850);
+}
+
+body[data-sa-dark-theme] {
+  --sa-specific-bubble: var(--sa-static-neutral-bluish-850);
+  --sa-specific-bubble-highlight: var(--sa-static-neutral-bluish-750);
+  --sa-specific-sidebar-fill: var(--sa-static-neutral-bluish-900);
+  --sa-specific-sidebar-nav-item-active: var(--sa-static-neutral-bluish-750);
+  --sa-specific-sidebar-nav-item-active-accent: var(--sa-static-neutral-bluish-800);
+  --sa-specific-sidebar-nav-item-hover: var(--sa-static-neutral-bluish-850);
+  --sa-specific-code-block: var(--sa-static-neutral-bluish-900);
+  --sa-specific-input-major: var(--sa-static-neutral-bluish-850);
+  --sa-specific-selector: var(--sa-static-neutral-bluish-800);
+  --sa-specific-tooltip: var(--sa-static-neutral-bluish-750);
+}
+
+/* ---------------------------------------------------------------------
+   语义别名层：浅色（body 默认）
+   ------------------------------------------------------------------- */
+body {
+  color-scheme: light;
+
+  /* 背景：纯白基底（浅色不靠灰底分层，靠边框与填充区分层级） */
+  --sa-alias-bg-base: var(--sa-static-neutral-bluish-00);
+  --sa-alias-bg-layer-1: var(--sa-static-neutral-bluish-00);
+  --sa-alias-bg-layer-2: var(--sa-static-neutral-bluish-00);
+  --sa-alias-bg-layer-3: var(--sa-static-neutral-bluish-00);
+  --sa-alias-bg-mask-1: rgba(0, 0, 0, 0.24);
+  --sa-alias-bg-mask-2: rgba(0, 0, 0, 0.12);
+  --sa-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
+  --sa-alias-bg-overlay: var(--sa-static-neutral-bluish-150);
+  --sa-alias-bg-skeleton: rgba(0, 0, 0, 0.04);
+
+  /* 边框四级：极轻边框，靠黑度递进 */
+  --sa-alias-border-l1: rgba(0, 0, 0, 0.04);
+  --sa-alias-border-l2: rgba(0, 0, 0, 0.1);
+  --sa-alias-border-l3: rgba(0, 0, 0, 0.12);
+  --sa-alias-border-l4: rgba(0, 0, 0, 0.16);
+
+  /* 文字四级 + 反白（主按钮黑底上的文字）+ 链接 */
+  --sa-alias-label-primary: var(--sa-static-neutral-bluish-1000);
+  --sa-alias-label-secondary: var(--sa-static-neutral-bluish-700);
+  --sa-alias-label-tertiary: var(--sa-static-neutral-bluish-600);
+  --sa-alias-label-caption: var(--sa-static-neutral-bluish-400);
+  --sa-alias-label-primary-foreground: var(--sa-static-neutral-bluish-00);
+  --sa-alias-label-primary-inverted: var(--sa-static-neutral-bluish-00);
+  --sa-alias-link: var(--sa-static-blue-500);
+
+  /* 交互态：hover 带 38,49,72 蓝黑调（DSH 手法），含 danger / accent 变体 */
+  --sa-alias-interactive-bg-hover: rgba(38, 49, 72, 0.06);
+  --sa-alias-interactive-bg-hover-solid: var(--sa-static-neutral-bluish-75);
+  --sa-alias-interactive-bg-hover-accent: rgba(38, 49, 72, 0.14);
+  --sa-alias-interactive-bg-hover-danger: rgba(236, 19, 19, 0.05);
+  --sa-alias-interactive-bg-active: rgba(38, 49, 72, 0.1);
+
+  /* 按钮系列：primary 黑白极简（黑底白字，hover 走灰阶而非彩度） */
+  --sa-alias-button-primary-fill: var(--sa-static-neutral-bluish-1000);
+  --sa-alias-button-primary-hover: var(--sa-static-neutral-bluish-750);
+  --sa-alias-button-primary-dimmed: var(--sa-static-neutral-bluish-100);
+  --sa-alias-button-ghost-active-border: var(--sa-static-neutral-bluish-500);
+  --sa-alias-button-ghost-active-fill: var(--sa-static-neutral-bluish-100);
+  --sa-alias-button-ghost-active-hover: var(--sa-static-neutral-bluish-150);
+  --sa-alias-button-floating-fill: var(--sa-static-neutral-bluish-00);
+  --sa-alias-button-floating-hover: var(--sa-static-neutral-bluish-75);
+  --sa-alias-button-elevated-fill: var(--sa-static-neutral-bluish-00);
+  --sa-alias-button-contrast-fill: var(--sa-static-neutral-bluish-700);
+  /* 信息按钮走 accent 蓝（DSH deepseek → blue） */
+  --sa-alias-button-info-fill: var(--sa-static-blue-500);
+  --sa-alias-button-info-hover: var(--sa-static-blue-400);
+
+  /* markdown 渲染系列 */
+  --sa-alias-markdown-citation: var(--sa-static-neutral-bluish-100);
+  --sa-alias-markdown-code-block: var(--sa-specific-code-block);
+  --sa-alias-markdown-code-block-banner: var(--sa-static-neutral-bluish-50);
+  --sa-alias-markdown-inline-code: var(--sa-static-neutral-50);
+  --sa-alias-markdown-placeholder: var(--sa-static-neutral-bluish-60);
+  --sa-alias-markdown-tag: var(--sa-static-neutral-bluish-75);
+  --sa-alias-markdown-code-segment-selected: var(--sa-static-neutral-bluish-00);
+  --sa-alias-markdown-code-segment-unselected: var(--sa-static-neutral-bluish-75);
+
+  /* 滚动条（纯中性灰，避免蓝调在透明轨道上显脏） */
+  --sa-alias-scrollbar-bg-l1: var(--sa-static-neutral-200);
+  --sa-alias-scrollbar-bg-l2: var(--sa-static-neutral-200);
+  --sa-alias-scrollbar-hover-l1: var(--sa-static-neutral-300);
+  --sa-alias-scrollbar-hover-l2: var(--sa-static-neutral-300);
+
+  /* 状态系列 */
+  --sa-alias-state-business-primary: var(--sa-static-blue-500);
+  --sa-alias-state-business-tertiary: var(--sa-static-blue-100);
+  --sa-alias-state-error-primary: var(--sa-static-red-600);
+  --sa-alias-state-error-secondary: var(--sa-static-red-400);
+  --sa-alias-state-success-primary: var(--sa-static-green-500);
+  --sa-alias-state-success-secondary: var(--sa-static-green-400);
+  --sa-alias-state-success-tertiary: var(--sa-static-green-100);
+  --sa-alias-state-warn-label: var(--sa-static-amber-600);
+  --sa-alias-state-warn-primary: var(--sa-static-amber-500);
+  --sa-alias-state-warn-secondary: var(--sa-static-amber-400);
+  --sa-alias-state-warn-tertiary: var(--sa-static-amber-100);
+
+  /* 浮层 */
+  --sa-alias-toast-bg: var(--sa-static-neutral-bluish-800);
+  --sa-alias-tooltip-bg: var(--sa-specific-tooltip);
+}
+
+/* ---------------------------------------------------------------------
+   语义别名层：深色（bluish-950 基底 + 875/850/800 三级 elevation）
+   ------------------------------------------------------------------- */
+body[data-sa-dark-theme] {
+  color-scheme: dark;
+
+  --sa-alias-bg-base: var(--sa-static-neutral-bluish-950);
+  --sa-alias-bg-layer-1: var(--sa-static-neutral-bluish-875);
+  --sa-alias-bg-layer-2: var(--sa-static-neutral-bluish-850);
+  --sa-alias-bg-layer-3: var(--sa-static-neutral-bluish-800);
+  --sa-alias-bg-mask-1: rgba(0, 0, 0, 0.5);
+  --sa-alias-bg-mask-2: rgba(0, 0, 0, 0.2);
+  --sa-alias-bg-mask-3: rgba(0, 0, 0, 0.48);
+  --sa-alias-bg-overlay: var(--sa-static-neutral-bluish-700);
+  --sa-alias-bg-skeleton: rgba(255, 255, 255, 0.08);
+
+  --sa-alias-border-l1: rgba(255, 255, 255, 0.06);
+  --sa-alias-border-l2: rgba(255, 255, 255, 0.12);
+  --sa-alias-border-l3: rgba(255, 255, 255, 0.16);
+  --sa-alias-border-l4: rgba(255, 255, 255, 0.2);
+
+  --sa-alias-label-primary: var(--sa-static-neutral-bluish-50);
+  --sa-alias-label-secondary: var(--sa-static-neutral-bluish-300);
+  --sa-alias-label-tertiary: var(--sa-static-neutral-bluish-400);
+  --sa-alias-label-caption: var(--sa-static-neutral-bluish-600);
+  --sa-alias-label-primary-foreground: var(--sa-static-neutral-bluish-1000);
+  --sa-alias-label-primary-inverted: var(--sa-static-neutral-bluish-800);
+  --sa-alias-link: var(--sa-static-blue-400);
+
+  --sa-alias-interactive-bg-hover: rgba(255, 255, 255, 0.08);
+  --sa-alias-interactive-bg-hover-solid: var(--sa-static-neutral-bluish-800);
+  --sa-alias-interactive-bg-hover-accent: rgba(255, 255, 255, 0.24);
+  --sa-alias-interactive-bg-hover-danger: rgba(242, 90, 90, 0.15);
+  --sa-alias-interactive-bg-active: rgba(255, 255, 255, 0.14);
+
+  /* 深色下 primary 反转为白底黑字 */
+  --sa-alias-button-primary-fill: var(--sa-static-neutral-bluish-50);
+  --sa-alias-button-primary-hover: var(--sa-static-neutral-bluish-100);
+  --sa-alias-button-primary-dimmed: var(--sa-static-neutral-bluish-750);
+  --sa-alias-button-ghost-active-border: var(--sa-static-neutral-bluish-600);
+  --sa-alias-button-ghost-active-fill: var(--sa-static-neutral-bluish-750);
+  --sa-alias-button-ghost-active-hover: var(--sa-static-neutral-bluish-700);
+  --sa-alias-button-floating-fill: var(--sa-static-neutral-bluish-850);
+  --sa-alias-button-floating-hover: var(--sa-static-neutral-bluish-800);
+  --sa-alias-button-elevated-fill: var(--sa-static-neutral-bluish-750);
+  --sa-alias-button-contrast-fill: var(--sa-static-neutral-bluish-50);
+  --sa-alias-button-info-fill: var(--sa-static-blue-400);
+  --sa-alias-button-info-hover: var(--sa-static-blue-500);
+
+  --sa-alias-markdown-citation: var(--sa-static-neutral-bluish-800);
+  --sa-alias-markdown-code-block: var(--sa-specific-code-block);
+  --sa-alias-markdown-code-block-banner: var(--sa-static-neutral-bluish-850);
+  --sa-alias-markdown-inline-code: var(--sa-static-neutral-800);
+  --sa-alias-markdown-placeholder: var(--sa-static-neutral-bluish-850);
+  --sa-alias-markdown-tag: var(--sa-static-neutral-bluish-850);
+  --sa-alias-markdown-code-segment-selected: var(--sa-static-neutral-bluish-800);
+  --sa-alias-markdown-code-segment-unselected: var(--sa-static-neutral-bluish-900);
+
+  --sa-alias-scrollbar-bg-l1: var(--sa-static-neutral-700);
+  --sa-alias-scrollbar-bg-l2: var(--sa-static-neutral-600);
+  --sa-alias-scrollbar-hover-l1: var(--sa-static-neutral-600);
+  --sa-alias-scrollbar-hover-l2: var(--sa-static-neutral-550);
+
+  --sa-alias-state-business-primary: var(--sa-static-blue-400);
+  --sa-alias-state-business-tertiary: var(--sa-static-blue-800);
+  --sa-alias-state-error-primary: var(--sa-static-red-400);
+  --sa-alias-state-error-secondary: var(--sa-static-red-400);
+  --sa-alias-state-success-primary: var(--sa-static-green-500);
+  --sa-alias-state-success-secondary: var(--sa-static-green-400);
+  --sa-alias-state-success-tertiary: var(--sa-static-green-900);
+  --sa-alias-state-warn-label: var(--sa-static-amber-600);
+  --sa-alias-state-warn-primary: var(--sa-static-amber-500);
+  --sa-alias-state-warn-secondary: var(--sa-static-amber-400);
+  --sa-alias-state-warn-tertiary: var(--sa-static-amber-900);
+
+  --sa-alias-toast-bg: var(--sa-static-neutral-bluish-750);
+  --sa-alias-tooltip-bg: var(--sa-specific-tooltip);
+}
+
+/* ---------------------------------------------------------------------
+   基础样式：正文使用系统栈与语义底色（Tailwind preflight 之上的主题基底）
+   ------------------------------------------------------------------- */
+body {
+  margin: 0;
+  font-family: var(--sa-font-family);
+  background-color: var(--sa-alias-bg-base);
+  color: var(--sa-alias-label-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------------------------------------------------------------------
+   滚动条皮肤（照搬 DSH scrollbar.css 的跨引擎双路径，token 名换 --sa-）
+   ------------------------------------------------------------------- */
+body {
+  /* 表面按 elevation 重绑这对间接变量即可换 thumb 档位：
+     l1 为基础面默认，菜单/弹窗等浮层重绑到 l2。 */
+  --sa-scrollbar-thumb: var(--sa-alias-scrollbar-bg-l1);
+  --sa-scrollbar-thumb-hover: var(--sa-alias-scrollbar-hover-l1);
+  /* WebKit 滚动条布局宽度（与下方 ::-webkit-scrollbar 规则镜像） */
+  --sa-scrollbar-width: 8px;
+}
+
+/* 两条渲染路径互斥，且门控是必要的而非防御式：一旦声明了非 auto 的
+   scrollbar-width / scrollbar-color，Chromium 与 Safari 会丢弃该元素全部
+   ::-webkit-scrollbar* 规则（含 :hover），而恰好是这些引擎实现了 hover
+   伪元素、Firefox 没有。`not selector(::-webkit-scrollbar)` 仅在伪元素
+   未实现时为真，因此 Firefox 走标准路径、WebKit 系走伪元素路径；
+   不支持 selector() 的老引擎条件求值为 false，同样落在伪元素路径
+   （正确一侧）。 */
+@supports not selector(::-webkit-scrollbar) {
+  /* 逐元素声明而非从 body 继承：继承会在 body 处完成颜色替换，后代重绑
+     --sa-scrollbar-thumb 将失效；scrollbar-width 本身不可继承。 */
+  body,
+  body * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--sa-scrollbar-thumb) transparent;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+/* 轨道透明，thumb 直接压在滚动的表面上 */
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--sa-scrollbar-thumb);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sa-scrollbar-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

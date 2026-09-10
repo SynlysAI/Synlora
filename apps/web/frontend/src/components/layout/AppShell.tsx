@@ -1,0 +1,324 @@
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
+import { ChatPlaceholder, RightbarPlaceholder, SidebarPlaceholder } from './placeholders'
+
+/** 顶栏高度（px）。 */
+const TOPBAR_HEIGHT = 64
+/** 左栏宽度默认值与拖拽钳制范围（px）。 */
+const LEFT_DEFAULT = 260
+const LEFT_MIN = 200
+const LEFT_MAX = 400
+/** 右栏宽度默认值与拖拽钳制范围（px）。 */
+const RIGHT_DEFAULT = 320
+const RIGHT_MIN = 240
+const RIGHT_MAX = 480
+/** 视口小于该宽度时左栏切换为 overlay 抽屉。 */
+const COMPACT_QUERY = '(max-width: 899px)'
+/** 暗色主题 localStorage 持久化键。 */
+const DARK_STORAGE_KEY = 'sa.theme.dark'
+
+/** 右栏三态：隐藏 / 常态 / 全屏（占满中间列与右栏）。 */
+type RightPanelState = 'hidden' | 'normal' | 'fullscreen'
+
+/** 数值钳制到 [min, max]。 */
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value))
+
+interface DragHandleProps {
+  /** 手柄归属栏：left 取右缘、right 取左缘。 */
+  side: 'left' | 'right'
+  /** 拖拽起始时的栏宽（px）。 */
+  width: number
+  onResize: (width: number) => void
+  onDraggingChange: (dragging: boolean) => void
+}
+
+/** 栏宽拖拽手柄：4px 热区，pointer capture + rAF 节流。 */
+function DragHandle({ side, width, onResize, onDraggingChange }: DragHandleProps) {
+  const dragRef = useRef({ pointerId: -1, startX: 0, startWidth: 0 })
+  const rafRef = useRef(0)
+
+  /** 开始拖拽：捕获指针，锁定 body 光标并通知父级暂停列宽过渡。 */
+  const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: width }
+    onDraggingChange(true)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  /** 拖拽移动：rAF 节流计算新宽度（左栏向右拖变宽，右栏向左拖变宽）。 */
+  const handlePointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current.pointerId !== e.pointerId || rafRef.current) return
+    const { startX, startWidth } = dragRef.current
+    const clientX = e.clientX
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      const delta = (clientX - startX) * (side === 'left' ? 1 : -1)
+      const next = clamp(
+        startWidth + delta,
+        side === 'left' ? LEFT_MIN : RIGHT_MIN,
+        side === 'left' ? LEFT_MAX : RIGHT_MAX,
+      )
+      onResize(next)
+    })
+  }
+
+  /** 结束/取消拖拽：释放光标锁与过渡暂停。 */
+  const endDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragRef.current.pointerId !== e.pointerId) return
+    dragRef.current.pointerId = -1
+    cancelAnimationFrame(rafRef.current)
+    rafRef.current = 0
+    onDraggingChange(false)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+  }
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={side === 'left' ? '调整左栏宽度' : '调整右栏宽度'}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={endDrag}
+      onPointerCancel={endDrag}
+      className="absolute inset-y-0 z-20 w-1 cursor-col-resize touch-none"
+      style={{ [side === 'left' ? 'right' : 'left']: 0 } as CSSProperties}
+    />
+  )
+}
+
+interface IconButtonProps {
+  label: string
+  onClick: () => void
+  children: ReactNode
+}
+
+/** 顶栏图标按钮（ghost 交互 token）。 */
+function IconButton({ label, onClick, children }: IconButtonProps) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      className="flex h-8 w-8 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-secondary)] transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+    >
+      {children}
+    </button>
+  )
+}
+
+/** 16px 线性图标。 */
+const iconProps = {
+  width: 16,
+  height: 16,
+  viewBox: '0 0 16 16',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.5,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+} as const
+
+/** Logo 占位标记：黑底圆角方块 + S 弧线。 */
+function LogoMark() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="1" y="1" width="18" height="18" rx="5" fill="var(--sa-alias-button-primary-fill)" />
+      <path
+        d="M12.9 6.3a4 4 0 1 0 1.3 5.2"
+        stroke="var(--sa-alias-label-primary-foreground)"
+        strokeWidth="1.8"
+        fill="none"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+/**
+ * 应用三栏工作台外壳：顶栏 + 左栏/Chat/右栏 grid。
+ * 负责：暗色主题切换、左右栏拖拽调宽、右栏三态、窄视口左栏 overlay。
+ */
+export default function AppShell() {
+  const [dark, setDark] = useState(
+    () => localStorage.getItem(DARK_STORAGE_KEY) === '1',
+  )
+  const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
+  const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
+  const [rightState, setRightState] = useState<RightPanelState>('normal')
+  const [dragging, setDragging] = useState(false)
+  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  // 暗色主题：切换 body[data-sa-dark-theme] 并持久化到 localStorage
+  useEffect(() => {
+    if (dark) document.body.dataset.saDarkTheme = ''
+    else delete document.body.dataset.saDarkTheme
+    localStorage.setItem(DARK_STORAGE_KEY, dark ? '1' : '0')
+  }, [dark])
+
+  // 视口监听：<900px 自动切换 compact（左栏改 overlay 抽屉）
+  useEffect(() => {
+    const mq = window.matchMedia(COMPACT_QUERY)
+    const onChange = (e: MediaQueryListEvent) => {
+      setCompact(e.matches)
+      setSidebarOpen(false)
+    }
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
+  /** 右栏三态循环：隐藏 → 常态 → 全屏 → 隐藏。 */
+  const cycleRightState = () =>
+    setRightState((s) =>
+      s === 'hidden' ? 'normal' : s === 'normal' ? 'fullscreen' : 'hidden',
+    )
+
+  // grid 列模板：全屏时中间列收 0、右栏列吃满剩余空间
+  const chatCol = rightState === 'fullscreen' ? '0px' : 'minmax(0, 1fr)'
+  const rightCol =
+    rightState === 'hidden'
+      ? '0px'
+      : rightState === 'fullscreen'
+        ? 'minmax(0, 1fr)'
+        : `${rightWidth}px`
+  const gridTemplateColumns = compact
+    ? `${chatCol} ${rightCol}`
+    : `${leftWidth}px ${chatCol} ${rightCol}`
+  // 拖拽中暂停列宽过渡，其余状态动画统一走动效 token
+  const gridTransition = dragging ? 'none' : 'grid-template-columns var(--sa-duration-base) var(--sa-ease-in-out)'
+
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
+      {/* 顶栏 */}
+      <header
+        className="flex shrink-0 items-center gap-2 border-b border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)] px-3"
+        style={{ height: TOPBAR_HEIGHT }}
+      >
+        {compact && (
+          <IconButton label="打开侧栏" onClick={() => setSidebarOpen(true)}>
+            <svg {...iconProps}>
+              <path d="M2 3.5h12M2 8h12M2 12.5h12" />
+            </svg>
+          </IconButton>
+        )}
+        <div className="flex items-center gap-2 px-1">
+          <LogoMark />
+          <span className="text-[15px] font-medium tracking-tight">SynlysAgent</span>
+        </div>
+        <div className="min-w-0 flex-1 truncate text-center text-[13px] text-[var(--sa-alias-label-tertiary)]">
+          当前助手：科研助手
+        </div>
+        <div className="flex items-center gap-1">
+          <IconButton
+            label={`右栏：${
+              rightState === 'hidden' ? '已隐藏' : rightState === 'normal' ? '常态' : '全屏'
+            }（点击切换）`}
+            onClick={cycleRightState}
+          >
+            <svg {...iconProps}>
+              <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+              <path d="M9.5 2.75v10.5" />
+            </svg>
+          </IconButton>
+          <IconButton label={dark ? '切换浅色主题' : '切换深色主题'} onClick={() => setDark((v) => !v)}>
+            {dark ? (
+              <svg {...iconProps}>
+                <circle cx="8" cy="8" r="3.25" />
+                <path d="M8 1.5v1.4M8 13.1v1.4M1.5 8h1.4M13.1 8h1.4M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1" />
+              </svg>
+            ) : (
+              <svg {...iconProps}>
+                <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7Z" />
+              </svg>
+            )}
+          </IconButton>
+          {/* 用户菜单占位 */}
+          <button
+            type="button"
+            aria-label="用户菜单（占位）"
+            className="ml-1 flex h-8 w-8 items-center justify-center rounded-[var(--sa-radius-full)] border border-[var(--sa-alias-border-l2)] text-[var(--sa-alias-label-secondary)] transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+          >
+            <svg {...iconProps}>
+              <circle cx="8" cy="5.5" r="2.5" />
+              <path d="M2.8 13.5a5.2 5.2 0 0 1 10.4 0" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      {/* 主体三栏 */}
+      <div className="relative min-h-0 flex-1">
+        <main
+          className="grid h-full"
+          style={{ gridTemplateColumns, transition: gridTransition }}
+        >
+          {/* 左栏：compact 时不渲染（改走 overlay 抽屉） */}
+          {!compact && (
+            <aside className="relative min-h-0 overflow-hidden border-r border-[var(--sa-alias-border-l1)] bg-[var(--sa-specific-sidebar-fill)]">
+              <div className="h-full" style={{ width: leftWidth }}>
+                <SidebarPlaceholder />
+              </div>
+              <DragHandle
+                side="left"
+                width={leftWidth}
+                onResize={setLeftWidth}
+                onDraggingChange={setDragging}
+              />
+            </aside>
+          )}
+
+          {/* 中间 Chat */}
+          <section className="relative min-h-0 min-w-0 overflow-hidden">
+            <ChatPlaceholder />
+          </section>
+
+          {/* 右栏：三态由列模板控制宽度 */}
+          <aside className="relative min-h-0 min-w-0 overflow-hidden border-l border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)]">
+            <div
+              className="h-full"
+              style={{ width: rightState === 'fullscreen' ? '100%' : rightWidth }}
+            >
+              <RightbarPlaceholder />
+            </div>
+            {rightState === 'normal' && !compact && (
+              <DragHandle
+                side="right"
+                width={rightWidth}
+                onResize={setRightWidth}
+                onDraggingChange={setDragging}
+              />
+            )}
+          </aside>
+        </main>
+
+        {/* compact 左栏 overlay 抽屉 */}
+        {compact && sidebarOpen && (
+          <>
+            <div
+              className="absolute inset-0 z-30 bg-[var(--sa-alias-bg-mask-1)]"
+              onClick={() => setSidebarOpen(false)}
+            />
+            <aside
+              className="absolute inset-y-0 left-0 z-40 overflow-hidden border-r border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-sidebar-fill)] shadow-2xl"
+              style={{ width: leftWidth }}
+            >
+              <SidebarPlaceholder onNavigate={() => setSidebarOpen(false)} />
+            </aside>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
