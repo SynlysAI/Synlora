@@ -80,3 +80,23 @@ async def test_http_request_host_guard(tmp_path):
     ctx = _ctx(tmp_path, extra={"http_allowed_hosts": ["api.example.com"]})
     denied = await pipe.run("http.request", ctx, {"url": "http://evil.com/x"})
     assert not denied.ok and denied.error == "host_denied"
+
+
+async def test_absolute_path_escape(tmp_path):
+    """绝对路径（盘符/根路径）不能逃出工作区。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path)
+    esc = await pipe.run("file.read", ctx, {"path": "C:/Windows/win.ini"})
+    assert not esc.ok and esc.error == "path_escape"
+    esc2 = await pipe.run("file.write", ctx, {"path": "C:/Windows/SynlysEvil.ini", "content": "x"})
+    assert not esc2.ok and esc2.error == "path_escape"
+    assert not (tmp_path / ".." / ".." / "Windows" / "SynlysEvil.ini").resolve().exists()
+
+
+async def test_http_subdomain_allowed(tmp_path):
+    """白名单域名的子域放行（不被 host_denied 拒绝）。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path, extra={"http_allowed_hosts": ["example.com"]})
+    r = await pipe.run("http.request", ctx, {"url": "http://sub.example.com/x"})
+    # 通过白名单检查后因无真实服务落到 http_error，而非 host_denied
+    assert r.error != "host_denied" and not r.ok

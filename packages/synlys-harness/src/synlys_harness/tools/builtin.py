@@ -103,11 +103,16 @@ async def file_list(ctx: ToolContext, args: dict) -> ToolResult:
 
 @tool(
     name="python.run",
-    description="在用户沙箱中执行 Python 代码（隔离模式，可读写沙箱文件，输出受限）。适合数据分析与绘图。",
+    description=(
+        "在用户沙箱中执行 Python 代码（隔离模式，可读写沙箱文件，输出受限）。"
+        "工作目录为 tmp/ 子目录，工作区根是其父目录（file.write 写入的文件在根目录，"
+        "需用相对路径 ../文件名 访问）；隔离模式下当前目录不在模块搜索路径，"
+        "import 本地模块需先 sys.path.insert(0, os.getcwd())。适合数据分析与绘图。"
+    ),
     parameters={"type": "object", "properties": {
         "code": {"type": "string", "description": "要执行的 Python 源码"},
     }, "required": ["code"]},
-    timeout_s=60,
+    timeout_s=70,  # 外层管线兜底须晚于沙箱内部 60s，保证内部先走到 kill+收尸路径
 )
 async def python_run(ctx: ToolContext, args: dict) -> ToolResult:
     """在用户沙箱 tmp/ 下执行代码。"""
