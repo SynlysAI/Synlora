@@ -104,6 +104,13 @@ def test_invalid_role_rejected():
     assert parse_token(token, settings) is None
 
 
+def test_parse_token_non_dict_payload_rejected():
+    """签名正确但 payload 为 JSON 数组时应返回 None（而非抛 AttributeError）。"""
+    settings = _settings()
+    token = _sign_raw([1, 2], settings)  # json.dumps(list) → "[1, 2]"
+    assert parse_token(token, settings) is None
+
+
 def test_password_hash_roundtrip():
     """PBKDF2 哈希/校验往返；错误密码 False；固定盐可复现。"""
     stored = hash_password("s3cret")
@@ -172,6 +179,48 @@ async def test_me_without_token_401(client):
 async def test_me_with_bad_token_401(client):
     """无效 token 访问 /me 应 401。"""
     r = await client.get("/api/v1/auth/me", headers={"Authorization": "Bearer junk.junk"})
+    assert r.status_code == 401
+
+
+async def test_me_array_payload_token_401_not_500(auth_app, client):
+    """签名正确但 payload 为 JSON 数组的 token → 401（而非 500）。"""
+    _, settings = auth_app
+    token = _sign_raw([1, 2], settings)
+    r = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 401
+
+
+async def test_dev_token_uses_constant_time_compare(auth_app, client, monkeypatch):
+    """DEV_AUTH_TOKEN 校验必须走 hmac.compare_digest（防时序侧信道）。"""
+    calls = []
+    real = hmac.compare_digest
+
+    def spy(a, b):
+        """记录参数并透传原实现。"""
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    r = await client.get("/api/v1/auth/me", headers={"Authorization": "Bearer devtok"})
+    assert r.status_code == 200
+    assert ("devtok".encode(), "devtok".encode()) in calls or ("devtok", "devtok") in calls
+
+
+async def test_dev_token_rejected_on_mongodb_backend(tmp_path):
+    """mongodb 生产模式下 DEV_AUTH_TOKEN 后门不生效（401）。"""
+    app = create_app()
+    app.state.settings = _settings(dev_auth_token="devtok", storage_backend="mongodb")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get("/api/v1/auth/me", headers={"Authorization": "Bearer devtok"})
+    assert r.status_code == 401
+
+
+async def test_auth_disabled_still_401_on_mongodb(tmp_path):
+    """mongodb 模式下 auth_enabled=false 匿名后门不生效（401）。"""
+    app = create_app()
+    app.state.settings = _settings(auth_enabled=False, storage_backend="mongodb")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get("/api/v1/auth/me")
     assert r.status_code == 401
 
 

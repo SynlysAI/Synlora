@@ -3,6 +3,7 @@ import os
 import uuid
 
 import pytest
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 
 from app.core.auth import issue_token
@@ -57,6 +58,7 @@ async def app(tmp_path):
         storage_backend="sqlite",
         sqlite_path=str(tmp_path / "api.db"),
         data_dir=str(tmp_path / "data"),
+        fernet_key=Fernet.generate_key().decode(),  # API 层 key 测试跑真实加解密路径
     )
     application = create_app()
     application.state.settings = settings

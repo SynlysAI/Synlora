@@ -1,6 +1,7 @@
 """模型服务（provider）管理 API：CRUD + 连通性测试，api_key 永不出明文。"""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 
@@ -11,6 +12,8 @@ from synlys_harness import Message, ModelProviderConfig, OpenAICompatibleBackend
 from app.api.deps import get_current_user, get_repos, require_admin
 
 router = APIRouter(prefix="/api/v1/models", tags=["models"])
+
+TEST_TIMEOUT_SECONDS = 15  # 连通性测试整体超时（上游 client 默认 600s，端点须自守）
 
 
 def _public(doc: dict) -> dict:
@@ -166,8 +169,12 @@ async def test_provider(provider_id: str, user=Depends(require_admin),
                         repos=Depends(get_repos)) -> dict:
     """连通性测试：解密 key 构造后端，发 "ping" 取首个流事件即断开。
 
+    harness stream 未暴露 max_tokens，V1 以首事件即断控制成本；
+    整体流式探测包 15s 超时（OpenAICompatibleBackend 内部 client 默认 600s，
+    上游无响应时端点必须自守，超时返回业务结果而非悬挂请求）。
+
     Returns:
-        {ok, latency_ms, error}；上游异常转业务结果（不 500）。
+        {ok, latency_ms, error}；上游异常/超时转业务结果（不 500）。
 
     Raises:
         HTTPException: provider 不存在（404）。
@@ -185,12 +192,20 @@ async def test_provider(provider_id: str, user=Depends(require_admin),
         )
         backend = OpenAICompatibleBackend(cfg)
         messages = [Message(role=Role.USER, content="ping")]
-        async with contextlib.aclosing(backend.stream(messages)) as stream:
-            async for _ in stream:
-                break  # 首个事件即认为连通，立即断开
+
+        async def _probe() -> None:
+            """取首个流事件即断开（首事件即视为连通）。"""
+            async with contextlib.aclosing(backend.stream(messages)) as stream:
+                async for _ in stream:
+                    break
+
+        await asyncio.wait_for(_probe(), timeout=TEST_TIMEOUT_SECONDS)
         return {"ok": True, "latency_ms": round((time.perf_counter() - start) * 1000, 2),
                 "error": None}
     except HTTPException:
         raise
+    except asyncio.TimeoutError:
+        return {"ok": False, "latency_ms": None,
+                "error": f"连接超时({TEST_TIMEOUT_SECONDS}s)"}
     except Exception as exc:  # 连接失败/认证失败/解密失败 → 业务结果而非 500
         return {"ok": False, "latency_ms": None, "error": str(exc)}

@@ -1,4 +1,5 @@
 """FastAPI 依赖：认证 + repo 集中访问。"""
+import hmac
 from dataclasses import dataclass
 from typing import Any
 
@@ -56,14 +57,18 @@ def get_repos(request: Request) -> Repos:
 async def get_current_user(request: Request, settings=Depends(get_settings)) -> dict:
     """解析 Bearer token 返回用户 payload。
 
-    auth_enabled=false 时匿名放行；DEV_AUTH_TOKEN 命中时返回开发管理员。
+    两个开发后门（auth_enabled=false 匿名 admin、DEV_AUTH_TOKEN 固定 token）
+    仅在 storage_backend=sqlite 时生效，mongodb 生产模式下走正常 401 流程。
     失败抛 401。
     """
-    if not settings.auth_enabled:
+    dev_mode = settings.storage_backend == "sqlite"
+    if dev_mode and not settings.auth_enabled:
         return {"sub": "anon", "username": "anonymous", "role": "admin"}
     auth = request.headers.get("authorization", "")
     token = auth[7:] if auth.lower().startswith("bearer ") else ""
-    if settings.dev_auth_token and token == settings.dev_auth_token:
+    if dev_mode and settings.dev_auth_token and hmac.compare_digest(
+        token.encode(), settings.dev_auth_token.encode()
+    ):
         return {"sub": "dev", "username": "dev", "role": "admin"}
     if not token:
         raise HTTPException(401, "缺少 token")

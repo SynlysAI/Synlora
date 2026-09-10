@@ -288,14 +288,12 @@ SEED_ASSISTANTS: list[dict] = [
 
 
 async def seed_assistants(store: Any) -> None:
-    """幂等插入两个种子助手（任一种子 _id 已存在则整体跳过）。
+    """逐条按 _id 幂等插入种子助手（已存在的跳过，缺失的补种自愈）。
 
     Args:
         store: DocumentStore 实例。
     """
-    for seed in SEED_ASSISTANTS:
-        if await store.get("assistants", seed["_id"]) is not None:
-            return
     repo = AssistantRepo(store)
     for seed in SEED_ASSISTANTS:
-        await repo.create(dict(seed))
+        if await store.get("assistants", seed["_id"]) is None:
+            await repo.create(dict(seed))

@@ -41,6 +41,8 @@ def parse_token(token: str, settings: Settings) -> dict[str, Any] | None:
         payload = json.loads(base64.urlsafe_b64decode(payload_b64))
     except (ValueError, json.JSONDecodeError):
         return None
+    if not isinstance(payload, dict):
+        return None  # payload 为数组/字符串/数字等非对象时拒绝（防 .get 抛 AttributeError）
     if payload.get("role") not in ("admin", "user"):
         return None
     if payload.get("exp", 0) < int(time.time()):

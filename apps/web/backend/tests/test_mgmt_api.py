@@ -103,10 +103,13 @@ async def test_enabled_filter_and_admin_all(client, admin_headers, user_headers)
 
 
 async def test_patch_key_reencrypted(client, admin_headers, app):
-    """PATCH 带 api_key → 重加密入库，直查 repo 解密拿回新 key。"""
+    """PATCH 带 api_key → 重加密入库，直查 repo 解密拿回新 key（真实加解密路径）。"""
     created = await _create_provider(client, admin_headers, api_key="sk-old")
     pid = created["_id"]
     assert (await app.state.provider_repo.get_decrypted(pid))["api_key"] == "sk-old"
+    raw = await app.state.store.get("providers", pid)
+    assert raw["api_key_enc"] != "sk-old"  # 入库即密文，不存明文
+    assert raw["api_key_encrypted"] is True
 
     r = await client.patch(f"/api/v1/models/{pid}", headers=admin_headers,
                            json={"api_key": "sk-new", "model_id": "gpt-9"})
@@ -114,6 +117,9 @@ async def test_patch_key_reencrypted(client, admin_headers, app):
     assert r.json()["model_id"] == "gpt-9"
     assert "api_key" not in r.json() and "api_key_enc" not in r.json()
 
+    raw = await app.state.store.get("providers", pid)
+    assert raw["api_key_enc"] != "sk-new"  # PATCH 后重加密覆写
+    assert raw["api_key_encrypted"] is True
     dec = await app.state.provider_repo.get_decrypted(pid)
     assert dec["api_key"] == "sk-new"
     assert dec["model_id"] == "gpt-9"
@@ -199,6 +205,29 @@ async def test_connectivity_user_403(client, user_headers):
     """普通用户调用连通性测试应 403。"""
     r = await client.post("/api/v1/models/x/test", headers=user_headers)
     assert r.status_code == 403
+
+
+async def test_connectivity_timeout(client, admin_headers, monkeypatch):
+    """流长时间无事件 → 超时保护返回 ok=False 且 error 含"连接超时"（测试中缩短超时）。"""
+    import asyncio
+
+    from app.api import models_api
+
+    created = await _create_provider(client, admin_headers)
+
+    async def slow_stream(self, messages, tools=None):
+        """长时间不产出事件的假流。"""
+        await asyncio.sleep(5)
+        yield TextDelta(text="late")
+
+    monkeypatch.setattr(OpenAICompatibleBackend, "stream", slow_stream)
+    monkeypatch.setattr(models_api, "TEST_TIMEOUT_SECONDS", 0.1)
+    r = await client.post(f"/api/v1/models/{created['_id']}/test",
+                          headers=admin_headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "连接超时" in body["error"]
 
 
 # ---------- assistants：CRUD、校验与权限 ----------

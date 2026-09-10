@@ -181,3 +181,13 @@ async def test_seed_assistants_idempotent(store):
     repo = AssistantRepo(store)
     with pytest.raises(ValueError, match="内置助手不可删除"):
         await repo.delete("asst-data")
+
+
+async def test_seed_assistants_self_heals_missing(store):
+    """先插 asst-research 再跑 seed：缺失的 asst-data 被补种，已有条目不被覆盖。"""
+    await store.insert("assistants",
+                       {"_id": "asst-research", "name": "已有", "builtin": True})
+    await seed_assistants(store)
+    assert await store.get("assistants", "asst-data") is not None
+    research = await store.get("assistants", "asst-research")
+    assert research["name"] == "已有"  # 已存在条目不被种子覆盖
