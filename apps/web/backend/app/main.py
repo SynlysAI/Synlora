@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
+from app.api.files_api import router as files_router
 from app.api.models_api import router as models_router
 from app.api.sessions_api import router as sessions_router
 from app.core.settings import Settings
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
     app.include_router(models_router)
     app.include_router(assistants_router)
     app.include_router(sessions_router)
+    app.include_router(files_router)
 
     @app.get("/api/health")
     async def health() -> dict:
