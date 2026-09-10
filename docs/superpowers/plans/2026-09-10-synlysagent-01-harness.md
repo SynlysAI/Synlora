@@ -2109,25 +2109,22 @@ class RunSession:
                 if not tool_calls:
                     break
 
-                for tc in tool_calls:
+                turn_text = "".join(text_parts)
+                for idx, tc in enumerate(tool_calls):
+                    # 文本只由组内首个 tool/call 携带（避免重复 content；投影聚合时取组内首个非 None）
+                    call_content = (turn_text or None) if idx == 0 else None
+                    call_event = await self._emit(EventType.TOOL_CALL, {
+                        "tool_call": {"id": tc.id, "name": tc.name, "arguments": tc.arguments},
+                        "content": call_content,
+                    })
+                    yield call_event
+                    await self._fire_tool_hook()
                     if tc.arguments_error is not None:
-                        await self._emit(EventType.TOOL_CALL, {
-                            "tool_call": {"id": tc.id, "name": tc.name, "arguments": tc.arguments},
-                            "content": None,
-                        })
-                        yield self._log.events[-1]
-                        await self._fire_tool_hook()
                         result = await self._pipeline.run(tc.name, ctx, {}, allowed=self._config.tool_names)
                         result = result.model_copy(update={
                             "ok": False, "error": "invalid_tool_arguments", "content": tc.arguments_error,
                         })
                     else:
-                        await self._emit(EventType.TOOL_CALL, {
-                            "tool_call": {"id": tc.id, "name": tc.name, "arguments": tc.arguments},
-                            "content": "".join(text_parts) or None,
-                        })
-                        yield self._log.events[-1]
-                        await self._fire_tool_hook()
                         result = await self._pipeline.run(
                             tc.name, ctx, tc.arguments, allowed=self._config.tool_names,
                         )
