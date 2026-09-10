@@ -1,1 +1,2 @@
-// 占位模块，待后续任务填充。
+/** stores 汇总导出。 */
+export { useAuthStore } from './auth'

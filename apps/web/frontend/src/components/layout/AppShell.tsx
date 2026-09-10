@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { ChatPlaceholder, RightbarPlaceholder, SidebarPlaceholder } from './placeholders'
+import { useAuthStore } from '@/stores/auth'
 
 /** 顶栏高度（px）。 */
 const TOPBAR_HEIGHT = 64
@@ -151,6 +152,7 @@ function LogoMark() {
  * 负责：暗色主题切换、左右栏拖拽调宽、右栏三态、窄视口左栏 overlay。
  */
 export default function AppShell() {
+  const user = useAuthStore((s) => s.user)
   const [dark, setDark] = useState(
     () => localStorage.getItem(DARK_STORAGE_KEY) === '1',
   )
@@ -244,10 +246,18 @@ export default function AppShell() {
               </svg>
             )}
           </IconButton>
-          {/* 用户菜单占位 */}
+          {/* 用户区：用户名 + 菜单入口（菜单本体后续任务实现） */}
+          {user && (
+            <span
+              className="hidden max-w-[120px] truncate px-1 text-[13px] text-[var(--sa-alias-label-secondary)] sm:inline"
+              title={`${user.username}（${user.role === 'admin' ? '管理员' : '用户'}）`}
+            >
+              {user.username} / {user.role}
+            </span>
+          )}
           <button
             type="button"
-            aria-label="用户菜单（占位）"
+            aria-label={user ? `用户菜单：${user.username}` : '用户菜单'}
             className="ml-1 flex h-8 w-8 items-center justify-center rounded-[var(--sa-radius-full)] border border-[var(--sa-alias-border-l2)] text-[var(--sa-alias-label-secondary)] transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
           >
             <svg {...iconProps}>
