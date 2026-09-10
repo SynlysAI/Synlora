@@ -4,16 +4,7 @@
  */
 import { useState, type ReactNode } from 'react'
 import type { ToolCallPayload, ToolResultPayload } from '@/types'
-
-/** 工具名 → 中文标签映射（未收录回退原名）。 */
-const TOOL_LABELS: Record<string, string> = {
-  'python.run': 'Python 执行',
-  'file.read': '读取文件',
-  'file.write': '写入文件',
-  'file.list': '列出文件',
-  'knowledge.search': '知识库搜索',
-  'http.request': 'HTTP 请求',
-}
+import { TOOL_LABELS } from './toolLabels'
 
 /** 代码风格文本块（参数 JSON / 结果 content 共用）。 */
 function CodeBlock({ text }: { text: string }) {

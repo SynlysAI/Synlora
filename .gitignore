@@ -11,6 +11,9 @@ node_modules/
 dist/
 .vite/
 
+# playwright-cli 会话沙箱（快照/下载/上传中转）
+.playwright-cli/
+
 # 运行时数据（用户工作区/会话事件/本地库）
 data/
 

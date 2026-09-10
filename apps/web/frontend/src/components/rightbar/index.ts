@@ -1,1 +1,4 @@
-// 占位模块，待后续任务填充。
+/** 右栏汇总导出。 */
+export { default as Rightbar } from './Rightbar'
+export { default as FilesPanel } from './FilesPanel'
+export { default as RunInfoPanel } from './RunInfoPanel'

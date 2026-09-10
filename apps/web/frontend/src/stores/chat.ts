@@ -30,6 +30,82 @@ export interface ChatProjection {
   streamingText: string
 }
 
+/** 单个工具的调用统计（右栏运行信息展示）。 */
+export interface ToolStat {
+  /** 调用次数（tool/call 计数）。 */
+  calls: number
+  /** 成功次数（tool/result.ok 计数）。 */
+  ok: number
+  /** 失败次数。 */
+  fail: number
+}
+
+/** 会话事件流统计（SSE 实时流与历史回放共用同一 reducer 累积）。 */
+export interface RunStats {
+  /** 已接收事件总数。 */
+  events: number
+  /** 完成的轮数（turn/end + turn/aborted）。 */
+  turns: number
+  /** 其中被中止的轮数。 */
+  aborted: number
+  /** error 事件数。 */
+  errors: number
+  /** 按工具名聚合的调用统计。 */
+  byTool: Record<string, ToolStat>
+}
+
+/** 空统计初值（浅拷贝 byTool 保证各会话互不污染）。 */
+export const emptyStats = (): RunStats => ({
+  events: 0,
+  turns: 0,
+  aborted: 0,
+  errors: 0,
+  byTool: {},
+})
+
+/**
+ * 会话事件 → 运行统计的纯函数累积（历史回放 reduce 与 SSE 逐事件共用）。
+ *
+ * @param stats 当前统计。
+ * @param ev 会话事件。
+ * @returns 应用事件后的新统计（不可变更新）。
+ */
+export function reduceStats(stats: RunStats, ev: SessionEvent): RunStats {
+  const next: RunStats = { ...stats, events: stats.events + 1 }
+  const payload = ev.payload ?? {}
+  switch (ev.type) {
+    case 'turn/end':
+      return { ...next, turns: stats.turns + 1 }
+    case 'turn/aborted':
+      return { ...next, turns: stats.turns + 1, aborted: stats.aborted + 1 }
+    case 'error':
+      return { ...next, errors: stats.errors + 1 }
+    case 'tool/call': {
+      const call = payload.tool_call as { name?: string } | undefined
+      const name = String(call?.name ?? '')
+      const cur = stats.byTool[name] ?? { calls: 0, ok: 0, fail: 0 }
+      return {
+        ...next,
+        byTool: { ...stats.byTool, [name]: { ...cur, calls: cur.calls + 1 } },
+      }
+    }
+    case 'tool/result': {
+      const name = String(payload.name ?? '')
+      const cur = stats.byTool[name] ?? { calls: 0, ok: 0, fail: 0 }
+      const ok = payload.ok === true
+      return {
+        ...next,
+        byTool: {
+          ...stats.byTool,
+          [name]: { ...cur, ok: cur.ok + (ok ? 1 : 0), fail: cur.fail + (ok ? 0 : 1) },
+        },
+      }
+    }
+    default:
+      return next
+  }
+}
+
 /** localStorage 已读 seq 键前缀（断连恢复备用，V1 重进会话全量回放）。 */
 const LAST_SEQ_PREFIX = 'sa.chat.lastseq.'
 
@@ -127,6 +203,8 @@ interface ChatState {
   lastSeq: number
   /** 用户可见错误提示（429 / 网络错误等）。 */
   error: string | null
+  /** 事件流运行统计（右栏运行信息面板消费）。 */
+  stats: RunStats
   /** 进行中运行的 run_id（stop 取消用，来自 turn/start）。 */
   activeRunId: string | null
   /** 会话代际：每次绑定新会话自增，旧流事件按代丢弃。 */
@@ -150,6 +228,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streaming: false,
   lastSeq: -1,
   error: null,
+  stats: emptyStats(),
   activeRunId: null,
   epoch: 0,
 
@@ -165,6 +244,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streaming: false,
       activeRunId: null,
       error: null,
+      stats: emptyStats(),
       lastSeq: readLastSeq(sessionId),
       epoch,
     })
@@ -174,9 +254,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       )
       if (get().epoch !== epoch) return
       const final = events.reduce(reduceEvent, { items: [], streamingText: '' })
+      const stats = events.reduce(reduceStats, emptyStats())
       const lastSeq = events.length ? events[events.length - 1].seq : -1
       writeLastSeq(sessionId, lastSeq)
-      set({ messages: final.items, lastSeq })
+      set({ messages: final.items, lastSeq, stats })
     } catch (err) {
       if (get().epoch === epoch) set({ error: (err as Error).message })
     }
@@ -210,7 +291,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return
           }
           set((s) => {
-            if (ev.type === 'user/message') return { lastSeq: Math.max(s.lastSeq, ev.seq) }
+            const stats = reduceStats(s.stats, ev)
+            if (ev.type === 'user/message')
+              return { lastSeq: Math.max(s.lastSeq, ev.seq), stats }
             const next = reduceEvent(
               { items: s.messages, streamingText: s.streamingText },
               ev,
@@ -219,6 +302,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               messages: next.items,
               streamingText: next.streamingText,
               lastSeq: Math.max(s.lastSeq, ev.seq),
+              stats,
             }
           })
           if (get().epoch !== epoch) return
@@ -282,6 +366,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingText: '',
       streaming: false,
       error: null,
+      stats: emptyStats(),
       activeRunId: null,
       lastSeq: -1,
       epoch: s.epoch + 1,

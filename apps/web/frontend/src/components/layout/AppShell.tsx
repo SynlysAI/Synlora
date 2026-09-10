@@ -7,8 +7,10 @@ import {
   type ReactNode,
 } from 'react'
 import { AssistantTitle } from './AssistantTitle'
-import { RightbarPlaceholder, SidebarPlaceholder } from './placeholders'
+import { ToastHost } from './ToastHost'
 import { ChatPanel } from '@/components/chat'
+import { Rightbar } from '@/components/rightbar'
+import { Sidebar } from '@/components/sidebar'
 import { useAuthStore } from '@/stores/auth'
 
 /** 顶栏高度（px）。 */
@@ -278,7 +280,7 @@ export default function AppShell() {
           {!compact && (
             <aside className="relative min-h-0 overflow-hidden border-r border-[var(--sa-alias-border-l1)] bg-[var(--sa-specific-sidebar-fill)]">
               <div className="h-full" style={{ width: leftWidth }}>
-                <SidebarPlaceholder />
+                <Sidebar />
               </div>
               <DragHandle
                 side="left"
@@ -300,7 +302,7 @@ export default function AppShell() {
               className="h-full"
               style={{ width: rightState === 'fullscreen' ? '100%' : rightWidth }}
             >
-              <RightbarPlaceholder />
+              <Rightbar />
             </div>
             {rightState === 'normal' && !compact && (
               <DragHandle
@@ -324,11 +326,14 @@ export default function AppShell() {
               className="absolute inset-y-0 left-0 z-40 overflow-hidden border-r border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-sidebar-fill)] shadow-2xl"
               style={{ width: leftWidth }}
             >
-              <SidebarPlaceholder onNavigate={() => setSidebarOpen(false)} />
+              <Sidebar onNavigate={() => setSidebarOpen(false)} />
             </aside>
           </>
         )}
       </div>
+
+      {/* 全局 toast */}
+      <ToastHost />
     </div>
   )
 }

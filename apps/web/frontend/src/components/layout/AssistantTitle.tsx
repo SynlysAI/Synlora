@@ -1,8 +1,8 @@
 /**
  * 顶栏中部：当前助手名（sessions + assistants 联查）与 "+ 新对话" 按钮。
- * 新会话沿用当前会话的助手，无会话时取第一个助手。
+ * 新建会话统一用左栏选择的新对话默认助手（无显式选择回退第一个）。
  */
-import { useAssistantsStore } from '@/stores/assistants'
+import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { useSessionsStore } from '@/stores/sessions'
 
 /** 顶栏中部组件（助手名 + 新对话入口）。 */
@@ -15,10 +15,10 @@ export function AssistantTitle() {
   const session = sessions.find((s) => s._id === currentId)
   const name = assistants.find((a) => a._id === session?.assistant_id)?.name
 
-  /** 新建会话：优先沿用当前助手。 */
+  /** 新建会话：用左栏选择的新对话默认助手。 */
   const handleNew = () => {
-    const assistantId = session?.assistant_id ?? assistants[0]?._id
-    if (assistantId) void create(assistantId)
+    const assistant = pickSelectedAssistant(useAssistantsStore.getState())
+    if (assistant) void create(assistant._id)
   }
 
   return (
