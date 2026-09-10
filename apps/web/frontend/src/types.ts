@@ -76,6 +76,8 @@ export interface Session {
   title: string
   archived: boolean
   message_count: number
+  /** 会话级模型覆盖（null = 跟随助手绑定；前端用户在输入区可切换）。 */
+  model_provider_id: string | null
   created_at: number
   updated_at: number
 }

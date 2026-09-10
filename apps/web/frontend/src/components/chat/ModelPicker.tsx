@@ -1,0 +1,149 @@
+/**
+ * 会话级模型选择器（输入框左下角小下拉）：
+ *
+ * - 当前模型名按钮 + 下拉：首项"跟随助手（xxx）"恢复助手绑定默认，
+ *   其余为管理员配置的 enabled 模型，选择即 PATCH 当前会话的
+ *   model_provider_id（后端对话时按 会话级覆盖 > 助手绑定 取模型）；
+ * - 无当前会话时隐藏；模型列表空（管理员未配置）时隐藏下拉、显示
+ *   "未配置模型"小字；
+ * - 会话切换时随 sessions store 的 model_provider_id 自动联动显示。
+ */
+import { useEffect, useRef, useState } from 'react'
+import { useAssistantsStore } from '@/stores/assistants'
+import { useModelsStore } from '@/stores/models'
+import { useSessionsStore } from '@/stores/sessions'
+import { toast } from '@/stores/toasts'
+
+/** 会话级模型选择器组件（Composer 内输入框下方左侧）。 */
+export default function ModelPicker() {
+  const currentId = useSessionsStore((s) => s.currentId)
+  const session = useSessionsStore((s) =>
+    s.sessions.find((x) => x._id === s.currentId),
+  )
+  const setModel = useSessionsStore((s) => s.setModel)
+  const models = useModelsStore((s) => s.models)
+  const modelsLoaded = useModelsStore((s) => s.loaded)
+  const assistant = useAssistantsStore((s) =>
+    s.assistants.find((a) => a._id === session?.assistant_id),
+  )
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  // 懒加载 enabled 模型列表（失败静默，空态文案兜底）
+  useEffect(() => {
+    void useModelsStore.getState().load().catch(() => {})
+  }, [])
+
+  // 点击组件外部关闭下拉
+  useEffect(() => {
+    if (!open) return
+    const onDocClick = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  if (!currentId) return null
+
+  /** 跟随助手时的助手侧模型名（联查字段：正常名 / "(已停用)" / "(已删除)" / null=未绑定）。 */
+  const assistantModel = assistant?.model_name
+  const followLabel = `跟随助手（${assistantModel ?? '未绑定模型'}）`
+  const overrideId = session?.model_provider_id ?? null
+  const currentLabel = overrideId
+    ? (models.find((m) => m._id === overrideId)?.name ?? '（已停用或已删除）')
+    : followLabel
+
+  /** 选中某项：PATCH 会话覆盖字段并收起下拉（422 等失败弹 toast）。 */
+  const pick = (id: string | null) => {
+    setOpen(false)
+    void setModel(currentId, id).catch((err) => {
+      toast('error', `切换模型失败：${(err as Error).message}`)
+    })
+  }
+
+  const itemClass = (active: boolean) =>
+    'flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] transition-colors duration-[var(--sa-duration-fast)] ' +
+    (active
+      ? 'bg-[var(--sa-alias-interactive-bg-hover)] font-medium text-[var(--sa-alias-label-primary)]'
+      : 'text-[var(--sa-alias-label-secondary)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)]')
+
+  return (
+    <div ref={rootRef} className="relative">
+      {modelsLoaded && models.length === 0 ? (
+        <span className="px-0.5 text-xs text-[var(--sa-alias-label-caption)]">
+          未配置模型
+        </span>
+      ) : (
+        <>
+          <button
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-label={`会话模型：${currentLabel}，点击切换`}
+            title="切换本会话使用的模型"
+            onClick={() => setOpen((v) => !v)}
+            className="flex items-center gap-1.5 rounded-[var(--sa-radius-sm)] px-1.5 py-1 text-xs text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)]"
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="1.75" y="2.5" width="12.5" height="8.5" rx="1.5" />
+              <path d="M5.5 13.5h5M8 11v2.5" />
+            </svg>
+            <span className="max-w-[220px] truncate">{currentLabel}</span>
+            <svg
+              width="10"
+              height="10"
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              className={`transition-transform duration-[var(--sa-duration-fast)] ${open ? 'rotate-180' : ''}`}
+            >
+              <path d="M2.5 4.5 6 8l3.5-3.5" />
+            </svg>
+          </button>
+          {open && (
+            <div
+              role="menu"
+              aria-label="选择会话模型"
+              className="absolute bottom-full left-0 z-50 mb-1.5 max-h-64 w-56 overflow-y-auto rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
+            >
+              <button
+                role="menuitem"
+                type="button"
+                onClick={() => pick(null)}
+                className={itemClass(!overrideId)}
+              >
+                <span className="truncate">{followLabel}</span>
+              </button>
+              {models.map((m) => (
+                <button
+                  key={m._id}
+                  role="menuitem"
+                  type="button"
+                  onClick={() => pick(m._id)}
+                  className={itemClass(overrideId === m._id)}
+                >
+                  <span className="truncate">{m.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

@@ -1,10 +1,12 @@
 /**
  * 底部输入区：圆角大输入框（自适应高度，max 6 行）、Enter 发送 /
  * Shift+Enter 换行（IME 组合中的 Enter 不发送）、streaming 时输入禁用且
- * 发送按钮变停止按钮、错误提示条（含 429 话术）。
+ * 发送按钮变停止按钮、错误提示条（含 429 话术）、输入框左下角会话级
+ * 模型选择器（ModelPicker）。
  */
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useChatStore } from '@/stores/chat'
+import ModelPicker from './ModelPicker'
 
 /** 输入框最大高度（px，约 6 行：行高 22 + 上下 padding 12×2 + 边框）。 */
 const MAX_INPUT_HEIGHT = 148
@@ -117,6 +119,11 @@ export default function Composer() {
               </svg>
             </button>
           )}
+        </div>
+
+        {/* 输入框左下角：会话级模型选择器（无会话/未配置模型时自行隐藏） */}
+        <div className="mt-1.5 flex items-center">
+          <ModelPicker />
         </div>
       </div>
     </div>

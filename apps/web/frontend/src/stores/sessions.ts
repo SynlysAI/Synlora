@@ -23,6 +23,8 @@ interface SessionsState {
   rename: (id: string, title: string) => Promise<void>
   /** 会话归档/取消归档。 */
   archive: (id: string, archived: boolean) => Promise<void>
+  /** 切换会话级模型（providerId=null 恢复跟随助手绑定）。 */
+  setModel: (id: string, providerId: string | null) => Promise<void>
   /** 删除会话（删除当前会话时清空 currentId）。 */
   remove: (id: string) => Promise<void>
   /** 切换当前会话。 */
@@ -61,6 +63,15 @@ export const useSessionsStore = create<SessionsState>((set) => ({
     const updated = await api<Session>(`/api/v1/sessions/${id}`, {
       method: 'PATCH',
       body: { archived },
+    })
+    set((s) => ({ sessions: s.sessions.map((x) => (x._id === id ? updated : x)) }))
+  },
+
+  setModel: async (id, providerId) => {
+    // body 显式携带 null：后端以此区分"恢复助手默认"与"未提供该字段"
+    const updated = await api<Session>(`/api/v1/sessions/${id}`, {
+      method: 'PATCH',
+      body: { model_provider_id: providerId },
     })
     set((s) => ({ sessions: s.sessions.map((x) => (x._id === id ? updated : x)) }))
   },

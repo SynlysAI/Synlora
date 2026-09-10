@@ -26,10 +26,12 @@ class FakeBackend:
 
     script: ClassVar[list] = []
     received: ClassVar[list] = []
+    providers: ClassVar[list] = []
 
     def __init__(self, provider):
         """记录 provider。"""
         self.provider = provider
+        FakeBackend.providers.append(provider)
 
     async def stream(self, messages, tools=None):
         """按剧本产出；记录本轮 messages（多轮记忆断言用）。"""
@@ -72,9 +74,11 @@ def _reset_scripts():
     """每个测试前后重置脚本与记录，避免跨测试残留。"""
     FakeBackend.script = []
     FakeBackend.received = []
+    FakeBackend.providers = []
     yield
     FakeBackend.script = []
     FakeBackend.received = []
+    FakeBackend.providers = []
 
 
 def parse_sse(text: str) -> list[tuple[str, dict]]:
@@ -103,17 +107,19 @@ def parse_sse(text: str) -> list[tuple[str, dict]]:
     return out
 
 
-async def _make_provider(client, headers) -> dict:
+async def _make_provider(client, headers, **overrides) -> dict:
     """建 provider，返回响应 JSON。
 
     Args:
         client: httpx 异步客户端。
         headers: 请求头（管理员）。
+        overrides: 覆盖 PROVIDER_BODY 的字段（如 name/model_id 区分多 provider）。
 
     Returns:
         创建成功的 provider 文档。
     """
-    r = await client.post("/api/v1/models", headers=headers, json=PROVIDER_BODY)
+    body = {**PROVIDER_BODY, **overrides}
+    r = await client.post("/api/v1/models", headers=headers, json=body)
     assert r.status_code == 201, r.text
     return r.json()
 
@@ -612,3 +618,132 @@ async def test_message_empty_text_422(client, admin_headers):
     r = await client.post(f"/api/v1/sessions/{sid}/messages",
                           headers=admin_headers, json={"text": "   "})
     assert r.status_code == 422
+
+
+# ---------- 会话级模型选择（session.model_provider_id 覆盖助手默认） ----------
+
+
+async def _chat_once(client, headers, sid: str, text: str = "你好") -> None:
+    """发一条消息并断言 SSE 正常收尾。
+
+    Args:
+        client: httpx 异步客户端。
+        headers: 请求头。
+        sid: 会话 id。
+        text: 消息文本。
+    """
+    r = await client.post(f"/api/v1/sessions/{sid}/messages",
+                          headers=headers, json={"text": text})
+    assert r.status_code == 200, r.text
+    assert parse_sse(r.text)[-1][0] == "turn/end"
+
+
+async def test_session_model_override_used_in_chat(app, client, admin_headers, monkeypatch):
+    """建会话带 model_provider_id 覆盖：对话走覆盖的 provider 而非助手绑定。"""
+    await _bind_provider_to_asst_data(client, admin_headers)  # 助手绑定 chat-mock
+    override = await _make_provider(client, admin_headers,
+                                    name="override-mock", model_id="gpt-override")
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="覆盖生效"), Usage()]]
+
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "asst-data",
+                                "model_provider_id": override["_id"]})
+    assert r.status_code == 201, r.text
+    assert r.json()["model_provider_id"] == override["_id"]
+    sid = r.json()["_id"]
+
+    await _chat_once(client, admin_headers, sid)
+    assert len(FakeBackend.providers) == 1
+    assert FakeBackend.providers[0].name == "override-mock"
+    assert FakeBackend.providers[0].model_id == "gpt-override"
+
+    # 列表回读：覆盖字段随会话文档返回
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    mine = next(s for s in r.json() if s["_id"] == sid)
+    assert mine["model_provider_id"] == override["_id"]
+
+
+async def test_session_model_patch_switch_and_restore(app, client, admin_headers, monkeypatch):
+    """PATCH 切换覆盖 provider 生效；PATCH null 恢复跟随助手绑定。"""
+    bound = await _bind_provider_to_asst_data(client, admin_headers)
+    alt = await _make_provider(client, admin_headers,
+                               name="alt-mock", model_id="gpt-alt")
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]] * 3
+
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid, "默认")
+    assert FakeBackend.providers[-1].name == "chat-mock"
+
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"model_provider_id": alt["_id"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["model_provider_id"] == alt["_id"]
+    await _chat_once(client, admin_headers, sid, "切换")
+    assert FakeBackend.providers[-1].name == "alt-mock"
+
+    # 传 null 显式恢复助手默认（区别于"未提供该字段"）
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"model_provider_id": None, "title": "顺带改名"})
+    assert r.status_code == 200, r.text
+    assert r.json()["model_provider_id"] is None
+    assert r.json()["title"] == "顺带改名"
+    await _chat_once(client, admin_headers, sid, "恢复")
+    assert FakeBackend.providers[-1].name == "chat-mock"
+    assert len(FakeBackend.providers) == 3
+
+    # 未提供字段的 PATCH 不动覆盖值
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"model_provider_id": bound["_id"]})
+    await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                       json={"archived": False})
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    mine = next(s for s in r.json() if s["_id"] == sid)
+    assert mine["model_provider_id"] == bound["_id"]
+
+
+async def test_session_model_override_disabled_after_set_422(
+        app, client, admin_headers, user_headers, monkeypatch):
+    """覆盖的 provider 事后被停用：对话 422（会话级覆盖同样受 enabled 约束）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    override = await _make_provider(client, admin_headers, name="will-disable",
+                                    model_id="gpt-wd")
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    r = await client.post("/api/v1/sessions", headers=user_headers,
+                          json={"assistant_id": "asst-data",
+                                "model_provider_id": override["_id"]})
+    sid = r.json()["_id"]
+
+    await client.patch(f"/api/v1/models/{override['_id']}", headers=admin_headers,
+                       json={"enabled": False})
+    r = await client.post(f"/api/v1/sessions/{sid}/messages",
+                          headers=user_headers, json={"text": "你好"})
+    assert r.status_code == 422
+
+
+async def test_session_model_invalid_422(client, admin_headers, user_headers):
+    """建会话/PATCH 传不存在或已停用的 provider id → 422。"""
+    disabled = await _make_provider(client, admin_headers, name="disabled-mock",
+                                    model_id="gpt-off", enabled=False)
+
+    r = await client.post("/api/v1/sessions", headers=user_headers,
+                          json={"assistant_id": "asst-data",
+                                "model_provider_id": "nope"})
+    assert r.status_code == 422
+    r = await client.post("/api/v1/sessions", headers=user_headers,
+                          json={"assistant_id": "asst-data",
+                                "model_provider_id": disabled["_id"]})
+    assert r.status_code == 422
+
+    sid = await _make_session(client, user_headers)
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
+                           json={"model_provider_id": "nope"})
+    assert r.status_code == 422
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
+                           json={"model_provider_id": disabled["_id"]})
+    assert r.status_code == 422
+    # 校验失败不产生副作用（覆盖值保持未设置）
+    r = await client.get("/api/v1/sessions", headers=user_headers)
+    mine = next(s for s in r.json() if s["_id"] == sid)
+    assert mine["model_provider_id"] is None

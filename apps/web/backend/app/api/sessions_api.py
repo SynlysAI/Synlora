@@ -13,6 +13,7 @@ from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
 from synlys_harness import ModelProviderConfig
 
+from app.api.assistants_api import _validate_provider
 from app.api.deps import Repos, get_current_user, get_repos
 from app.services.agent_service import AgentService, TooManyRuns
 
@@ -48,31 +49,31 @@ async def _own_session(sid: str, user: dict, repos: Repos) -> dict:
     return doc
 
 
-async def _resolve_provider(assistant: dict, repos: Repos) -> ModelProviderConfig:
-    """解析助手关联的模型服务为后端配置（解密 api_key）。
+async def _resolve_provider(provider_id: str | None, owner_desc: str,
+                            repos: Repos) -> ModelProviderConfig:
+    """解析模型服务 id 为后端配置（解密 api_key）。
 
     Args:
-        assistant: 助手文档。
+        provider_id: 模型服务 id（会话级覆盖或助手绑定，调用方已按优先级取好）。
+        owner_desc: 归属描述（助手/会话名，未指定 id 时的 422 提示用）。
         repos: repo 集中访问对象。
 
     Returns:
         ModelProviderConfig。
 
     Raises:
-        HTTPException: 未关联/不存在/已停用/解密失败（422）。
+        HTTPException: 未指定/不存在/已停用/解密失败（422）。
     """
-    pid = assistant.get("model_provider_id")
-    if not pid:
-        raise HTTPException(
-            422, f"助手未关联模型服务: {assistant.get('name', assistant.get('_id', ''))}")
+    if not provider_id:
+        raise HTTPException(422, f"未指定模型服务: {owner_desc}")
     try:
-        decrypted = await repos.provider.get_decrypted(pid)
+        decrypted = await repos.provider.get_decrypted(provider_id)
     except RuntimeError as exc:
         raise HTTPException(422, str(exc)) from exc
     if decrypted is None:
-        raise HTTPException(422, f"模型服务不存在: {pid}")
+        raise HTTPException(422, f"模型服务不存在: {provider_id}")
     if not decrypted.get("enabled"):
-        raise HTTPException(422, f"模型服务已停用: {decrypted.get('name', pid)}")
+        raise HTTPException(422, f"模型服务已停用: {decrypted.get('name', provider_id)}")
     return ModelProviderConfig(
         name=str(decrypted.get("name", "")),
         base_url=str(decrypted.get("base_url", "")),
@@ -86,13 +87,15 @@ class SessionCreateBody(BaseModel):
 
     assistant_id: str
     title: str = ""
+    model_provider_id: str | None = None
 
 
 class SessionUpdateBody(BaseModel):
-    """更新会话请求体（改名/归档）。"""
+    """更新会话请求体（改名/归档/切换模型；model_provider_id 显式传 null 恢复助手默认）。"""
 
     title: str | None = None
     archived: bool | None = None
+    model_provider_id: str | None = None
 
 
 class MessageIn(BaseModel):
@@ -123,16 +126,19 @@ async def create_session(body: SessionCreateBody, user=Depends(get_current_user)
     """新建会话。
 
     Raises:
-        HTTPException: 助手不存在（404）。
+        HTTPException: 助手不存在（404）、model_provider_id 非法（422）。
     """
     if await repos.assistant.get(body.assistant_id) is None:
         raise HTTPException(404, "助手不存在")
+    if body.model_provider_id:
+        await _validate_provider(body.model_provider_id, repos)
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
         "title": body.title.strip(),
         "archived": False,
         "message_count": 0,
+        "model_provider_id": body.model_provider_id,
     })
 
 
@@ -140,13 +146,24 @@ async def create_session(body: SessionCreateBody, user=Depends(get_current_user)
 async def update_session(sid: str, body: SessionUpdateBody,
                          user=Depends(get_current_user),
                          repos=Depends(get_repos)) -> dict:
-    """改名/归档（归属校验 404）。"""
+    """改名/归档/切换模型（归属校验 404）。
+
+    model_provider_id：传 id 校验后生效；显式传 null 恢复助手默认；
+    未提供该字段不动原值（靠 model_fields_set 区分"未提供"与"显式 null"）。
+    """
     doc = await _own_session(sid, user, repos)
     fields: dict = {}
     if body.title is not None:
         fields["title"] = body.title.strip()
     if body.archived is not None:
         fields["archived"] = body.archived
+    if "model_provider_id" in body.model_fields_set:
+        pid = body.model_provider_id
+        if pid:
+            await _validate_provider(pid, repos)
+            fields["model_provider_id"] = pid
+        else:
+            fields["model_provider_id"] = None
     return await repos.session.update(doc["_id"], fields)
 
 
@@ -192,7 +209,10 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     assistant = await repos.assistant.get(doc.get("assistant_id", ""))
     if assistant is None:
         raise HTTPException(404, "助手不存在")
-    cfg = await _resolve_provider(assistant, repos)
+    # 模型优先级：会话级覆盖 > 助手绑定（两者皆无 → 422）
+    pid = doc.get("model_provider_id") or assistant.get("model_provider_id")
+    owner = doc.get("title") or assistant.get("name") or sid
+    cfg = await _resolve_provider(pid, str(owner), repos)
     service = _agent_service(request)
 
     # 先 chat（可能 429）：被拒消息零副作用（不计数、不生成标题），无需回滚
