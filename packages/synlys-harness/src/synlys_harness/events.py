@@ -26,6 +26,10 @@ class EventLog:
         """返回全部事件的只读副本。"""
         return list(self._events)
 
+    def last(self) -> SessionEvent | None:
+        """返回最新事件（空日志返回 None）。"""
+        return self._events[-1] if self._events else None
+
     async def append(self, type_: EventType, payload: dict[str, Any]) -> SessionEvent:
         """追加事件并广播到所有 sink。
 
@@ -37,7 +41,7 @@ class EventLog:
             构造完成的 SessionEvent（seq 已分配）。
         """
         event = SessionEvent(
-            seq=len(self._events), type=type_, payload=payload, ts=time.time()
+            seq=len(self._events), type=type_, payload=dict(payload), ts=time.time()
         )
         self._events.append(event)
         for sink in self._sinks:
