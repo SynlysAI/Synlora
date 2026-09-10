@@ -1,0 +1,409 @@
+"""SSE 对话端点端到端测试（脚本化 mock provider）。
+
+说明：httpx ASGITransport 会把响应体整体缓冲（app 跑完才返回 Response），
+无法从客户端侧真正"中途断开"SSE，因此：
+- cancel/并发限制测试用后台 task 发消息 + 轮询 DB 拿 run_id 再操作；
+- 断连不 cancel 的语义在 service 层验证（不给队列任何消费者，run 仍完成后落盘）。
+"""
+import asyncio
+import json
+from typing import ClassVar
+
+import pytest
+from synlys_harness import ModelProviderConfig, TextDelta, ToolCallChunk, Usage
+
+PROVIDER_BODY = {
+    "name": "chat-mock",
+    "base_url": "https://api.chat-mock.local/v1",
+    "api_key": "sk-chat",
+    "model_id": "gpt-chat",
+    "enabled": True,
+}
+
+
+class FakeBackend:
+    """脚本化后端：每次 stream 调用按剧本顺序弹出一组事件。"""
+
+    script: ClassVar[list] = []
+
+    def __init__(self, provider):
+        """记录 provider。"""
+        self.provider = provider
+
+    async def stream(self, messages, tools=None):
+        """按剧本产出。"""
+        for ev in FakeBackend.script.pop(0):
+            yield ev
+
+
+class SlowFakeBackend:
+    """慢速后端：逐块延时产出文本增量，为 cancel/并发测试留时间窗口。"""
+
+    deltas: ClassVar[int] = 40
+    interval: ClassVar[float] = 0.05
+
+    def __init__(self, provider):
+        """记录 provider。"""
+        self.provider = provider
+
+    async def stream(self, messages, tools=None):
+        """逐块延时产出。"""
+        for i in range(SlowFakeBackend.deltas):
+            yield TextDelta(text=f"块{i} ")
+            await asyncio.sleep(SlowFakeBackend.interval)
+
+
+@pytest.fixture(autouse=True)
+def _reset_scripts():
+    """每个测试前后重置脚本，避免跨测试残留。"""
+    FakeBackend.script = []
+    yield
+    FakeBackend.script = []
+
+
+def parse_sse(text: str) -> list[tuple[str, dict]]:
+    """把 SSE 文本解析为 (event, payload) 列表。
+
+    Args:
+        text: text/event-stream 响应体。
+
+    Returns:
+        [(事件类型, data JSON 反序列化结果), ...]。
+    """
+    out: list[tuple[str, dict]] = []
+    cur_event: str | None = None
+    cur_data: str | None = None
+    for line in text.splitlines():
+        if not line.strip():
+            if cur_event is not None or cur_data is not None:
+                out.append((cur_event or "message", json.loads(cur_data or "{}")))
+                cur_event, cur_data = None, None
+        elif line.startswith("event:"):
+            cur_event = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            cur_data = line[len("data:"):].strip()
+    if cur_event is not None or cur_data is not None:
+        out.append((cur_event or "message", json.loads(cur_data or "{}")))
+    return out
+
+
+async def _make_provider(client, headers) -> dict:
+    """建 provider，返回响应 JSON。
+
+    Args:
+        client: httpx 异步客户端。
+        headers: 请求头（管理员）。
+
+    Returns:
+        创建成功的 provider 文档。
+    """
+    r = await client.post("/api/v1/models", headers=headers, json=PROVIDER_BODY)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+async def _bind_provider_to_asst_data(client, admin_headers) -> dict:
+    """建 provider 并关联到种子助手 asst-data。
+
+    Args:
+        client: httpx 异步客户端。
+        admin_headers: 管理员请求头。
+
+    Returns:
+        provider 文档。
+    """
+    provider = await _make_provider(client, admin_headers)
+    r = await client.patch("/api/v1/assistants/asst-data", headers=admin_headers,
+                           json={"model_provider_id": provider["_id"]})
+    assert r.status_code == 200, r.text
+    return provider
+
+
+async def _make_session(client, headers, assistant_id: str = "asst-data") -> str:
+    """建会话，返回会话 id。
+
+    Args:
+        client: httpx 异步客户端。
+        headers: 请求头。
+        assistant_id: 关联助手 id。
+
+    Returns:
+        会话 _id。
+    """
+    r = await client.post("/api/v1/sessions", headers=headers,
+                          json={"assistant_id": assistant_id})
+    assert r.status_code == 201, r.text
+    return r.json()["_id"]
+
+
+async def _wait_for_running_runs(app, count: int, timeout_s: float = 5.0) -> list[str]:
+    """轮询 DB 直到出现 count 个 running 状态的 run。
+
+    Args:
+        app: 已初始化的 FastAPI 实例。
+        count: 期望的 running run 数。
+        timeout_s: 轮询超时。
+
+    Returns:
+        running run 的 _id 列表。
+    """
+    for _ in range(int(timeout_s / 0.02)):
+        runs = await app.state.store.list("runs", filters={"status": "running"})
+        if len(runs) >= count:
+            return [r["_id"] for r in runs]
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"{timeout_s}s 内未等到 {count} 个 running run")
+
+
+# ---------- 完整工具链路（HTTP + SSE + python.run 子进程 + 持久化） ----------
+
+
+async def test_full_tool_chain(app, client, admin_headers, monkeypatch):
+    """工具全链路：SSE 事件序列完整，python.run 真实执行，JSONL/DB 副本/自动标题齐备。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [
+        [ToolCallChunk(id="c1", name="python.run", arguments={"code": "print(6*7)"})],
+        [TextDelta(text="答案是 42"), Usage(prompt_tokens=10, completion_tokens=5)],
+    ]
+    sid = await _make_session(client, admin_headers)
+
+    resp = await client.post(f"/api/v1/sessions/{sid}/messages",
+                             headers=admin_headers, json={"text": "算一下 6*7"})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    assert types == [
+        "turn/start", "user/message", "tool/call", "tool/result",
+        "llm/delta", "assistant/message", "turn/end",
+    ]
+    tool_result = dict(events[types.index("tool/result")][1]["payload"])
+    assert tool_result["name"] == "python.run"
+    assert tool_result["ok"] is True
+    assert "42" in tool_result["content"]
+    assert events[-2][1]["payload"]["content"] == "答案是 42"
+
+    # JSONL 回放源：行数与事件数一致
+    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    assert jsonl.exists()
+    lines = jsonl.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == len(events) == 7
+    assert json.loads(lines[0])["type"] == "turn/start"
+
+    # DB 副本等量返回，after_seq 增量过滤正确
+    r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
+    assert r.status_code == 200
+    replayed = r.json()
+    assert [e["seq"] for e in replayed] == list(range(7))
+    assert [e["type"] for e in replayed] == types
+    r = await client.get(f"/api/v1/sessions/{sid}/events?after_seq=5",
+                         headers=admin_headers)
+    assert [e["seq"] for e in r.json()] == [6]
+
+    # 首条消息自动生成标题 + message_count 自增
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    mine = next(s for s in r.json() if s["_id"] == sid)
+    assert mine["message_count"] == 1
+    assert mine["title"] == "算一下 6*7"
+
+    run = await app.state.store.get("runs", events[0][1]["payload"]["run_id"])
+    assert run["status"] == "completed"
+
+
+async def test_plain_text_chat(app, client, admin_headers, monkeypatch):
+    """纯文本对话：无工具事件，assistant/message 与 turn/end 收尾。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="你好，我是助手"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+
+    resp = await client.post(f"/api/v1/sessions/{sid}/messages",
+                             headers=admin_headers, json={"text": "你好"})
+    assert resp.status_code == 200
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    assert types == ["turn/start", "user/message", "llm/delta", "assistant/message", "turn/end"]
+    assert "tool/call" not in types and "tool/result" not in types
+    assert events[-2][1]["payload"]["content"] == "你好，我是助手"
+
+
+# ---------- cancel 与并发限制 ----------
+
+
+async def test_cancel_run(app, client, admin_headers, monkeypatch):
+    """用户显式 cancel：SSE 以 turn/aborted(reason=user_cancel) 收尾，runs 状态 aborted。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", SlowFakeBackend)
+    sid = await _make_session(client, admin_headers)
+
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "慢慢说"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+
+    r = await client.post(f"/api/v1/runs/{run_id}/cancel", headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    resp = await asyncio.wait_for(task, timeout=15)
+    events = parse_sse(resp.text)
+    assert events[-1][0] == "turn/aborted"
+    assert events[-1][1]["payload"]["reason"] == "user_cancel"
+    run = await app.state.store.get("runs", run_id)
+    assert run["status"] == "aborted"
+
+
+async def test_cancel_missing_run_404(client, admin_headers):
+    """取消不存在的 run 应 404。"""
+    r = await client.post("/api/v1/runs/nope/cancel", headers=admin_headers)
+    assert r.status_code == 404
+
+
+async def test_concurrency_limit_429(app, client, admin_headers, monkeypatch):
+    """每用户并发上限 2：两个长 run 挂起中第三个 POST → 429；取消后收尾正常。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", SlowFakeBackend)
+    sid = await _make_session(client, admin_headers)
+
+    tasks = [
+        asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                        headers=admin_headers,
+                                        json={"text": f"长任务{i}"}))
+        for i in range(2)
+    ]
+    run_ids = await _wait_for_running_runs(app, 2)
+
+    r = await client.post(f"/api/v1/sessions/{sid}/messages",
+                          headers=admin_headers, json={"text": "第三个"})
+    assert r.status_code == 429
+
+    for rid in run_ids:
+        cr = await client.post(f"/api/v1/runs/{rid}/cancel", headers=admin_headers)
+        assert cr.json()["ok"] is True
+    for t in tasks:
+        resp = await asyncio.wait_for(t, timeout=15)
+        events = parse_sse(resp.text)
+        assert events[-1][0] == "turn/aborted"
+
+
+# ---------- 归属隔离与 provider 校验 ----------
+
+
+async def test_session_isolation(client, admin_headers, user_headers):
+    """user 的会话对其他用户（含 admin）不可见、不可操作（统一 404）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    sid = await _make_session(client, user_headers)
+
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    assert all(s["_id"] != sid for s in r.json())
+    r = await client.get("/api/v1/sessions", headers=user_headers)
+    assert [s["_id"] for s in r.json()] == [sid]
+
+    assert (await client.get(f"/api/v1/sessions/{sid}/events",
+                             headers=admin_headers)).status_code == 404
+    assert (await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                               json={"title": "x"})).status_code == 404
+    assert (await client.delete(f"/api/v1/sessions/{sid}",
+                                headers=admin_headers)).status_code == 404
+    assert (await client.post(f"/api/v1/sessions/{sid}/messages",
+                              headers=admin_headers,
+                              json={"text": "hi"})).status_code == 404
+
+
+async def test_provider_missing_or_disabled_422(client, admin_headers, user_headers):
+    """助手未关联 provider 或 provider 已停用 → 422。"""
+    sid = await _make_session(client, user_headers)  # asst-data 未关联 provider
+    r = await client.post(f"/api/v1/sessions/{sid}/messages",
+                          headers=user_headers, json={"text": "你好"})
+    assert r.status_code == 422
+
+    provider = await _bind_provider_to_asst_data(client, admin_headers)
+    await client.patch(f"/api/v1/models/{provider['_id']}", headers=admin_headers,
+                       json={"enabled": False})
+    r = await client.post(f"/api/v1/sessions/{sid}/messages",
+                          headers=user_headers, json={"text": "你好"})
+    assert r.status_code == 422
+
+
+# ---------- 断连不 cancel（service 层验证 _drive 独立完成） ----------
+
+
+async def test_run_completes_without_sse_consumer(app, client, admin_headers, monkeypatch):
+    """无 SSE 消费者（等价断连）：_drive 后台独立跑完并落盘，events 可回放补齐。"""
+    provider = await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="后台完成"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+
+    decrypted = await app.state.provider_repo.get_decrypted(provider["_id"])
+    cfg = ModelProviderConfig(
+        name=decrypted["name"], base_url=decrypted["base_url"],
+        api_key=decrypted["api_key"], model_id=decrypted["model_id"],
+    )
+    assistant = await app.state.assistant_repo.get("asst-data")
+    user = {"sub": "u-admin", "username": "tester-admin", "role": "admin"}
+    run_id = await app.state.agent_service.chat(sid, user, assistant, cfg, "后台跑")
+
+    types: list[str] = []
+    for _ in range(100):
+        r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
+        types = [e["type"] for e in r.json()]
+        if "turn/end" in types:
+            break
+        await asyncio.sleep(0.05)
+    assert "turn/end" in types
+    run = await app.state.store.get("runs", run_id)
+    assert run["status"] == "completed"
+
+
+# ---------- 会话 CRUD ----------
+
+
+async def test_sessions_crud(app, client, admin_headers, monkeypatch):
+    """会话 CRUD：创建校验助手、列表按 updated_at 倒序、PATCH、DELETE 清理 events+JSONL。"""
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "nope"})
+    assert r.status_code == 404
+
+    s1 = await _make_session(client, admin_headers)
+    await asyncio.sleep(0.01)
+    s2 = await _make_session(client, admin_headers)
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    ids = [s["_id"] for s in r.json()]
+    assert ids[0] == s2
+    assert s1 in ids
+
+    r = await client.patch(f"/api/v1/sessions/{s1}", headers=admin_headers,
+                           json={"title": "改名", "archived": True})
+    assert r.status_code == 200
+    assert r.json()["title"] == "改名"
+    assert r.json()["archived"] is True
+
+    # 对话一轮产生 events + JSONL，DELETE 后全部清理
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+    resp = await client.post(f"/api/v1/sessions/{sid}/messages",
+                             headers=admin_headers, json={"text": "在吗"})
+    assert resp.status_code == 200
+    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    assert jsonl.exists()
+
+    r = await client.delete(f"/api/v1/sessions/{sid}", headers=admin_headers)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert not jsonl.exists()
+    assert (await client.get(f"/api/v1/sessions/{sid}/events",
+                             headers=admin_headers)).status_code == 404
+    events = await app.state.store.list("events", filters={"session_id": sid})
+    assert events == []
+
+
+async def test_message_empty_text_422(client, admin_headers):
+    """空白消息文本应 422。"""
+    sid = await _make_session(client, admin_headers)
+    r = await client.post(f"/api/v1/sessions/{sid}/messages",
+                          headers=admin_headers, json={"text": "   "})
+    assert r.status_code == 422

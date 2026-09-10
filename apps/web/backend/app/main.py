@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
 from app.api.models_api import router as models_router
+from app.api.sessions_api import router as sessions_router
 from app.core.settings import Settings
 from app.db.repos import (
     AssistantRepo,
@@ -17,6 +18,7 @@ from app.db.repos import (
     seed_assistants,
 )
 from app.db.store import create_store
+from app.services.agent_service import AgentService
 
 
 @asynccontextmanager
@@ -35,6 +37,7 @@ async def lifespan(app: FastAPI):
     app.state.run_repo = RunRepo(store)
     app.state.file_repo = FileRepo(store)
     app.state.event_repo = EventRepo(store)
+    app.state.agent_service = AgentService(store, settings, app.state.event_repo)
     await seed_assistants(store)
     yield
     await store.close()
@@ -48,6 +51,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(models_router)
     app.include_router(assistants_router)
+    app.include_router(sessions_router)
 
     @app.get("/api/health")
     async def health() -> dict:
