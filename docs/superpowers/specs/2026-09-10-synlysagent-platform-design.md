@@ -233,8 +233,16 @@ runs       { session_id, user_id, status, usage, started_at, ended_at }
 
 - 单组件 ≤ 300 行；消息类型独立组件（UserMessage/AssistantMessage/ToolCallCard/FileChip）
 - SSE 用 fetch + ReadableStream 解析（便于带 token header）
-- 样式：shadcn/ui 中性灰 + 单主色、深浅主题、元信息默认折叠 hover 展开——区别于 Element Plus 控制台感
 - 状态：Zustand（会话列表/当前会话/SSE 流三个 store）
+
+### 6.3 视觉与交互规格（对齐 DSH 风格，参考其 `ui-layout/AppFrame.tsx` 与 `ui-theme` token 表）
+
+- **布局交互**：左/右栏边缘可拖拽调宽（pointer capture + rAF 节流）；右栏三态（隐藏/常态/全屏）；视口 < 900px 自动折叠左栏
+- **设计 token**（建 `theme.css` 统一定义，直接采用 DSH 的取值经验）：
+  - 动效三档：fast 0.1s / 常规 0.2s / slow 0.3s，统一 `cubic-bezier(0.4, 0, 0.2, 1)`
+  - 字体栈：系统 UI 栈含 CJK 回退（PingFang SC/Microsoft YaHei）；代码字体 SF Mono/JetBrains Mono/Consolas（不裸写 `monospace`，避免 Windows 中文回退 SimSun）
+  - 圆角统一 token 化，支持时启用平滑圆角
+- **色板**：中性灰底 + 单一 blue accent（DSH 静态色板模式：blue-50…blue-900 + amber 仅用于警告态），深浅两套主题，元信息默认折叠 hover 展开——区别于 Element Plus 控制台感
 
 ## 7. 错误处理
 
