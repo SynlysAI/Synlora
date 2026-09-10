@@ -102,14 +102,14 @@ async def test_llm_error_aborts_turn():
 
 
 async def test_cancel_mid_stream():
-    """流式中途取消：发 turn/aborted 并停止。"""
+    """流式中途取消：在流内检查点尽快断开，发 turn/aborted 并停止。"""
     started = asyncio.Event()
 
     class SlowBackend:
         async def stream(self, messages, tools=None):
             started.set()
-            for _ in range(100):
-                await asyncio.sleep(0.01)
+            for _ in range(30):
+                await asyncio.sleep(0.005)
                 yield TextDelta(text="x")
 
     session = _session(SlowBackend())
@@ -117,8 +117,11 @@ async def test_cancel_mid_stream():
     await started.wait()
     session.cancel()
     events = await task
-    assert EventType.TURN_ABORTED in [e.type for e in events]
-    assert EventType.TURN_END not in [e.type for e in events]
+    types = [e.type for e in events]
+    assert EventType.TURN_ABORTED in types
+    assert EventType.TURN_END not in types
+    # 取消后流在第一个 delta 检查点断开，不再消费剩余 delta
+    assert sum(1 for t in types if t is EventType.LLM_DELTA) <= 2
 
 
 async def test_steering_injected_next_step(tmp_path):
@@ -191,3 +194,75 @@ async def test_event_log_and_stream_consistent():
     logged = session._log.events
     assert [e.seq for e in yielded] == [e.seq for e in logged]
     assert [e.seq for e in logged] == list(range(len(logged)))
+
+
+async def test_cancel_reset_between_turns():
+    """第一轮取消后同一 session 可再次 run（cancel 标志每轮重置）。"""
+    started = asyncio.Event()
+
+    class SlowThenTextBackend:
+        """首次调用慢流（供取消），其后正常文本回答。"""
+
+        def __init__(self):
+            self.slow_done = False
+
+        async def stream(self, messages, tools=None):
+            if not self.slow_done:
+                self.slow_done = True
+                started.set()
+                for _ in range(30):
+                    await asyncio.sleep(0.005)
+                    yield TextDelta(text="x")
+            else:
+                yield TextDelta(text="第二答")
+
+    session = _session(SlowThenTextBackend())
+    task = asyncio.create_task(_collect(session, "第一问"))
+    await started.wait()
+    session.cancel()
+    first = await task
+    assert EventType.TURN_ABORTED in [e.type for e in first]
+
+    second = await _collect(session, "第二问")
+    types = [e.type for e in second]
+    assert EventType.ASSISTANT_MESSAGE in types
+    assert types[-1] is EventType.TURN_END
+
+
+async def test_consumer_break_still_logs_aborted_and_runs_hook():
+    """消费者提前断开（aclose → GeneratorExit）：日志记 turn/aborted（含 reason）且钩子执行，不抛 RuntimeError。"""
+    seen = {}
+
+    async def on_end(ctx):
+        seen["end"] = True
+
+    hooks = ExtensionHooks(on_session_end=on_end)
+    backend = FakeBackend([[TextDelta(text="答")]])
+    session = _session(backend, hooks=hooks)
+    agen = session.run("q")
+    await anext(agen)  # turn/start
+    await anext(agen)  # user/message
+    await anext(agen)  # llm/delta（已进入 step 循环 try 块内）
+    await agen.aclose()  # 消费者断开（等价 SSE 连接关闭）
+
+    types = [e.type for e in session._log.events]
+    assert EventType.TURN_ABORTED in types
+    aborted = [e for e in session._log.events if e.type is EventType.TURN_ABORTED][0]
+    assert aborted.payload.get("reason")
+    assert seen.get("end") is True
+
+
+async def test_multi_tool_calls_single_step():
+    """单 step 并行双 call：2 个 tool/call + 2 个 tool_result，无文本时首个 call content 为 None。"""
+    backend = FakeBackend([
+        [ToolCallChunk(id="c1", name="add", arguments={"a": 1, "b": 2}),
+         ToolCallChunk(id="c2", name="add", arguments={"a": 3, "b": 4})],
+        [TextDelta(text="完成")],
+    ])
+    events = await _collect(_session(backend), "算")
+    calls = [e for e in events if e.type is EventType.TOOL_CALL]
+    results = [e for e in events if e.type is EventType.TOOL_RESULT]
+    assert len(calls) == 2 and len(results) == 2
+    by_id = {r.payload["tool_call_id"]: r.payload["content"] for r in results}
+    assert by_id == {"c1": "3", "c2": "7"}
+    assert calls[0].payload["content"] is None

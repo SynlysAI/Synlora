@@ -13,6 +13,11 @@ def derive_messages(events: list[SessionEvent], include_system: bool = True) -> 
     紧跟其 tool 响应"的顺序要求。交错顺序（call→result→call→result）
     各自独立成条，行为不变。
 
+    外部取消落在 call 与 result 之间时，事件流会留下无响应的孤儿
+    tool/call；投影结束后为其补一条合成 tool 消息（"工具调用未收到
+    结果"），否则下轮会产出非法的"assistant(tool_calls) 后无 tool
+    响应"序列。
+
     Args:
         events: 会话全部事件（按 seq 升序）。
         include_system: 是否把 turn/start 中的 system_prompt 投影为首条 system 消息。
@@ -24,6 +29,8 @@ def derive_messages(events: list[SessionEvent], include_system: bool = True) -> 
     system_emitted = False
     pending_calls: list[ToolCall] = []
     pending_content: str | None = None
+    # 每条 assistant(tool_calls) 消息的 (messages 内索引, 组内 call id 列表)，供孤儿回补定位
+    call_groups: list[tuple[int, list[str]]] = []
 
     def flush_calls() -> None:
         """把缓冲中的连续 TOOL_CALL 聚合为一条 assistant 消息。"""
@@ -34,6 +41,7 @@ def derive_messages(events: list[SessionEvent], include_system: bool = True) -> 
                 content=pending_content,
                 tool_calls=list(pending_calls),
             ))
+            call_groups.append((len(messages) - 1, [tc.id for tc in pending_calls]))
             pending_calls.clear()
             pending_content = None
 
@@ -68,4 +76,29 @@ def derive_messages(events: list[SessionEvent], include_system: bool = True) -> 
                 name=p.get("name", ""),
             ))
     flush_calls()
+    _fill_orphan_tool_results(messages, call_groups)
     return messages
+
+
+def _fill_orphan_tool_results(
+    messages: list[Message], call_groups: list[tuple[int, list[str]]],
+) -> None:
+    """为从未收到 tool/result 的 tool_call 补合成 tool 消息。
+
+    对每条含孤儿 call 的 assistant 消息，在其后插入对应的合成 tool 消息
+    （倒序插入避免前组插入使后组索引失效），保证序列满足 OpenAI
+    "assistant(tool_calls) 后必须紧跟其全部 tool 响应"的要求。
+
+    Args:
+        messages: 投影产出的消息列表（就地修改）。
+        call_groups: 每条 assistant(tool_calls) 消息的 (索引, call id 列表)。
+    """
+    answered = {m.tool_call_id for m in messages if m.role is Role.TOOL}
+    for idx, ids in reversed(call_groups):
+        orphans = [cid for cid in ids if cid not in answered]
+        for offset, cid in enumerate(orphans):
+            messages.insert(idx + 1 + offset, Message(
+                role=Role.TOOL,
+                content="工具调用未收到结果（会话中断）",
+                tool_call_id=cid,
+            ))

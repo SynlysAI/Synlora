@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -62,6 +63,7 @@ class RunSession:
         self._cancel = asyncio.Event()
         self._steering: asyncio.Queue[str] = asyncio.Queue()
         self._last_usage: Usage | None = None
+        self._llm_failed = False
 
     @property
     def last_usage(self) -> Usage | None:
@@ -97,6 +99,14 @@ class RunSession:
         if self._hooks and self._hooks.on_tool_event:
             await self._hooks.on_tool_event(self._log.last())
 
+    def _abort_reason(self) -> str:
+        """推断中止原因（turn/aborted 的 reason 字段；max_steps 路径不算 aborted 不经过此方法）。"""
+        if self._cancel.is_set():
+            return "user_cancel"
+        if self._llm_failed:
+            return "llm_error"
+        return "consumer_closed"
+
     async def run(self, user_text: str) -> AsyncIterator[SessionEvent]:
         """执行一轮 turn：用户输入 → step 循环（steering/钩子/LLM 流/工具管线）→ 收尾事件。
 
@@ -106,6 +116,10 @@ class RunSession:
         Yields:
             SessionEvent（本 turn 全部事件，同时写入 EventLog 供 sink 持久化）。
         """
+        # 每轮 turn 重置运行态：同一 RunSession 取消/失败后可再次 run
+        self._cancel.clear()
+        self._llm_failed = False
+
         if self._hooks and self._hooks.on_session_start:
             await self._hooks.on_session_start(self)
 
@@ -121,8 +135,9 @@ class RunSession:
             workspace_root=self._workspace_root,
         )
         aborted = False
+        closer: SessionEvent | None = None
         try:
-            for _step in range(self._config.max_steps):
+            for step in range(self._config.max_steps):
                 if self._cancel.is_set():
                     aborted = True
                     break
@@ -142,30 +157,37 @@ class RunSession:
 
                 text_parts: list[str] = []
                 tool_calls: list[ToolCallChunk] = []
-                llm_failed = False
                 try:
-                    async for ev in self._backend.stream(
+                    # aclosing：消费中断/异常时确定性地关闭后端流（否则流要等 GC 才收尾）
+                    async with contextlib.aclosing(self._backend.stream(
                         messages,
                         self._registry.llm_schemas(self._config.tool_names),
-                    ):
-                        if isinstance(ev, TextDelta):
-                            yield await self._emit(EventType.LLM_DELTA, {"text": ev.text})
-                            text_parts.append(ev.text)
-                        elif isinstance(ev, ToolCallChunk):
-                            tool_calls.append(ev)
-                        elif isinstance(ev, Usage):
-                            self._last_usage = ev  # last-wins：最后一次 Usage 覆盖
+                    )) as stream:
+                        async for ev in stream:
+                            if self._cancel.is_set():
+                                # 流内取消检查点：不等到流耗尽，立刻断开
+                                aborted = True
+                                break
+                            if isinstance(ev, TextDelta):
+                                yield await self._emit(
+                                    EventType.LLM_DELTA, {"text": ev.text, "step": step},
+                                )
+                                text_parts.append(ev.text)
+                            elif isinstance(ev, ToolCallChunk):
+                                tool_calls.append(ev)
+                            elif isinstance(ev, Usage):
+                                self._last_usage = ev  # last-wins：最后一次 Usage 覆盖
                 except Exception as exc:  # noqa: BLE001 LLM 错误（含 openai.APIError 的连接/限流/5xx）统一映射为事件，不穿透 run
                     yield await self._emit(EventType.ERROR, {
                         "code": "llm_error",
                         "message": f"{type(exc).__name__}: {exc}",
                     })
-                    llm_failed = True
+                    self._llm_failed = True
 
                 if self._cancel.is_set():
                     aborted = True
                     break
-                if llm_failed:
+                if self._llm_failed:
                     aborted = True
                     break
 
@@ -215,12 +237,19 @@ class RunSession:
                     "code": "max_steps",
                     "message": f"达到步数上限 {self._config.max_steps}",
                 })
+        except BaseException:
+            # GeneratorExit（消费者断开）/ CancelledError（任务取消）路径同样视为 aborted，
+            # 收尾事件与钩子必须执行；随后 re-raise，生成器据此正常终止
+            aborted = True
+            raise
         finally:
-            if aborted:
-                yield await self._emit(
-                    EventType.TURN_ABORTED, {"step_reached": True},
-                )
-            else:
-                yield await self._emit(EventType.TURN_END, {})
+            # 收尾契约：finally 内只写日志与跑钩子、绝不 yield（否则消费者断开时
+            # 会抛 RuntimeError: async generator ignored GeneratorExit 且钩子永不执行）
+            closer_type = EventType.TURN_ABORTED if aborted else EventType.TURN_END
+            payload = (
+                {"step_reached": True, "reason": self._abort_reason()} if aborted else {}
+            )
+            closer = await self._emit(closer_type, payload)
             if self._hooks and self._hooks.on_session_end:
                 await self._hooks.on_session_end(self)
+        yield closer  # 仅正常完成路径可达（异常已 re-raise，不会执行到这里）

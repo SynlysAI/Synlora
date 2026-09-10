@@ -156,3 +156,28 @@ def test_user_message_none_text_projects_empty_string():
     events = [_ev(0, EventType.USER_MESSAGE, {"text": None})]
     msgs = derive_messages(events, include_system=False)
     assert msgs[0].content == ""
+
+
+def test_orphan_tool_call_gets_synthetic_result():
+    """call 与 result 之间中断（c1 无 result）：孤儿 call 补合成 tool 消息，顺序保持合法。"""
+    events = [
+        _ev(0, EventType.USER_MESSAGE, {"text": "跑两段"}),
+        _ev(1, EventType.TOOL_CALL, {
+            "tool_call": {"id": "c1", "name": "python.run", "arguments": {"code": "1"}},
+            "content": None,
+        }),
+        _ev(2, EventType.TOOL_CALL, {
+            "tool_call": {"id": "c2", "name": "python.run", "arguments": {"code": "2"}},
+            "content": None,
+        }),
+        _ev(3, EventType.TOOL_RESULT, {
+            "tool_call_id": "c2", "name": "python.run", "ok": True, "content": "2",
+        }),
+    ]
+    msgs = derive_messages(events, include_system=False)
+    # assistant(tool_calls=[c1, c2]) 后必须紧跟两条 tool 响应（OpenAI 顺序要求）
+    assert [m.role.value for m in msgs] == ["user", "assistant", "tool", "tool"]
+    assert [tc.id for tc in msgs[1].tool_calls] == ["c1", "c2"]
+    tool_c1, tool_c2 = msgs[2], msgs[3]
+    assert tool_c1.tool_call_id == "c1" and "未收到结果" in tool_c1.content
+    assert tool_c2.tool_call_id == "c2" and tool_c2.content == "2"
