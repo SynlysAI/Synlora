@@ -9,6 +9,7 @@ import time
 import uuid
 from typing import Any
 
+from cryptography.fernet import InvalidToken
 from synlys_harness import EventType, SessionEvent
 
 from app.core.crypto import decrypt_key, encrypt_key
@@ -140,8 +141,16 @@ class ProviderRepo(BaseRepo):
             return None
         out = {k: v for k, v in doc.items() if k != "api_key_enc"}
         stored = doc.get("api_key_enc", "")
-        out["api_key"] = decrypt_key(stored, self._fernet_key,
-                                     bool(doc.get("api_key_encrypted"))) if stored else ""
+        if not stored:
+            out["api_key"] = ""
+            return out
+        try:
+            out["api_key"] = decrypt_key(stored, self._fernet_key,
+                                         bool(doc.get("api_key_encrypted")))
+        except (InvalidToken, ValueError) as exc:
+            # key 轮换/缺失（如加密数据配空 key 时 Fernet 构造抛 ValueError）统一转友好错误，
+            # 避免底层异常裸抛到 API 层。
+            raise RuntimeError("api_key 解密失败：FERNET_KEY 与加密时不一致或缺失") from exc
         return out
 
 

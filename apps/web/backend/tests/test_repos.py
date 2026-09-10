@@ -76,6 +76,28 @@ async def test_provider_key_plain_without_fernet_key(store):
     assert dec["api_key"] == "sk-plain"
 
 
+async def test_decrypt_with_wrong_key_raises_runtime(store, fernet_key):
+    """key 错位时解密抛带提示的 RuntimeError 而非底层异常。"""
+    from cryptography.fernet import Fernet as _Fernet
+
+    good_repo = ProviderRepo(store, fernet_key=fernet_key)
+    created = await good_repo.create({
+        "name": "openai", "base_url": "https://api.openai.com/v1",
+        "api_key": "sk-secret", "model_id": "gpt-4o", "enabled": True,
+    })
+    pid = created["_id"]
+
+    # key 轮换：换另一把 key 的 repo 读取 → RuntimeError（修复前为 InvalidToken）
+    rotated_repo = ProviderRepo(store, fernet_key=_Fernet.generate_key().decode())
+    with pytest.raises(RuntimeError, match="解密失败"):
+        await rotated_repo.get_decrypted(pid)
+
+    # key 缺失：空 key 的 repo 读取加密数据 → RuntimeError（修复前为 ValueError）
+    empty_repo = ProviderRepo(store, fernet_key="")
+    with pytest.raises(RuntimeError, match="解密失败"):
+        await empty_repo.get_decrypted(pid)
+
+
 async def test_assistant_builtin_delete_rejected(store):
     repo = AssistantRepo(store)
     builtin = await repo.create({"_id": "asst-x", "name": "X", "builtin": True})

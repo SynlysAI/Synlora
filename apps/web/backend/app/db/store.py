@@ -4,6 +4,7 @@ collection schema 形如 {"users": ["user_id", "seq"]}（第二项为提取为�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Protocol
@@ -41,6 +42,9 @@ class SqliteStore:
         """初始化（路径为空时内存库）。"""
         self._path = path
         self._db: aiosqlite.Connection | None = None
+        # 读-改-写串行化锁：aiosqlite 单连接下 SELECT→UPDATE 之间存在 await 点，
+        # 并发 update 会互相覆盖（丢失更新），insert 同理需防极端交错。
+        self._lock = asyncio.Lock()
 
     async def init(self) -> None:
         """建库建表（幂等）。"""
@@ -67,18 +71,23 @@ class SqliteStore:
         return json.loads(row["doc"])
 
     async def insert(self, collection: str, doc: dict) -> dict:
-        """插入文档（_id 必填，重复抛 ValueError）。"""
-        doc_id = doc["_id"]
-        indexes = COLLECTION_INDEXES.get(collection, [])
-        cols = ", ".join(["_id", "doc"] + indexes)
-        marks = ", ".join("?" * (2 + len(indexes)))
-        vals: list[Any] = [doc_id, json.dumps(doc, ensure_ascii=False)] + [str(doc.get(c, "")) for c in indexes]
-        try:
-            await self._db.execute(f'INSERT INTO "{collection}" ({cols}) VALUES ({marks})', vals)
-        except aiosqlite.IntegrityError as exc:
-            raise ValueError(f"_id 已存在: {doc_id}") from exc
-        await self._db.commit()
-        return doc
+        """插入文档（_id 必填，重复抛 ValueError，含不可序列化类型抛 ValueError）。"""
+        async with self._lock:
+            doc_id = doc["_id"]
+            indexes = COLLECTION_INDEXES.get(collection, [])
+            cols = ", ".join(["_id", "doc"] + indexes)
+            marks = ", ".join("?" * (2 + len(indexes)))
+            try:
+                doc_json = json.dumps(doc, ensure_ascii=False)
+            except TypeError as exc:
+                raise ValueError(f"文档含不可 JSON 序列化类型: {doc.get('_id')}") from exc
+            vals: list[Any] = [doc_id, doc_json] + [str(doc.get(c, "")) for c in indexes]
+            try:
+                await self._db.execute(f'INSERT INTO "{collection}" ({cols}) VALUES ({marks})', vals)
+            except aiosqlite.IntegrityError as exc:
+                raise ValueError(f"_id 已存在: {doc_id}") from exc
+            await self._db.commit()
+            return doc
 
     async def get(self, collection: str, doc_id: str) -> dict | None:
         """按 _id 取文档。"""
@@ -87,19 +96,20 @@ class SqliteStore:
         return self._row_to_doc(row) if row else None
 
     async def update(self, collection: str, doc_id: str, fields: dict) -> dict | None:
-        """合并更新（读-改-写）。"""
-        cur = await self._db.execute(f'SELECT doc FROM "{collection}" WHERE _id = ?', (doc_id,))
-        row = await cur.fetchone()
-        if row is None:
-            return None
-        doc = self._row_to_doc(row)
-        doc.update(fields)
-        indexes = COLLECTION_INDEXES.get(collection, [])
-        sets = ", ".join(['doc = ?'] + [f'"{c}" = ?' for c in indexes])
-        vals: list[Any] = [json.dumps(doc, ensure_ascii=False)] + [str(doc.get(c, "")) for c in indexes] + [doc_id]
-        await self._db.execute(f'UPDATE "{collection}" SET {sets} WHERE _id = ?', vals)
-        await self._db.commit()
-        return doc
+        """合并更新（读-改-写，全程持锁防并发丢失更新）。"""
+        async with self._lock:
+            cur = await self._db.execute(f'SELECT doc FROM "{collection}" WHERE _id = ?', (doc_id,))
+            row = await cur.fetchone()
+            if row is None:
+                return None
+            doc = self._row_to_doc(row)
+            doc.update(fields)
+            indexes = COLLECTION_INDEXES.get(collection, [])
+            sets = ", ".join(['doc = ?'] + [f'"{c}" = ?' for c in indexes])
+            vals: list[Any] = [json.dumps(doc, ensure_ascii=False)] + [str(doc.get(c, "")) for c in indexes] + [doc_id]
+            await self._db.execute(f'UPDATE "{collection}" SET {sets} WHERE _id = ?', vals)
+            await self._db.commit()
+            return doc
 
     async def delete(self, collection: str, doc_id: str) -> bool:
         """按 _id 删除。"""
@@ -109,7 +119,7 @@ class SqliteStore:
 
     async def list(self, collection: str, *, filters: dict | None = None,
                    sort: list[tuple[str, int]] | None = None, limit: int = 0) -> list[dict]:
-        """按索引字段过滤 + 排序（排序字段须在索引列中）。"""
+        """按索引字段过滤 + 排序（排序与 filters 字段也必须在该集合的索引列中）。"""
         where, vals = "", []
         if filters:
             conds = []

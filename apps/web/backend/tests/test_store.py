@@ -50,6 +50,26 @@ async def test_index_columns_extracted(tmp_path):
     assert tuple(row) == ("s1", "5")
 
 
+async def test_concurrent_update_no_lost_write(store):
+    """并发合并更新不丢字段（20 个并发各加一字段，最终全存在）。"""
+    await store.insert("sessions", {"_id": "s1", "user_id": "u1"})
+    import asyncio
+
+    async def add_field(i: int):
+        await store.update("sessions", "s1", {f"f{i}": i})
+
+    await asyncio.gather(*[add_field(i) for i in range(20)])
+    doc = await store.get("sessions", "s1")
+    assert all(doc.get(f"f{i}") == i for i in range(20))
+
+
+async def test_insert_unserializable_doc_raises_value_error(store):
+    """文档含不可 JSON 序列化类型时报 ValueError（含 _id 提示）而非裸 TypeError。"""
+    await store.insert("files", {"_id": "f-ok", "user_id": "u1"})
+    with pytest.raises(ValueError, match="不可 JSON 序列化"):
+        await store.insert("files", {"_id": "f-bad", "user_id": object()})
+
+
 async def test_memory_path_init(tmp_path):
     # 常规文件库自管生命周期：init/insert/get/close 全流程
     s = create_store("sqlite", sqlite_path=str(tmp_path / "m.db"))
