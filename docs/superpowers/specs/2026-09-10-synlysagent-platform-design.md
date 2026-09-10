@@ -235,14 +235,32 @@ runs       { session_id, user_id, status, usage, started_at, ended_at }
 - SSE 用 fetch + ReadableStream 解析（便于带 token header）
 - 状态：Zustand（会话列表/当前会话/SSE 流三个 store）
 
-### 6.3 视觉与交互规格（对齐 DSH 风格，参考其 `ui-layout/AppFrame.tsx` 与 `ui-theme` token 表）
+### 6.3 视觉与交互规格（移植 DSH 主题体系，源：`packages/client/ui-theme/src/styles/`）
 
-- **布局交互**：左/右栏边缘可拖拽调宽（pointer capture + rAF 节流）；右栏三态（隐藏/常态/全屏）；视口 < 900px 自动折叠左栏
-- **设计 token**（建 `theme.css` 统一定义，直接采用 DSH 的取值经验）：
-  - 动效三档：fast 0.1s / 常规 0.2s / slow 0.3s，统一 `cubic-bezier(0.4, 0, 0.2, 1)`
-  - 字体栈：系统 UI 栈含 CJK 回退（PingFang SC/Microsoft YaHei）；代码字体 SF Mono/JetBrains Mono/Consolas（不裸写 `monospace`，避免 Windows 中文回退 SimSun）
-  - 圆角统一 token 化，支持时启用平滑圆角
-- **色板**：中性灰底 + 单一 blue accent（DSH 静态色板模式：blue-50…blue-900 + amber 仅用于警告态），深浅两套主题，元信息默认折叠 hover 展开——区别于 Element Plus 控制台感
+**总体**：整体视觉复刻 DSH 的"清爽"风格——白底、极轻边框、带蓝调的中性灰阶、黑白极简主按钮 + 单蓝色 accent、低信息密度。
+
+**三层 token 架构**（`theme.css`，前缀 `--sa-`，照搬 DSH 的分层方法与取值）：
+
+1. `--sa-static-*` 原始色板（明暗共用）
+   - **neutral-bluish 系**（DSH 清爽感的来源：带蓝调而非纯灰）：50 `rgb(249,250,251)` … 600 `rgb(129,133,140)` … 800 `rgb(53,54,56)` … 950 `rgb(21,21,23)`，完整梯度照搬其 `design-platform.css`
+   - 状态色：blue 50-950（accent）、amber（仅警告）、green（成功）、red（错误）
+2. `--sa-alias-*` 语义层（明暗主题各一份映射，`body[data-sa-dark-theme]` 切换）
+   - 背景：浅色 = 纯白基底 + bluish-50/60 微分层；深色 = bluish-950 基底 + 875/850/800 三级 elevation
+   - 边框四级：浅色 `rgba(0,0,0,0.04/0.1/0.12/0.16)`；深色 `rgba(255,255,255,0.06/0.12/0.16/0.2)`
+   - 文字四级：primary（bluish-1000/50）、secondary（700/300）、tertiary（600/400）、caption（400/600）
+   - 交互 hover：浅色 `rgba(38,49,72,0.06)`；深色 `rgba(255,255,255,0.08)`（+ danger/accent 变体）
+3. `--sa-specific-*` 组件层：聊天气泡（accent-50 浅调底）、侧栏填充（bluish-50 / 深色 900）、nav 项 active/hover、输入框、代码块（bluish-50 / 深色 900）、tooltip/toast
+
+**关键决策**：
+
+- 主按钮黑白极简（黑底白字，hover 灰阶过渡），accent 蓝仅用于链接/选中态/信息按钮（blue-450 `rgb(77,147,248)` / blue-500 `rgb(59,130,246)`）
+- 动效三档：fast 0.1s / 常规 0.2s / slow 0.3s，统一 `cubic-bezier(0.4, 0, 0.2, 1)`；拖拽期间暂停列宽过渡
+- 字体：系统 UI 栈含 CJK 回退（PingFang SC/Microsoft YaHei）；代码字体 SF Mono/JetBrains Mono/Consolas（**不裸写 `monospace`**，避免 Windows 中文回退 SimSun）；中间字重一律用 500
+- 字号：正文内容字号用户可调（1px 步进 stepper，设置持久化到 localStorage）
+- 滚动条：8px thin、透明轨道、4px 圆角 thumb、thumb 色 token 化（hover 加深）；标准 `scrollbar-color` 与 `::-webkit-scrollbar` 互斥门控（照搬 DSH scrollbar.css 的跨引擎处理）
+- 圆角 token 化，支持 `corner-shape: superellipse(1.5)` 时启用平滑圆角（`@supports` 守卫）
+- 布局交互：左/右栏边缘可拖拽调宽（pointer capture + rAF 节流）；右栏三态（隐藏/常态/全屏）；视口 < 900px 自动折叠左栏
+- 元信息默认折叠 hover 展开，区别于 Element Plus 控制台感
 
 ## 7. 错误处理
 
