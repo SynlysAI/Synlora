@@ -48,6 +48,7 @@ class AssistantCreateBody(BaseModel):
     """新建助手请求体。"""
 
     name: str
+    avatar: str = ""
     description: str = ""
     system_prompt: str
     tool_whitelist: list[str] = []
@@ -66,6 +67,7 @@ class AssistantUpdateBody(BaseModel):
     """更新助手请求体（全字段可选，仅校验提供的字段）。"""
 
     name: str | None = None
+    avatar: str | None = None
     description: str | None = None
     system_prompt: str | None = None
     tool_whitelist: list[str] | None = None
@@ -110,6 +112,7 @@ async def create_assistant(body: AssistantCreateBody, user=Depends(require_admin
         await _validate_provider(body.model_provider_id, repos)
     return await repos.assistant.create({
         "name": body.name,
+        "avatar": body.avatar,
         "description": body.description,
         "system_prompt": body.system_prompt,
         "tool_whitelist": body.tool_whitelist,
@@ -134,6 +137,8 @@ async def update_assistant(assistant_id: str, body: AssistantUpdateBody,
         fields["name"] = body.name.strip()
         if not fields["name"]:
             raise HTTPException(422, "name 不能为空")
+    if body.avatar is not None:
+        fields["avatar"] = body.avatar
     if body.description is not None:
         fields["description"] = body.description
     if body.system_prompt is not None:

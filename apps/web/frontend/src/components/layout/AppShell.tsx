@@ -12,6 +12,7 @@ import { ChatPanel } from '@/components/chat'
 import { Rightbar } from '@/components/rightbar'
 import { Sidebar } from '@/components/sidebar'
 import { useAuthStore } from '@/stores/auth'
+import { useDarkTheme } from '@/utils/theme'
 
 /** 顶栏高度（px）。 */
 const TOPBAR_HEIGHT = 64
@@ -25,8 +26,6 @@ const RIGHT_MIN = 240
 const RIGHT_MAX = 480
 /** 视口小于该宽度时左栏切换为 overlay 抽屉。 */
 const COMPACT_QUERY = '(max-width: 899px)'
-/** 暗色主题 localStorage 持久化键。 */
-const DARK_STORAGE_KEY = 'sa.theme.dark'
 
 /** 右栏三态：隐藏 / 常态 / 全屏（占满中间列与右栏）。 */
 type RightPanelState = 'hidden' | 'normal' | 'fullscreen'
@@ -135,6 +134,74 @@ const iconProps = {
   strokeLinejoin: 'round',
 } as const
 
+/** 顶栏用户菜单：头像按钮 + 下拉（管理后台入口仅 admin / 退出登录）。 */
+function UserMenu() {
+  const user = useAuthStore((s) => s.user)
+  const logout = useAuthStore((s) => s.logout)
+  const [open, setOpen] = useState(false)
+  if (!user) return null
+
+  /** 下拉菜单项样式。 */
+  const itemClass =
+    'flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] ' +
+    'text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] ' +
+    'hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)]'
+
+  return (
+    <div className="relative ml-1">
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`用户菜单：${user.username}`}
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-8 w-8 items-center justify-center rounded-[var(--sa-radius-full)] border border-[var(--sa-alias-border-l2)] text-[var(--sa-alias-label-secondary)] transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+      >
+        <svg {...iconProps}>
+          <circle cx="8" cy="5.5" r="2.5" />
+          <path d="M2.8 13.5a5.2 5.2 0 0 1 10.4 0" />
+        </svg>
+      </button>
+      {open && (
+        <>
+          {/* 透明遮罩：点击任意处关闭下拉 */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
+          <div
+            role="menu"
+            className="absolute right-0 top-full z-50 mt-1.5 w-44 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
+          >
+            <div className="truncate px-2.5 pb-1.5 pt-1 text-xs text-[var(--sa-alias-label-caption)]">
+              {user.username}（{user.role === 'admin' ? '管理员' : '用户'}）
+            </div>
+            {user.role === 'admin' && (
+              <a role="menuitem" href="#/admin/models" onClick={() => setOpen(false)} className={itemClass}>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M2 4.5h12M2 8h12M2 11.5h7" />
+                </svg>
+                管理后台
+              </a>
+            )}
+            <button
+              role="menuitem"
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                logout()
+              }}
+              className={itemClass}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M6.5 3H3.75A1.25 1.25 0 0 0 2.5 4.25v7.5A1.25 1.25 0 0 0 3.75 13H6.5M10.5 5.5 13 8l-2.5 2.5M13 8H6" />
+              </svg>
+              退出登录
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 /** Logo 占位标记：黑底圆角方块 + S 弧线。 */
 function LogoMark() {
   return (
@@ -157,22 +224,13 @@ function LogoMark() {
  */
 export default function AppShell() {
   const user = useAuthStore((s) => s.user)
-  const [dark, setDark] = useState(
-    () => localStorage.getItem(DARK_STORAGE_KEY) === '1',
-  )
+  const [dark, toggleDark] = useDarkTheme()
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
   const [rightState, setRightState] = useState<RightPanelState>('normal')
   const [dragging, setDragging] = useState(false)
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-
-  // 暗色主题：切换 body[data-sa-dark-theme] 并持久化到 localStorage
-  useEffect(() => {
-    if (dark) document.body.dataset.saDarkTheme = ''
-    else delete document.body.dataset.saDarkTheme
-    localStorage.setItem(DARK_STORAGE_KEY, dark ? '1' : '0')
-  }, [dark])
 
   // 视口监听：<900px 自动切换 compact（左栏改 overlay 抽屉）
   useEffect(() => {
@@ -236,7 +294,7 @@ export default function AppShell() {
               <path d="M9.5 2.75v10.5" />
             </svg>
           </IconButton>
-          <IconButton label={dark ? '切换浅色主题' : '切换深色主题'} onClick={() => setDark((v) => !v)}>
+          <IconButton label={dark ? '切换浅色主题' : '切换深色主题'} onClick={toggleDark}>
             {dark ? (
               <svg {...iconProps}>
                 <circle cx="8" cy="8" r="3.25" />
@@ -248,7 +306,7 @@ export default function AppShell() {
               </svg>
             )}
           </IconButton>
-          {/* 用户区：用户名 + 菜单入口（菜单本体后续任务实现） */}
+          {/* 用户区：用户名 + 用户菜单（管理后台入口 / 退出登录） */}
           {user && (
             <span
               className="hidden max-w-[120px] truncate px-1 text-[13px] text-[var(--sa-alias-label-secondary)] sm:inline"
@@ -257,16 +315,7 @@ export default function AppShell() {
               {user.username} / {user.role}
             </span>
           )}
-          <button
-            type="button"
-            aria-label={user ? `用户菜单：${user.username}` : '用户菜单'}
-            className="ml-1 flex h-8 w-8 items-center justify-center rounded-[var(--sa-radius-full)] border border-[var(--sa-alias-border-l2)] text-[var(--sa-alias-label-secondary)] transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
-          >
-            <svg {...iconProps}>
-              <circle cx="8" cy="5.5" r="2.5" />
-              <path d="M2.8 13.5a5.2 5.2 0 0 1 10.4 0" />
-            </svg>
-          </button>
+          <UserMenu />
         </div>
       </header>
 
