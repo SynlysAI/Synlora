@@ -894,12 +894,33 @@ function Level({ projectId, path }: { projectId: string; path: string }) {
 ```
 
 - [ ] **Step 4: WorkspacePanel** 替换 `Rightbar` 里的 `FilesPanel`：顶部上传区（复用现有上传逻辑，改投新路由）+ `FileTree`。
-- [ ] **Step 5: 手工验证**：起后端 + `npm run build`，playwright 有头模式：新建项目 → 右栏根目录出现 `files/output/tmp` → 拖文件上传 → 树里可见。
+- [x] **Step 5: 手工验证**：起后端 + `npm run build`，playwright 有头模式：新建项目 → 右栏根目录出现 `files/output/tmp` → 拖文件上传 → 树里可见。
 
 Run: `cd apps/web/frontend && npm run build && npm run lint`
 Expected: 构建通过；lint 无新增警告
 
-- [ ] **Step 6: Commit** — `feat(frontend): 项目选择器与工作区目录树`
+- [x] **Step 6: Commit** — `feat(frontend): 项目选择器与工作区目录树`
+
+> **本任务已完成**：`220497c`（初版）+ `fd6e44d`（补回文件下载/删除入口）。真机验证（playwright 有头模式）逐项通过：
+> - 空态下方出现「📁 项目名 ▾」chip，居中布局未被破坏
+> - 旧数据迁移实测生效：`workspaces/dev/files/` → `workspaces/dev/default/files/`（用户根下的 `README.md` 不在三子目录内，未被搬，符合预期）
+> - 右栏上传区文案变为「上传到「{项目名}」的 files/ 目录」；根行 = 项目名 + 刷新按钮；懒加载展开可见真实文件与大小
+> - 新建项目「实验一」→ 磁盘出现 `workspaces/dev/实验一/{files,output,tmp}`，chip 与右栏同步切换
+> - 上传落 `实验一/files/`，树自动刷新可见；切回「默认项目」树内容正确隔离
+> - 控制台 0 error / 0 warning
+> - 文件行 hover 出现「下载 / 删除」（`aria-label` 完整，删除为两步内联确认）
+>
+> **注意**：验证前必须先**重启后端**——旧进程跑的是改造前的代码，`/api/v1/projects` 会 404。
+
+---
+
+# Phase C 完成小结
+
+7 个任务全部完成并通过审查。后端测试 87 → **151 passed**（36 skipped 为无 `TEST_MONGO_URI` 的 mongodb 参数化）。关键产物：
+- `workspace.py` 多项目布局 + 旧数据迁移（幂等、可续迁、trash 兜底）
+- `ProjectRepo` / `ProjectService`（per-user 锁串行化 check-then-act）/ `/api/v1/projects`（含目录树懒加载）
+- 会话绑定项目、agent 与文件都跑在项目目录（`resolve_active_project` 统一入口）
+- 前端：项目 chip 选择器 + 右栏工作区目录树 + 上传 + 逐文件下载/删除
 
 ---
 
