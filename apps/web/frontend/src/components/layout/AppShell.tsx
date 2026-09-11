@@ -313,6 +313,16 @@ export default function AppShell() {
   const [dragging, setDragging] = useState(false)
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const sessions = useSessionsStore((s) => s.sessions)
+  const currentId = useSessionsStore((s) => s.currentId)
+  const isEmptySession = sessions.find((s) => s._id === currentId)?.message_count === 0
+  // 进入空会话时收起右栏（Jiuwen 式欢迎页无右栏），同一会话内用户手动展开后不再干预。
+  // 在渲染期比较「已收起的会话」而非用 effect：避免先画一帧展开态再收起造成闪烁。
+  const [collapsedFor, setCollapsedFor] = useState<string | null>(null)
+  if (currentId && isEmptySession && currentId !== collapsedFor) {
+    setCollapsedFor(currentId)
+    setRightState('hidden')
+  }
 
   // 视口监听：<900px 自动切换 compact（左栏改 overlay 抽屉）
   useEffect(() => {

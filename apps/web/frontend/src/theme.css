@@ -411,3 +411,19 @@ body {
   overflow: hidden;
   min-height: 0;
 }
+
+/* 执行中标题扫光（Jiuwen 原始 CSS 写法：亮带从左向右扫过灰字） */
+.sa-shimmer-text {
+  background: linear-gradient(100deg,
+      var(--sa-alias-label-tertiary) 0%,
+      var(--sa-alias-label-tertiary) 42%,
+      var(--sa-alias-label-primary) 50%,
+      var(--sa-alias-label-tertiary) 58%,
+      var(--sa-alias-label-tertiary) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: sa-shimmer 2.8s linear infinite reverse;
+}

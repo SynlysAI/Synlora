@@ -47,6 +47,26 @@ export default function ChatPanel() {
   const assistant = assistants.find((a) => a._id === session?.assistant_id)
   const assistantName = assistant?.name ?? 'SynlysAgent'
   const assistantAvatar = assistant?.avatar?.trim() || assistant?.name.slice(0, 1) || '科'
+  const messages = useChatStore((s) => s.messages)
+  const streamingText = useChatStore((s) => s.streamingText)
+  const thinkingText = useChatStore((s) => s.thinkingText)
+  const empty = messages.length === 0 && !streamingText && !thinkingText
+
+  // 空态：标题 + 输入框整体在中栏垂直居中（Jiuwen 欢迎页）；有消息后输入框落回底部
+  if (empty) {
+    return (
+      <div className="flex h-full flex-col overflow-y-auto">
+        <div className="m-auto w-full pt-6 pb-24">
+          <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
+            <h1 className="mb-5 text-[32px] font-semibold leading-[48px] tracking-tight text-[var(--sa-alias-label-primary)]">
+              SynlysAgent 轻松解决科研每个问题！
+            </h1>
+          </div>
+          <Composer />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-full flex-col">

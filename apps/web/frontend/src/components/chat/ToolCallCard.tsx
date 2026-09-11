@@ -110,7 +110,7 @@ export default function ToolCallCard({ call, result }: ToolCallCardProps) {
         <span
           className={`min-w-0 flex-1 truncate text-[12px] font-medium leading-[1.3] ${
             running
-              ? 'text-transparent [animation:sa-shimmer_2.8s_linear_infinite_reverse] [background:linear-gradient(100deg,var(--sa-alias-label-tertiary)_0%,var(--sa-alias-label-tertiary)_42%,var(--sa-alias-label-primary)_50%,var(--sa-alias-label-tertiary)_58%,var(--sa-alias-label-tertiary)_100%)] [background-size:220%_100%] [-webkit-background-clip:text] [background-clip:text] [-webkit-text-fill-color:transparent]'
+              ? 'sa-shimmer-text'
               : failed
                 ? 'text-[var(--sa-alias-state-error-primary)]'
                 : 'text-[var(--sa-alias-label-tertiary)]'

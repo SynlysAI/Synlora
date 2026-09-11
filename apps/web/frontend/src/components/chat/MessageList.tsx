@@ -1,6 +1,6 @@
 /**
- * 消息列表：滚动容器（near-bottom 自动跟随 + 回到底部）、turn 分组渲染、
- * 空态欢迎页。
+ * 消息列表：滚动容器（near-bottom 自动跟随 + 回到底部）、turn 分组渲染。
+ * （空态欢迎页见 WelcomeScreen，由 ChatPanel 在无消息时渲染）
  *
  * Jiuwen 展示模式：
  * - turn 头部行（头像 + 助手名）在整组回答上方
@@ -21,13 +21,6 @@ import UserMessage from './UserMessage'
 
 /** near-bottom 判定阈值（px）。 */
 const NEAR_BOTTOM = 48
-
-/** 空态示例问题（点击即发送）。 */
-const EXAMPLES = [
-  { icon: '🧮', text: '用 Python 算一下 2 + 3' },
-  { icon: '📄', text: '帮我在工作区写一个 README.md' },
-  { icon: '🗂️', text: '列出我的工作区里有哪些文件' },
-]
 
 /** turn 分组视图结构：user 起始，work = 思考+工具（收进 chip），answers = 正文。 */
 interface Turn {
@@ -58,52 +51,6 @@ function groupTurns(items: ChatItem[]): Turn[] {
 function pushTo(turn: Turn, item: ChatItem) {
   if (item.kind === 'assistant') turn.answers.push(item)
   else if (item.kind !== 'user') turn.work.push(item)
-}
-
-interface EmptyStateProps {
-  /** 当前助手名。 */
-  assistantName: string
-  /** 助手头像字符。 */
-  assistantAvatar: string
-  /** 点击示例即发送。 */
-  onSend: (text: string) => void
-}
-
-/** 空态欢迎页：头像 + 大标题 + 示例问题卡。 */
-function EmptyState({ assistantName, assistantAvatar, onSend }: EmptyStateProps) {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-6 py-10">
-      <div
-        aria-hidden="true"
-        className="flex h-14 w-14 items-center justify-center rounded-[var(--sa-radius-lg)] bg-[var(--sa-specific-bubble)] text-[26px] leading-none"
-      >
-        {assistantAvatar}
-      </div>
-      <div className="text-center">
-        <div className="text-[22px] font-semibold tracking-tight text-[var(--sa-alias-label-primary)]">
-          {assistantName}
-        </div>
-        <div className="pt-1.5 text-[14px] text-[var(--sa-alias-label-caption)]">
-          有什么可以帮你的？
-        </div>
-      </div>
-      <div className="flex w-full max-w-sm flex-col gap-2">
-        {EXAMPLES.map((ex) => (
-          <button
-            key={ex.text}
-            type="button"
-            onClick={() => onSend(ex.text)}
-            className="flex items-center gap-2.5 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-4 py-3 text-left text-[13.5px] text-[var(--sa-alias-label-secondary)] shadow-sm transition-all duration-[var(--sa-duration-base)] hover:-translate-y-px hover:border-[var(--sa-alias-border-l3)] hover:text-[var(--sa-alias-label-primary)] hover:shadow-md"
-          >
-            <span aria-hidden="true" className="text-[15px]">
-              {ex.icon}
-            </span>
-            {ex.text}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
 }
 
 /** turn 头部行：头像 + 名称（+ 进行中 spinner）。 */
@@ -269,7 +216,6 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
   const streamingText = useChatStore((s) => s.streamingText)
   const thinkingText = useChatStore((s) => s.thinkingText)
   const streaming = useChatStore((s) => s.streaming)
-  const send = useChatStore((s) => s.send)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
 
@@ -293,58 +239,37 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
     setAtBottom(true)
   }
 
-  const empty = messages.length === 0 && !streamingText && !thinkingText
   const turns = useMemo(() => groupTurns(messages), [messages])
-  const lastIsUser = messages.length > 0 && messages[messages.length - 1].kind === 'user'
 
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto px-4 sm:px-6">
-        <div
-          className={`mx-auto flex min-h-full max-w-3xl flex-col pt-6 pb-10 ${
-            empty ? 'justify-center' : 'justify-start'
-          }`}
-        >
-          {empty ? (
-            <EmptyState
-              assistantName={assistantName}
+        <div className="mx-auto flex min-h-full max-w-3xl flex-col pt-6 pb-10">
+          {turns.map((turn, i) => (
+            <TurnBlock
+              key={i}
+              turn={turn}
+              active={streaming && i === turns.length - 1}
               assistantAvatar={assistantAvatar}
-              onSend={(t) => void send(t)}
+              assistantName={assistantName}
             />
-          ) : (
-            <>
-              {turns.map((turn, i) => (
-                <TurnBlock
-                  key={i}
-                  turn={turn}
-                  active={streaming && i === turns.length - 1}
-                  assistantAvatar={assistantAvatar}
-                  assistantName={assistantName}
-                />
-              ))}
-              {/* 流式区（属于进行中的最后一组）：思考面板 → 正文 */}
-              {streaming && (thinkingText || streamingText || lastIsUser) && (
-                <section className="mt-6">
-                  <div className="flex flex-col gap-1.5">
-                    {lastIsUser && (
-                      <TurnHeader avatar={assistantAvatar} name={assistantName} active />
-                    )}
-                    {thinkingText && (
-                      <div className="pl-1">
-                        <ReasoningPanel text={thinkingText} running />
-                      </div>
-                    )}
-                    {streamingText && <AssistantMessage content={streamingText} streaming />}
-                  </div>
-                </section>
+          ))}
+          {/* 流式区（头部已由最后一个 TurnBlock 渲染，此处只接内容） */}
+          {streaming && (thinkingText || streamingText) && (
+            <section className="mt-1.5">
+              {thinkingText && (
+                <div className="pl-1">
+                  <ReasoningPanel text={thinkingText} running />
+                </div>
               )}
-            </>
+              {streamingText && <AssistantMessage content={streamingText} streaming />}
+            </section>
           )}
         </div>
       </div>
 
       {/* 用户上滚后出现；点击回到底部并恢复跟随 */}
-      {!atBottom && !empty && (
+      {!atBottom && (
         <button
           type="button"
           aria-label="回到底部"
