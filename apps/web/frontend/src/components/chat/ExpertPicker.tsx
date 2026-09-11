@@ -13,9 +13,9 @@
  *   不提示「先建会话」——欢迎页正是最需要挑专家的场景，且两条路径都不需要
  *   会话存在，禁止选择只会造成死路。
  *
- * 专家是**可选**的：列表末尾的「不使用专家」（分隔线之上）清空专家——
- * 有会话时 PATCH `assistant_id: ""` 卸载，无会话时把新对话默认专家置 null。
- * 不选专家不注入 persona，只走平台默认提示词，工具放开全部内置工具。
+ * 专家是**可选**的：**再次点击已勾选的那一项即取消选择**（不另设「不使用专家」
+ * 条目）——有会话时 PATCH `assistant_id: ""` 卸载，无会话时把新对话默认专家
+ * 置 null。不选专家不注入 persona，只走平台默认提示词，工具放开全部内置工具。
  */
 import { useEffect, useMemo, useState } from 'react'
 import type { Assistant } from '@/types'
@@ -75,45 +75,30 @@ export default function ExpertPicker({ direction, onPicked }: ExpertPickerProps)
     )
   }, [assistants, query])
 
-  /** 选中助手：有会话走 PATCH + 列表刷新，无会话写新对话默认。 */
+  /** 选中/取消助手：点已勾选的即取消（等价于原先的「不使用专家」）。
+   *  有会话走 PATCH + 列表刷新（取消时传空串，后端卸载专家），无会话写新对话默认。 */
   const pick = async (assistant: Assistant) => {
+    const nextId = assistant._id === selectedId ? null : assistant._id
     if (!currentId) {
-      useAssistantsStore.getState().select(assistant._id)
-      toast('info', `已选择专家「${assistant.name}」，将用于下一个新对话`)
+      useAssistantsStore.getState().select(nextId)
+      toast('info', nextId
+        ? `已选择专家「${assistant.name}」，将用于下一个新对话`
+        : '已不使用专家，将用于下一个新对话')
       onPicked()
       return
     }
     try {
       await api(`/api/v1/sessions/${currentId}`, {
         method: 'PATCH',
-        body: { assistant_id: assistant._id },
+        body: { assistant_id: nextId ?? '' },
       })
       await useSessionsStore.getState().load()
-      toast('success', `已切换到专家「${assistant.name}」`)
+      toast('success', nextId
+        ? `已切换到专家「${assistant.name}」`
+        : '已不使用专家，后续回复走平台默认提示词')
       onPicked()
     } catch (err) {
-      toast('error', `切换专家失败：${(err as Error).message}`)
-    }
-  }
-
-  /** 不使用专家：有会话 PATCH 空串卸载，无会话把新对话默认专家置空。 */
-  const pickNone = async () => {
-    if (!currentId) {
-      useAssistantsStore.getState().select(null)
-      toast('info', '已不使用专家，将用于下一个新对话')
-      onPicked()
-      return
-    }
-    try {
-      await api(`/api/v1/sessions/${currentId}`, {
-        method: 'PATCH',
-        body: { assistant_id: '' },
-      })
-      await useSessionsStore.getState().load()
-      toast('success', '已不使用专家，后续回复走平台默认提示词')
-      onPicked()
-    } catch (err) {
-      toast('error', `取消专家失败：${(err as Error).message}`)
+      toast('error', `${nextId ? '切换专家' : '取消专家'}失败：${(err as Error).message}`)
     }
   }
 
@@ -154,7 +139,11 @@ export default function ExpertPicker({ direction, onPicked }: ExpertPickerProps)
             role="menuitemradio"
             aria-checked={a._id === selectedId}
             type="button"
-            title={a.description}
+            title={
+              a._id === selectedId
+                ? `${a.description}（再次点击取消选择，改用平台默认提示词）`
+                : a.description
+            }
             onClick={() => void pick(a)}
             className={`flex w-full items-start gap-2 rounded-[var(--sa-radius-sm)] px-2 py-1.5 text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] ${
               a._id === selectedId ? 'bg-[var(--sa-alias-interactive-bg-hover)]' : ''
@@ -193,52 +182,6 @@ export default function ExpertPicker({ direction, onPicked }: ExpertPickerProps)
           </button>
         ))
       )}
-
-      {/* 不使用专家：列表末尾 + 分隔线，清空后只走平台默认提示词 */}
-      <div className="my-1 h-px bg-[var(--sa-alias-border-l1)]" aria-hidden="true" />
-      <button
-        role="menuitemradio"
-        aria-checked={!selectedId}
-        type="button"
-        title="不注入专家提示词，只走平台默认提示词"
-        onClick={() => void pickNone()}
-        className={`flex w-full items-start gap-2 rounded-[var(--sa-radius-sm)] px-2 py-1.5 text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] ${
-          !selectedId ? 'bg-[var(--sa-alias-interactive-bg-hover)]' : ''
-        }`}
-      >
-        <span
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--sa-radius-sm)] bg-[var(--sa-specific-sidebar-nav-item-active-accent)] text-[var(--sa-alias-label-secondary)]"
-          aria-hidden="true"
-        >
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 8h8" />
-          </svg>
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] text-[var(--sa-alias-label-primary)]">
-            不使用专家
-          </span>
-          <span className="block truncate text-xs text-[var(--sa-alias-label-caption)]">
-            只走平台默认提示词，工具放开全部
-          </span>
-        </span>
-        {!selectedId && (
-          <svg
-            width="13"
-            height="13"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="mt-1 shrink-0 text-[var(--sa-alias-state-business-primary)]"
-            aria-hidden="true"
-          >
-            <path d="M3 8.5 6.5 12 13 4.5" />
-          </svg>
-        )}
-      </button>
     </PickerPanel>
   )
 }
