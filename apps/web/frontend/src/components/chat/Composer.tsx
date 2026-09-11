@@ -1,8 +1,8 @@
 /**
- * 底部输入区：圆角大输入框（自适应高度，max 6 行）、Enter 发送 /
- * Shift+Enter 换行（IME 组合中的 Enter 不发送）、streaming 时输入禁用且
- * 发送按钮变停止按钮、错误提示条（含 429 话术）、输入框左下角会话级
- * 模型选择器（ModelPicker）。
+ * 底部输入区（DSH 形态）：大圆角容器内多行自适应输入 + 底部功能行
+ * （左：模型选择器；右：发送/停止圆形按钮）。Enter 发送 / Shift+Enter 换行
+ * （IME 组合中的 Enter 不发送）；streaming 时输入禁用且发送变停止按钮；
+ * 错误提示条（含 429 话术）。
  */
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useChatStore } from '@/stores/chat'
@@ -69,7 +69,8 @@ export default function Composer() {
           </div>
         )}
 
-        <div className="flex items-end gap-2 rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] px-3.5 py-2.5 transition-colors duration-[var(--sa-duration-base)] focus-within:border-[var(--sa-alias-border-l4)]">
+        {/* DSH 形态：容器内 = 输入区 + 底部功能行（模型选择器 | 发送按钮） */}
+        <div className="rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] px-3.5 pt-2.5 pb-2 transition-colors duration-[var(--sa-duration-base)] focus-within:border-[var(--sa-alias-border-l4)] focus-within:shadow-sm">
           <textarea
             ref={ref}
             rows={1}
@@ -77,53 +78,51 @@ export default function Composer() {
             disabled={streaming}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={streaming ? '回复生成中…' : '输入消息，Enter 发送，Shift+Enter 换行'}
+            placeholder={streaming ? '回复生成中…' : '给 SynlysAgent 发送消息'}
             aria-label="消息输入框"
-            className="max-h-[148px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14px] leading-[22px] text-[var(--sa-alias-label-primary)] placeholder:text-[var(--sa-alias-label-caption)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            className="max-h-[148px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[15px] leading-[22px] text-[var(--sa-alias-label-primary)] placeholder:text-[var(--sa-alias-label-caption)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
           />
-
-          {/* 发送 / 停止按钮 */}
-          {streaming ? (
-            <button
-              type="button"
-              aria-label="停止生成"
-              title="停止生成"
-              onClick={() => void stop()}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-button-primary-fill)] text-[var(--sa-alias-label-primary-foreground)] transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-button-primary-hover)]"
-            >
-              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="currentColor" />
-              </svg>
-            </button>
-          ) : (
-            <button
-              type="button"
-              aria-label="发送"
-              title="发送（Enter）"
-              onClick={submit}
-              disabled={!value.trim()}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-button-primary-fill)] text-[var(--sa-alias-label-primary-foreground)] transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-button-primary-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <svg
-                width="15"
-                height="15"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
+          <div className="flex items-center justify-between gap-2 pt-1.5">
+            <ModelPicker />
+            <div className="flex-1" />
+            {/* 发送 / 停止按钮（DSH：accent 蓝圆形） */}
+            {streaming ? (
+              <button
+                type="button"
+                aria-label="停止生成"
+                title="停止生成"
+                onClick={() => void stop()}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-static-blue-500)] text-white transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-static-blue-600)]"
               >
-                <path d="M8 13V3M3.8 7.2 8 3l4.2 4.2" />
-              </svg>
-            </button>
-          )}
-        </div>
-
-        {/* 输入框左下角：会话级模型选择器（无会话/未配置模型时自行隐藏） */}
-        <div className="mt-1.5 flex items-center">
-          <ModelPicker />
+                <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                  <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="currentColor" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                type="button"
+                aria-label="发送"
+                title="发送（Enter）"
+                onClick={submit}
+                disabled={!value.trim()}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-static-blue-500)] text-white transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-static-blue-600)] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M8 13V3M3.8 7.2 8 3l4.2 4.2" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

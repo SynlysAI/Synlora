@@ -8,30 +8,8 @@ import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
 import { formatRelativeTime } from '@/utils/format'
 
-/** 按更新时间分组标签（今天/昨天/更早）。 */
-function groupLabel(updatedAt: number): string {
-  const d = new Date(updatedAt)
-  const today = new Date()
-  const yesterday = new Date(today)
-  yesterday.setDate(today.getDate() - 1)
-  const sameDay = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
-  if (sameDay(d, today)) return '今天'
-  if (sameDay(d, yesterday)) return '昨天'
-  return '更早'
-}
-
-/** 分组插入标题行（相邻同组只插一次）。 */
-function withGroupHeaders(list: Session[]): { label: string; session: Session }[] {
-  const out: { label: string; session: Session }[] = []
-  let prev = ''
-  for (const s of list) {
-    const label = groupLabel(s.updated_at)
-    out.push({ label: label === prev ? '' : label, session: s })
-    prev = label
-  }
-  return out
-}
+/** 默认显示的最近会话数（超出折叠为"展开其余 N 个会话"，DSH 式）。 */
+const COLLAPSE_AFTER = 8
 
 interface SessionItemProps {
   /** 会话文档。 */
@@ -127,7 +105,7 @@ function SessionItem({ session, active, onSelect }: SessionItemProps) {
           type="button"
           onClick={onSelect}
           title={session.title}
-          className={`relative w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
+          className={`relative flex w-full items-center rounded-[var(--sa-radius-sm)] px-2.5 py-[7px] text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
             active
               ? 'bg-[var(--sa-specific-sidebar-nav-item-active)]'
               : session.archived
@@ -142,17 +120,11 @@ function SessionItem({ session, active, onSelect }: SessionItemProps) {
               className="absolute left-0 top-1/2 h-[14px] w-[2.5px] -translate-y-1/2 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
             />
           )}
-          <span className="block truncate pr-5 text-[13px] text-[var(--sa-alias-label-primary)]">
+          <span className="min-w-0 flex-1 truncate pr-2 text-[13px] text-[var(--sa-alias-label-primary)]">
             {session.title || '新对话'}
           </span>
-          <span className="flex items-center gap-1.5 pt-0.5 text-xs text-[var(--sa-alias-label-caption)]">
-            <span>{formatRelativeTime(session.updated_at)}</span>
-            {session.message_count > 0 && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span>{session.message_count} 条</span>
-              </>
-            )}
+          <span className="shrink-0 text-[11px] text-[var(--sa-alias-label-caption)]">
+            {formatRelativeTime(session.updated_at)}
           </span>
         </button>
       )}
@@ -226,12 +198,13 @@ interface SessionListProps {
   onNavigate?: () => void
 }
 
-/** 会话列表组件（左栏主体滚动区）。 */
+/** 会话列表组件（左栏主体滚动区，DSH 式：平铺 + 折叠超出）。 */
 export default function SessionList({ query, onNavigate }: SessionListProps) {
   const sessions = useSessionsStore((s) => s.sessions)
   const currentId = useSessionsStore((s) => s.currentId)
   const setCurrent = useSessionsStore((s) => s.setCurrent)
   const [archivedOpen, setArchivedOpen] = useState(false)
+  const [restOpen, setRestOpen] = useState(false)
 
   // 标题过滤 + updated_at 倒序（后端有序，patch 后本地重排兜底）
   const { active, archived } = useMemo(() => {
@@ -246,8 +219,13 @@ export default function SessionList({ query, onNavigate }: SessionListProps) {
     }
   }, [sessions, query])
 
+  // DSH 式折叠：非搜索态默认只显示最近 COLLAPSE_AFTER 条
+  const searching = query.trim().length > 0
+  const visible = searching || restOpen ? active : active.slice(0, COLLAPSE_AFTER)
+  const restCount = active.length - visible.length
+
   // 搜索态自动展开归档组，便于全库检索
-  const showArchived = archivedOpen || query.trim().length > 0
+  const showArchived = archivedOpen || searching
 
   if (sessions.length === 0) {
     return (
@@ -264,23 +242,28 @@ export default function SessionList({ query, onNavigate }: SessionListProps) {
           无匹配会话
         </div>
       )}
-      {withGroupHeaders(active).map(({ label, session: s }) => (
-        <div key={s._id}>
-          {label && (
-            <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wider text-[var(--sa-alias-label-caption)]">
-              {label}
-            </div>
-          )}
-          <SessionItem
-            session={s}
-            active={s._id === currentId}
-            onSelect={() => {
-              setCurrent(s._id)
-              onNavigate?.()
-            }}
-          />
-        </div>
+      {visible.map((s) => (
+        <SessionItem
+          key={s._id}
+          session={s}
+          active={s._id === currentId}
+          onSelect={() => {
+            setCurrent(s._id)
+            onNavigate?.()
+          }}
+        />
       ))}
+
+      {/* 展开其余会话（DSH 式文字链接） */}
+      {restCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setRestOpen(true)}
+          className="px-2.5 py-1.5 text-left text-[12px] text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
+        >
+          展开其余 {restCount} 个会话
+        </button>
+      )}
 
       {/* 归档折叠组 */}
       {archived.length > 0 && (

@@ -131,13 +131,16 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
 
   return (
     <div className="flex h-full flex-col gap-2 p-2.5">
-      {/* 新对话主按钮 */}
+      {/* 新对话主按钮（DSH 式：描边低调按钮） */}
       <button
         type="button"
         onClick={() => void handleNew()}
-        className="shrink-0 rounded-[var(--sa-radius-md)] bg-[var(--sa-alias-button-primary-fill)] px-3 py-2 text-[13px] font-medium text-[var(--sa-alias-label-primary-foreground)] transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-button-primary-hover)]"
+        className="flex shrink-0 items-center justify-center gap-1.5 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-[7px] text-[13px] font-medium text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-base)] hover:border-[var(--sa-alias-border-l3)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
       >
-        + 新对话
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+          <path d="M8 3v10M3 8h10" />
+        </svg>
+        新会话
       </button>
 
       {/* 助手选择区 */}

@@ -1,14 +1,13 @@
 /**
- * 助手消息：文档流排版（头像 + 全宽内容，无气泡底）——现代 AI 对话产品的
- * 正文呈现方式：长 markdown 内容按文档阅读，气泡只留给用户侧。
+ * 助手消息：文档流排版（无气泡，头像在 turn 头部行——见 MessageList），
+ * 尾部 hover 操作行：复制原文 / 任务用时 / token 用量（Jiuwen 展示模式）。
  *
- * 代码块处理：覆盖 pre 为「横幅 + 代码区」容器，并从子 <code> 提取纯文本
- * 自行渲染（AST 的块级 code 因此不再经过行内 code 覆盖，避免双重样式）。
+ * 代码块处理：覆盖 pre 为「横幅（语言 + 复制）+ 代码区」容器，并从子 <code>
+ * 提取纯文本自行渲染（AST 的块级 code 因此不再经过行内 code 覆盖）。
  */
 import { isValidElement, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import Avatar from './Avatar'
 
 /** 递归提取 React 子树的纯文本（代码块内容还原）。 */
 function nodeText(node: ReactNode): string {
@@ -127,31 +126,83 @@ const mdComponents: Components = {
   ),
 }
 
+/** 秒数格式化（Jiuwen 风格：3.2s / 1m05s）。 */
+function formatElapsed(ms: number): string {
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  const rest = Math.round(s % 60)
+  return `${m}m${String(rest).padStart(2, '0')}s`
+}
+
+/** token 数千分位。 */
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
+
 interface AssistantMessageProps {
   /** 消息 markdown 文本。 */
   content: string
   /** 流式进行中：尾部渲染渐变脉冲光标。 */
   streaming?: boolean
-  /** 助手头像字符（emoji 或首字）。 */
-  avatar?: string
+  /** 本轮任务用时（turn/end 计算）。 */
+  elapsedMs?: number
+  /** 本轮 token 用量（turn/end payload）。 */
+  usage?: { prompt_tokens: number; completion_tokens: number }
 }
 
-/** 助手消息组件（头像 + 文档流排版 + markdown 渲染）。 */
-export default function AssistantMessage({ content, streaming, avatar }: AssistantMessageProps) {
+/** 助手消息组件（文档流排版 + 尾部操作行）。 */
+export default function AssistantMessage({ content, streaming, elapsedMs, usage }: AssistantMessageProps) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1600)
+    } catch {
+      /* 剪贴板不可用时静默 */
+    }
+  }
+
   return (
-    <div className="flex items-start gap-2.5">
-      <Avatar char={avatar?.trim() || '科'} />
-      <div className="min-w-0 flex-1 pt-0.5 text-[15px] text-[var(--sa-alias-label-primary)]">
+    <div className="group/assistant min-w-0">
+      <div className="text-[15px] text-[var(--sa-alias-label-primary)]">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
           {content}
         </ReactMarkdown>
         {streaming && (
           <span
             aria-hidden="true"
-            className="ml-0.5 inline-block h-[16px] w-[7px] translate-y-[2px] rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-brand-primary)] opacity-80 [animation:sa-blink_1s_ease-in-out_infinite]"
+            className="ml-0.5 inline-block h-[16px] w-[7px] translate-y-[2px] rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-label-primary)] opacity-80 [animation:sa-blink_1s_ease-in-out_infinite]"
           />
         )}
       </div>
+      {/* 尾部操作行：复制 hover 显现；用时与 token 常驻（弱化灰） */}
+      {!streaming && (
+        <div className="flex items-center gap-3 pt-0.5 text-[11.5px] text-[var(--sa-alias-label-caption)]">
+          <button
+            type="button"
+            onClick={() => void copy()}
+            aria-label="复制回复"
+            className="flex items-center gap-1 rounded-[var(--sa-radius-sm)] px-1 py-0.5 opacity-0 transition-all duration-[var(--sa-duration-base)] group-hover/assistant:opacity-100 hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-secondary)]"
+          >
+            {copied ? (
+              '已复制'
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+              </svg>
+            )}
+          </button>
+          {elapsedMs != null && <span>任务用时 {formatElapsed(elapsedMs)}</span>}
+          {usage && (
+            <span>
+              {formatTokens(usage.prompt_tokens)} in / {formatTokens(usage.completion_tokens)} out
+            </span>
+          )}
+        </div>
+      )}
     </div>
   )
 }

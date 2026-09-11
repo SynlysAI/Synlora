@@ -1,14 +1,16 @@
 /**
- * 消息列表：滚动容器（near-bottom 自动跟随、上滚停止跟随 + 回到底部按钮）、
- * 条目渲染（用户/助手/工具卡片/流式）、对话组间距节奏、空态欢迎页。
+ * 消息列表：滚动容器（near-bottom 自动跟随 + 回到底部）、条目渲染、
+ * turn 头部行（头像 + 助手名，Jiuwen 模式：头像在回答上方）、空态欢迎页。
  *
- * 排版节奏：上一条是用户消息时（即新一组对话开始）加大上间距，
- * 组内的工具卡片与助手回复保持紧凑。
+ * 排版节奏：新一组对话（上一条是用户消息）加大上间距，并渲染 turn 头部；
+ * 组内思考面板/工具卡片/正文保持紧凑缩进对齐。
  */
 import { useEffect, useRef, useState } from 'react'
 import type { ChatItem } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import AssistantMessage from './AssistantMessage'
+import Avatar from './Avatar'
+import ReasoningPanel from './ReasoningPanel'
 import ToolCallCard from './ToolCallCard'
 import UserMessage from './UserMessage'
 
@@ -68,29 +70,94 @@ function EmptyState({ assistantName, assistantAvatar, onSend }: EmptyStateProps)
   )
 }
 
-interface ChatEntryProps {
-  item: ChatItem
-  /** 是否为新一组对话的开始（上一条是用户消息时加大上间距）。 */
-  newGroup: boolean
+interface TurnHeaderProps {
   /** 助手头像字符。 */
-  assistantAvatar: string
+  avatar: string
+  /** 助手名。 */
+  name: string
+  /** 本轮仍在进行（spinner）。 */
+  active: boolean
 }
 
-/** 单条聊天条目渲染分发。 */
-function ChatEntry({ item, newGroup, assistantAvatar }: ChatEntryProps) {
-  const groupSpacing = newGroup ? 'mt-7' : ''
-  if (item.kind === 'user') return <div className={groupSpacing}><UserMessage text={item.text} /></div>
-  if (item.kind === 'assistant')
-    return <div className={groupSpacing}><AssistantMessage content={item.content} avatar={assistantAvatar} /></div>
+/** turn 头部行：头像 + 名称（+ 进行中 spinner）。 */
+function TurnHeader({ avatar, name, active }: TurnHeaderProps) {
   return (
-    <div className={groupSpacing}>
-      <ToolCallCard call={item.call} result={item.result} />
+    <div className="flex items-center gap-2">
+      <Avatar char={avatar} />
+      <span className="text-[13px] font-semibold text-[var(--sa-alias-label-primary)]">{name}</span>
+      {active && (
+        <svg
+          className="h-3 w-3 animate-spin text-[var(--sa-alias-label-tertiary)]"
+          viewBox="0 0 16 16"
+          fill="none"
+          aria-label="生成中"
+        >
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+          <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      )}
     </div>
   )
 }
 
+interface ChatEntryProps {
+  item: ChatItem
+  /** 是否为新一组对话的开始（渲染 turn 头部 + 大上间距）。 */
+  newGroup: boolean
+  /** 助手头像字符。 */
+  assistantAvatar: string
+  /** 助手名。 */
+  assistantName: string
+  /** 该 turn 是否仍在流式进行（仅最后一个 turn 有效）。 */
+  turnActive: boolean
+}
+
+/** 单条聊天条目渲染分发。 */
+function ChatEntry({ item, newGroup, assistantAvatar, assistantName, turnActive }: ChatEntryProps) {
+  const header = newGroup ? (
+    <TurnHeader avatar={assistantAvatar} name={assistantName} active={turnActive} />
+  ) : null
+  const wrapper = newGroup ? 'mt-7' : 'ml-[42px]'
+
+  if (item.kind === 'user') {
+    return (
+      <div className="mt-7">
+        <UserMessage text={item.text} />
+      </div>
+    )
+  }
+  if (item.kind === 'reasoning') {
+    return (
+      <section className={newGroup ? 'mt-7' : wrapper}>
+        {header}
+        <ReasoningPanel text={item.text} running={false} />
+      </section>
+    )
+  }
+  if (item.kind === 'assistant') {
+    return (
+      <section className={newGroup ? 'mt-7' : ''}>
+        {header}
+        <div className={newGroup ? '' : wrapper}>
+          <AssistantMessage
+            content={item.content}
+            elapsedMs={item.elapsedMs}
+            usage={item.usage}
+          />
+        </div>
+      </section>
+    )
+  }
+  return (
+    <section className={newGroup ? 'mt-7' : wrapper}>
+      {header}
+      <ToolCallCard call={item.call} result={item.result} />
+    </section>
+  )
+}
+
 interface MessageListProps {
-  /** 当前助手名（空态展示）。 */
+  /** 当前助手名（空态/turn 头部展示）。 */
   assistantName: string
   /** 当前助手头像字符。 */
   assistantAvatar: string
@@ -100,6 +167,8 @@ interface MessageListProps {
 export default function MessageList({ assistantName, assistantAvatar }: MessageListProps) {
   const messages = useChatStore((s) => s.messages)
   const streamingText = useChatStore((s) => s.streamingText)
+  const thinkingText = useChatStore((s) => s.thinkingText)
+  const streaming = useChatStore((s) => s.streaming)
   const send = useChatStore((s) => s.send)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
@@ -109,7 +178,7 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
     if (!atBottom) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [messages, streamingText, atBottom])
+  }, [messages, streamingText, thinkingText, atBottom])
 
   /** 滚动监听：更新 near-bottom 状态。 */
   const handleScroll = () => {
@@ -124,7 +193,9 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
     setAtBottom(true)
   }
 
-  const empty = messages.length === 0 && !streamingText
+  const empty = messages.length === 0 && !streamingText && !thinkingText
+  /** 流式块是否开启 turn 头部（messages 已有内容时流式块不带头部，头部由 turn 首个块渲染）。 */
+  const lastIsUser = messages.length > 0 && messages[messages.length - 1].kind === 'user'
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -148,10 +219,31 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
                   item={item}
                   newGroup={i > 0 && messages[i - 1].kind === 'user'}
                   assistantAvatar={assistantAvatar}
+                  assistantName={assistantName}
+                  turnActive={streaming && i === messages.length - 1}
                 />
               ))}
+              {/* 流式思考（turn 头部跟随 lastIsUser 判定） */}
+              {thinkingText && (
+                <section className={lastIsUser ? 'mt-1' : 'ml-[42px]'}>
+                  {lastIsUser && (
+                    <TurnHeader avatar={assistantAvatar} name={assistantName} active />
+                  )}
+                  <ReasoningPanel text={thinkingText} running />
+                </section>
+              )}
+              {/* 流式正文 */}
               {streamingText && (
-                <AssistantMessage content={streamingText} streaming avatar={assistantAvatar} />
+                <section className={lastIsUser && !thinkingText ? 'mt-1' : 'ml-[42px]'}>
+                  {lastIsUser && !thinkingText && (
+                    <TurnHeader avatar={assistantAvatar} name={assistantName} active />
+                  )}
+                  <AssistantMessage content={streamingText} streaming />
+                </section>
+              )}
+              {/* 无思考无正文时的等待头部（模型连接中） */}
+              {streaming && !streamingText && !thinkingText && messages.length > 0 && lastIsUser && (
+                <TurnHeader avatar={assistantAvatar} name={assistantName} active />
               )}
             </>
           )}

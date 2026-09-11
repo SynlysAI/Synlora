@@ -100,6 +100,8 @@ export type EventType =
   | 'turn/start'
   | 'user/message'
   | 'llm/delta'
+  | 'reasoning/delta'
+  | 'assistant/reasoning'
   | 'assistant/message'
   | 'tool/call'
   | 'tool/result'

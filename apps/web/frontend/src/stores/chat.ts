@@ -21,13 +21,25 @@ import { useSessionsStore } from './sessions'
 /** 聊天条目视图模型（由会话事件投影）。 */
 export type ChatItem =
   | { kind: 'user'; text: string }
-  | { kind: 'assistant'; content: string }
+  | { kind: 'reasoning'; text: string }
+  | {
+      kind: 'assistant'
+      content: string
+      /** 本轮任务用时（秒，turn/end 事件计算）。 */
+      elapsedMs?: number
+      /** 本轮 token 用量（turn/end payload 携带）。 */
+      usage?: { prompt_tokens: number; completion_tokens: number }
+    }
   | { kind: 'tool'; call: ToolCallPayload; result?: ToolResultPayload }
 
-/** reducer 工作状态：条目列表 + 当前流式气泡的累积文本。 */
+/** reducer 工作状态：条目列表 + 流式正文/思考累积 + 本轮起始时间。 */
 export interface ChatProjection {
   items: ChatItem[]
   streamingText: string
+  /** 流式思考累积（reasoning/delta）。 */
+  thinkingText: string
+  /** 本轮 turn/start 的 ts（turn/end 计算用时）。 */
+  turnStartTs: number | null
 }
 
 /** 单个工具的调用统计（右栏运行信息展示）。 */
@@ -134,13 +146,26 @@ function writeLastSeq(sessionId: string, seq: number): void {
 export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjection {
   const payload = ev.payload ?? {}
   switch (ev.type) {
+    case 'turn/start':
+      return { ...state, turnStartTs: ev.ts }
     case 'user/message': {
       // 用户消息（含 steering 插话）逐条展示
       const item: ChatItem = { kind: 'user', text: String(payload.text ?? '') }
-      return { items: [...state.items, item], streamingText: state.streamingText }
+      return { ...state, items: [...state.items, item] }
     }
     case 'llm/delta':
       return { ...state, streamingText: state.streamingText + String(payload.text ?? '') }
+    case 'reasoning/delta':
+      return { ...state, thinkingText: state.thinkingText + String(payload.text ?? '') }
+    case 'assistant/reasoning': {
+      // 思考定稿：以事件 content 为准（回放与 SSE 流一致），清空流式累积
+      const text =
+        typeof payload.content === 'string' && payload.content
+          ? payload.content
+          : state.thinkingText
+      if (!text) return { ...state, thinkingText: '' }
+      return { ...state, items: [...state.items, { kind: 'reasoning', text }], thinkingText: '' }
+    }
     case 'assistant/message': {
       // 定稿：以事件 content 为准（与 delta 累积一致），清空累积避免重复
       const content =
@@ -148,17 +173,22 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
           ? payload.content
           : state.streamingText
       if (!content) return { ...state, streamingText: '' }
-      return { items: [...state.items, { kind: 'assistant', content }], streamingText: '' }
+      return { ...state, items: [...state.items, { kind: 'assistant', content }], streamingText: '' }
     }
     case 'tool/call': {
-      // 工具调用前若有解说文本（仅 delta 中出现），先定稿为助手消息
+      // 工具调用前若有思考/解说文本（仅 delta 中出现），先定稿
       let items = state.items
+      if (state.thinkingText) {
+        items = [...items, { kind: 'reasoning', text: state.thinkingText }]
+      }
       if (state.streamingText) {
         items = [...items, { kind: 'assistant', content: state.streamingText }]
       }
       return {
+        ...state,
         items: [...items, { kind: 'tool', call: payload as unknown as ToolCallPayload }],
         streamingText: '',
+        thinkingText: '',
       }
     }
     case 'tool/result': {
@@ -177,15 +207,42 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
     }
     case 'turn/end':
     case 'turn/aborted': {
-      // 收尾：残留流式文本（中止/断连）定稿保留
-      if (!state.streamingText) return state
-      return {
-        items: [...state.items, { kind: 'assistant', content: state.streamingText }],
-        streamingText: '',
+      // 收尾：残留流式文本（中止/断连）定稿保留；用时/用量写回本轮定稿 assistant
+      let items = state.items
+      if (state.thinkingText) {
+        items = [...items, { kind: 'reasoning', text: state.thinkingText }]
       }
+      if (state.streamingText) {
+        items = [...items, { kind: 'assistant', content: state.streamingText }]
+      }
+      const elapsedMs =
+        state.turnStartTs != null ? Math.max(0, (ev.ts - state.turnStartTs) * 1000) : undefined
+      const usageRaw = payload.usage as
+        | { prompt_tokens?: number; completion_tokens?: number }
+        | undefined
+      const usage =
+        usageRaw && (usageRaw.prompt_tokens || usageRaw.completion_tokens)
+          ? {
+              prompt_tokens: Number(usageRaw.prompt_tokens ?? 0),
+              completion_tokens: Number(usageRaw.completion_tokens ?? 0),
+            }
+          : undefined
+      // 找本轮最后一个 assistant 条目（从尾往前），把元数据挂上去
+      if (elapsedMs != null || usage) {
+        for (let i = items.length - 1; i >= 0; i--) {
+          const it = items[i]
+          if (it.kind === 'user') break
+          if (it.kind === 'assistant') {
+            items = [...items]
+            items[i] = { ...it, elapsedMs, usage }
+            break
+          }
+        }
+      }
+      return { items, streamingText: '', thinkingText: '', turnStartTs: null }
     }
     default:
-      // turn/start / error 不产生条目（run_id 与错误提示由 store 层处理）
+      // error 不产生条目（错误提示由 store 层处理）
       return state
   }
 }
@@ -197,6 +254,10 @@ interface ChatState {
   messages: ChatItem[]
   /** 当前流式气泡累积文本（渲染为流式助手消息）。 */
   streamingText: string
+  /** 当前流式思考累积文本（渲染为思考折叠区）。 */
+  thinkingText: string
+  /** 当前 turn 起始 ts（投影内部用于计算用时，跨 set 保持）。 */
+  turnStartTs: number | null
   /** 是否正在接收一轮回复。 */
   streaming: boolean
   /** 已读最大事件 seq。 */
@@ -225,6 +286,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sessionId: null,
   messages: [],
   streamingText: '',
+  thinkingText: '',
+  turnStartTs: null,
   streaming: false,
   lastSeq: -1,
   error: null,
@@ -241,6 +304,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sessionId,
       messages: [],
       streamingText: '',
+      thinkingText: '',
+      turnStartTs: null,
       streaming: false,
       activeRunId: null,
       error: null,
@@ -253,7 +318,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         `/api/v1/sessions/${sessionId}/events?after_seq=-1`,
       )
       if (get().epoch !== epoch) return
-      const final = events.reduce(reduceEvent, { items: [], streamingText: '' })
+      const final = events.reduce(reduceEvent, { items: [], streamingText: '', thinkingText: '', turnStartTs: null })
       const stats = events.reduce(reduceStats, emptyStats())
       const lastSeq = events.length ? events[events.length - 1].seq : -1
       writeLastSeq(sessionId, lastSeq)
@@ -276,6 +341,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streaming: true,
       error: null,
       streamingText: '',
+      thinkingText: '',
+      turnStartTs: null,
     }))
 
     try {
@@ -295,12 +362,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (ev.type === 'user/message')
               return { lastSeq: Math.max(s.lastSeq, ev.seq), stats }
             const next = reduceEvent(
-              { items: s.messages, streamingText: s.streamingText },
+              { items: s.messages, streamingText: s.streamingText, thinkingText: s.thinkingText, turnStartTs: s.turnStartTs },
               ev,
             )
             return {
               messages: next.items,
               streamingText: next.streamingText,
+              thinkingText: next.thinkingText,
+              turnStartTs: next.turnStartTs,
               lastSeq: Math.max(s.lastSeq, ev.seq),
               stats,
             }
@@ -331,10 +400,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streaming: false,
           activeRunId: null,
           // 流断在终止事件之前（网络中断等）：残留累积文本定稿，避免丢字
-          messages: s.streamingText
-            ? [...s.messages, { kind: 'assistant' as const, content: s.streamingText }]
-            : s.messages,
+          messages: [
+            ...s.thinkingText
+              ? [{ kind: 'reasoning' as const, text: s.thinkingText }]
+              : [],
+            ...s.streamingText
+              ? [{ kind: 'assistant' as const, content: s.streamingText }]
+              : [],
+            ...s.messages,
+          ],
           streamingText: '',
+          thinkingText: '',
         }))
         if (sessionId) writeLastSeq(sessionId, get().lastSeq)
       }
@@ -364,6 +440,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       sessionId: null,
       messages: [],
       streamingText: '',
+      thinkingText: '',
+      turnStartTs: null,
       streaming: false,
       error: null,
       stats: emptyStats(),
