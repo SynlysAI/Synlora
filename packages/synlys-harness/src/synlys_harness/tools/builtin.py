@@ -175,11 +175,64 @@ async def http_request(ctx: ToolContext, args: dict) -> ToolResult:
     )
 
 
+@tool(
+    name="skill.list",
+    description="列出本会话可用技能（名称 + 用途）。不确定该用哪个技能时先调用它。",
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+async def skill_list(ctx: ToolContext, args: dict) -> ToolResult:
+    """列出可用技能。
+
+    Args:
+        ctx: 工具上下文（技能从 ctx.extra 取）。
+        args: 无参数。
+
+    Returns:
+        技能清单（名称 + 描述）；无技能时返回提示文本。
+    """
+    skills: dict[str, str] = ctx.extra.get("skills") or {}
+    listing = ctx.extra.get("skill_meta") or {}
+    if not skills:
+        return ToolResult(ok=True, content="当前没有可用技能。")
+    lines = [f"- {name}：{listing.get(name, '')}" for name in skills]
+    return ToolResult(ok=True, content="可用技能：\n" + "\n".join(lines))
+
+
+@tool(
+    name="skill.read",
+    description="读取某个技能的完整 SKILL.md 正文（含工作流与输出要求）。",
+    parameters={
+        "type": "object",
+        "properties": {"name": {"type": "string", "description": "技能名"}},
+        "required": ["name"],
+    },
+)
+async def skill_read(ctx: ToolContext, args: dict) -> ToolResult:
+    """读取技能正文。
+
+    Args:
+        ctx: 工具上下文（技能正文从 ctx.extra 取）。
+        args: 含 name（技能名）。
+
+    Returns:
+        技能正文；技能名缺失或不存在时 ok=False。
+    """
+    name = str(args.get("name", "")).strip()
+    skills: dict[str, str] = ctx.extra.get("skills") or {}
+    content = skills.get(name)
+    if content is None:
+        return ToolResult(ok=False, error=f"技能不存在：{name}")
+    return ToolResult(ok=True, content=content, data={"name": name, "content": content})
+
+
 def register_builtin_tools(registry: ToolRegistry) -> None:
     """把全部内置工具注册到注册表。
 
     Args:
         registry: 目标注册表。
     """
-    for fn in (file_read, file_write, file_list, python_run, knowledge_search, http_request):
+    for fn in (
+        file_read, file_write, file_list, python_run, knowledge_search, http_request,
+        skill_list, skill_read,
+    ):
         registry.register(fn)

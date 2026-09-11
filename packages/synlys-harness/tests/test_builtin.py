@@ -1,10 +1,13 @@
 """内置工具单测。"""
-from synlys_harness.tools.builtin import register_builtin_tools
+from synlys_harness.tools.builtin import register_builtin_tools, skill_list, skill_read
 from synlys_harness.tools.pipeline import ToolPipeline
 from synlys_harness.tools.registry import ToolRegistry
 from synlys_harness.types import ToolContext
 
-EXPECTED = ["file.read", "file.write", "file.list", "python.run", "knowledge.search", "http.request"]
+EXPECTED = [
+    "file.read", "file.write", "file.list", "python.run", "knowledge.search", "http.request",
+    "skill.list", "skill.read",
+]
 
 
 def _setup() -> ToolPipeline:
@@ -18,10 +21,20 @@ def _ctx(tmp_path, extra=None) -> ToolContext:
 
 
 def test_all_registered():
-    """六个内置工具全部注册成功。"""
+    """内置工具全部注册成功（含 skill.list / skill.read）。"""
     reg = ToolRegistry()
     register_builtin_tools(reg)
     assert sorted(reg.names) == sorted(EXPECTED)
+
+
+def test_skill_tools_registered():
+    """skill.list / skill.read 必须真正进入注册表。"""
+    reg = ToolRegistry()
+    register_builtin_tools(reg)
+    assert "skill.list" in reg.names
+    assert "skill.read" in reg.names
+    assert reg.get("skill.list").parameters["type"] == "object"
+    assert reg.get("skill.read").parameters["required"] == ["name"]
 
 
 async def test_file_roundtrip_and_escape_guard(tmp_path):
@@ -100,3 +113,61 @@ async def test_http_subdomain_allowed(tmp_path):
     r = await pipe.run("http.request", ctx, {"url": "http://sub.example.com/x"})
     # 通过白名单检查后因无真实服务落到 http_error，而非 host_denied
     assert r.error != "host_denied" and not r.ok
+
+
+async def test_skill_tools_run_through_pipeline(tmp_path):
+    """skill.list / skill.read 经工具管线可正常调用。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path, extra={"skills": {"pdf-extraction": "# PDF 抽取\n\n步骤..."}})
+    listed = await pipe.run("skill.list", ctx, {})
+    assert listed.ok and "pdf-extraction" in listed.content
+    read = await pipe.run("skill.read", ctx, {"name": "pdf-extraction"})
+    assert read.ok and read.data["content"].startswith("# PDF 抽取")
+
+
+async def test_skill_list_and_read(tmp_path):
+    ctx = ToolContext(user_id="u", run_id="r", workspace_root=tmp_path,
+                      extra={"skills": {"pdf-extraction": "# PDF 抽取\n\n步骤..."}})
+    listed = await skill_list(ctx, {})
+    assert listed.ok and "pdf-extraction" in listed.content
+    read = await skill_read(ctx, {"name": "pdf-extraction"})
+    assert read.ok and read.data["content"].startswith("# PDF 抽取")
+
+
+async def test_skill_read_unknown_name(tmp_path):
+    ctx = ToolContext(user_id="u", run_id="r", workspace_root=tmp_path, extra={"skills": {}})
+    res = await skill_read(ctx, {"name": "nope"})
+    assert res.ok is False and "nope" in (res.error or "")
+
+
+async def test_skill_tools_without_skills_key(tmp_path):
+    """ctx.extra 完全没有 skills 键时：list 提示为空，read 返回失败而非 KeyError。"""
+    ctx = _ctx(tmp_path, extra={"unrelated": 1})
+    listed = await skill_list(ctx, {})
+    assert listed.ok is True and "没有可用技能" in listed.content
+    res = await skill_read(ctx, {"name": "pdf-extraction"})
+    assert res.ok is False and "pdf-extraction" in (res.error or "")
+
+
+async def test_skill_list_includes_meta_description(tmp_path):
+    """skill.list 的清单带 skill_meta 中的描述。"""
+    ctx = _ctx(tmp_path, extra={
+        "skills": {"pdf-extraction": "# PDF 抽取\n\n步骤...", "tabular-qa": "# 表格问答\n\n..."},
+        "skill_meta": {"pdf-extraction": "从 PDF 中抽取结构化数据", "tabular-qa": "对表格做问答"},
+    })
+    listed = await skill_list(ctx, {})
+    assert listed.ok
+    assert "从 PDF 中抽取结构化数据" in listed.content
+    assert "对表格做问答" in listed.content
+    assert "pdf-extraction" in listed.content and "tabular-qa" in listed.content
+
+
+async def test_skill_read_blank_or_missing_name(tmp_path):
+    """name 缺失或为空白串时返回 ok=False，不抛异常。"""
+    ctx = _ctx(tmp_path, extra={"skills": {"pdf-extraction": "# PDF 抽取"}})
+    missing = await skill_read(ctx, {})
+    assert missing.ok is False
+    blank = await skill_read(ctx, {"name": "   "})
+    assert blank.ok is False
+    numeric = await skill_read(ctx, {"name": 123})
+    assert numeric.ok is False
