@@ -247,22 +247,37 @@ Expected: 全绿（基线 183 passed / 36 skipped + 新增 3）
 
 - [ ] **Step 5: 验证**：`npm run build && npm run lint`；真机由我验
 
-- [ ] **Step 6: Commit** — `feat(frontend): 输入框空态卡片与工作区行重做`
+- [x] **Step 6: Commit** — `feat(frontend): 输入框空态卡片与工作区行重做`
 
 ---
 
 # 验收
 
-- [ ] `cd apps/web/backend && conda run -n synlysagent --no-capture-output python -m pytest -q`
-- [ ] `cd packages/synlys-harness && conda run -n synlysagent --no-capture-output python -m pytest -q`
-- [ ] `cd apps/web/frontend && npm run build && npm run lint`
-- [ ] playwright **有头模式**逐场景截图自查：
-  1. 侧栏：无助手卡；「工作区」组 + 「会话」组；默认工作区不在工作区组里
-  2. 新建工作区 → 出现在工作区组 → 展开显示「暂无会话」
-  3. 「新会话」→ 归入默认工作区，出现在「会话」组
-  4. 输入框空态：外层灰卡包住内白卡 + 底部「请选择工作区」行；有消息后退回单层卡
-  5. `+ → 专家 → 不使用专家` → chip 消失；发消息 → 回复正常（用的是平台默认提示词，无专家 persona）
-  6. 控制台 0 error
+- [x] `cd apps/web/backend && conda run -n synlysagent --no-capture-output python -m pytest -q` → **186 passed / 36 skipped**
+- [x] `cd packages/synlys-harness && conda run -n synlysagent --no-capture-output python -m pytest -q` → 96 passed
+- [x] `cd apps/web/frontend && npm run build && npm run lint` → 通过 / 仅剩 1 条既有警告
+- [x] playwright **有头模式**逐场景截图自查：
+
+| # | 场景 | 结果 |
+|---|---|---|
+| 1 | 侧栏无助手卡；「工作区」组 +「会话」组；默认工作区不在工作区组 | ✅ 工作区组只列「实验一」，会话组是默认工作区的会话 |
+| 2 | 展开工作区 → 嵌套会话（缩进 32px） | ✅ 展开「实验一」显示其下会话，活动态高亮 |
+| 3 | 工作区选择器未选时 | ✅ 显示「请选择工作区」；菜单里「默认项目」处于选中态（未选就默认） |
+| 4 | 输入框空态 | ✅ **外层灰卡包住内层白卡 + 底部工作区行**（jiuwen `--work-home` 形态） |
+| 5 | 有消息后 | ✅ 退回**单层白卡**、工作区行消失（jiuwen `showWorkContextRow` 语义） |
+| 6 | 选「实验一」→ 新建会话 | ✅ `GET /sessions` 确认 `project_id` = 实验一的 id |
+| 7 | **无专家发消息** | ✅ 成功；回复内容即平台默认提示词效果（"我是一个通过工具真实执行任务的科研智能体…把事情做完而不是只给建议"），turn 头部是兜底名 `SynlysAgent` |
+| 8 | 无专家时模型 | ✅ 自动变显式 `glm-5.3-flash`（不再是「跟随助手」），避开 422 |
+| 9 | `+ → 专家` | ✅「不使用专家」项显示为选中态（文案"只走平台默认提示词，工具放开全部"） |
+| 10 | 控制台 | ✅ 0 error / 0 warning |
+
+> **实现中补的两处必要修复**（否则 `currentId` 可空会引入回归）：`AttachMenu` 的上传目录与右栏 `WorkspacePanel` 原先直接读 `projects.currentId`，改为 `pickActiveProject()`（未选回落默认工作区）。
+
+---
+
+# Plan 5 完成
+
+4 个任务（D1 后端 + D2/D3 合并 + D4）全部落地，真机验收通过。
 
 ---
 
