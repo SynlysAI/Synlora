@@ -1,10 +1,17 @@
 """用户工作区布局与配额。"""
 from __future__ import annotations
 
+import os
+import re
+import shutil
+import time
 from pathlib import Path
 
 BLOCKED_EXTENSIONS = {".exe", ".bat", ".cmd", ".msi", ".ps1", ".sh", ".com", ".scr"}
 MAX_FILE_BYTES = 50 * 1024 * 1024
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9_一-鿿-]+")
+DEFAULT_PROJECT_DIR = "default"
+PROJECT_SUBDIRS = ("files", "output", "tmp")
 
 
 def workspace_root(data_root: Path, user_id: str) -> Path:
@@ -84,3 +91,111 @@ def check_quota(root: Path, incoming: int, quota: int) -> None:
     """
     if usage_bytes(root) + incoming > quota:
         raise ValueError("超出用户工作区配额")
+
+
+def sanitize_dir_name(name: str) -> str:
+    """把项目名安全化为目录名（去掉路径分隔符与特殊字符）。
+
+    Args:
+        name: 用户输入的项目名。
+
+    Returns:
+        只含字母/数字/下划线/连字符/中文的目录名；全被过滤时返回空串。
+    """
+    return _SAFE_NAME.sub("_", name.strip()).strip("_")
+
+
+def project_root(data_root: Path, user_id: str, dir_name: str) -> Path:
+    """项目根目录（自动创建 files/output/tmp）。
+
+    Args:
+        data_root: 数据根目录。
+        user_id: 用户 sub。
+        dir_name: 已 sanitize 的目录名。
+
+    Returns:
+        {data_root}/workspaces/{user_id}/{dir_name} 路径。
+    """
+    root = data_root / "workspaces" / user_id / dir_name
+    for sub in PROJECT_SUBDIRS:
+        (root / sub).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def migrate_legacy_layout(data_root: Path, user_id: str) -> bool:
+    """把旧版 {uid}/files|output|tmp 迁移进 {uid}/default/（幂等）。
+
+    Args:
+        data_root: 数据根目录。
+        user_id: 用户 sub。
+
+    Returns:
+        True 表示本次执行了迁移，False 表示无需迁移。
+    """
+    user_dir = data_root / "workspaces" / user_id
+    target = user_dir / DEFAULT_PROJECT_DIR
+    if target.exists() or not (user_dir / "files").is_dir():
+        return False
+    target.mkdir(parents=True, exist_ok=True)
+    for sub in PROJECT_SUBDIRS:
+        src = user_dir / sub
+        if src.is_dir():
+            os.replace(src, target / sub)
+    return True
+
+
+def resolve_in_project(root: Path, rel: str) -> Path:
+    """把相对路径解析到项目根内（越界抛 ValueError）。
+
+    Args:
+        root: 项目根目录。
+        rel: 用户给的相对路径。
+
+    Returns:
+        绝对路径，保证位于 root 之内。
+
+    Raises:
+        ValueError: 路径逃逸出项目根。
+    """
+    candidate = (root / rel).resolve()
+    if candidate != root.resolve() and root.resolve() not in candidate.parents:
+        raise ValueError("路径越界")
+    return candidate
+
+
+def free_dir_name(user_dir: Path, base: str, taken: set[str]) -> str:
+    """求一个未被占用的目录名（盘上存在或仍被活跃项目引用都算占用）。
+
+    Args:
+        user_dir: 该用户的工作区目录（{data_root}/workspaces/{user_id}）。
+        base: sanitize 后的基础目录名。
+        taken: 仍被活跃项目引用的目录名集合。
+
+    Returns:
+        base 本身，或 base-2 / base-3 …
+    """
+    name = base
+    i = 1
+    while name in taken or (user_dir / name).exists():
+        i += 1
+        name = f"{base}-{i}"
+    return name
+
+
+def remove_project_dir(target: Path) -> bool:
+    """删除项目目录；失败则改名为 {name}.trash-{ts} 释放目录名并保住数据。
+
+    Args:
+        target: 项目根目录。
+
+    Returns:
+        True 表示已彻底删除，False 表示退化为 trash 改名。
+    """
+    if not target.exists():
+        return True
+    try:
+        shutil.rmtree(target)
+        return True
+    except OSError:
+        target.rename(target.with_name(f"{target.name}.trash-{int(time.time())}"))
+        return False
