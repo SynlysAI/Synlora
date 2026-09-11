@@ -204,10 +204,10 @@ function UserMenu() {
   )
 }
 
-/** Logo 标记：黑底圆角方块 + S 弧线。 */
+/** Logo 标记：黑底圆角方块 + S 弧线（尺寸对齐 DSH 品牌标的 24–26px 量级）。 */
 function LogoMark() {
   return (
-    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+    <svg width="26" height="26" viewBox="0 0 20 20" aria-hidden="true">
       <rect x="1" y="1" width="18" height="18" rx="5" fill="var(--sa-alias-button-primary-fill)" />
       <path
         d="M12.9 6.3a4 4 0 1 0 1.3 5.2"
@@ -235,7 +235,7 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
           </IconButton>
         )}
         <LogoMark />
-        <span className="text-[15px] font-medium tracking-tight">SynlysAgent</span>
+        <span className="text-[19px] font-semibold tracking-tight">SynlysAgent</span>
       </div>
       {/* 中部：新会话/助手/会话列表 */}
       <div className="min-h-0 flex-1">
