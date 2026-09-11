@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.services import workspace
 
 
@@ -53,3 +55,48 @@ def test_remove_dir_renames_to_trash_when_locked(tmp_path: Path, monkeypatch):
     assert workspace.remove_project_dir(target) is False
     assert not target.exists()
     assert list(tmp_path.glob("proj.trash-*"))
+
+
+def test_project_root_rejects_illegal_dir_name(tmp_path: Path):
+    for bad in ("", ".", "..", "../evil", "a/b", "a\\b"):
+        with pytest.raises(ValueError):
+            workspace.project_root(tmp_path, "u1", bad)
+
+
+def test_free_dir_name_rejects_empty_base(tmp_path: Path):
+    with pytest.raises(ValueError):
+        workspace.free_dir_name(tmp_path / "workspaces" / "u1", "", set())
+
+
+def test_remove_project_dir_missing_target_is_true(tmp_path: Path):
+    assert workspace.remove_project_dir(tmp_path / "nope") is True
+
+
+def test_remove_project_dir_trash_name_unique_within_same_second(tmp_path: Path, monkeypatch):
+    def boom(*_a, **_k):
+        raise OSError("locked")
+
+    monkeypatch.setattr(workspace.shutil, "rmtree", boom)
+    for _ in range(2):
+        target = tmp_path / "proj"
+        target.mkdir(exist_ok=True)
+        (target / "a.txt").write_text("x", encoding="utf-8")
+        assert workspace.remove_project_dir(target) is False
+    assert len(list(tmp_path.glob("proj.trash-*"))) == 2
+
+
+def test_migrate_legacy_moves_partial_subdirs(tmp_path: Path):
+    legacy = tmp_path / "workspaces" / "u1"
+    (legacy / "output").mkdir(parents=True)          # 没有 files 目录
+    assert workspace.migrate_legacy_layout(tmp_path, "u1") is True
+    assert (legacy / "default" / "output").is_dir()
+
+
+def test_migrate_legacy_resumes_after_partial(tmp_path: Path):
+    legacy = tmp_path / "workspaces" / "u1"
+    (legacy / "files").mkdir(parents=True)
+    (legacy / "tmp").mkdir()
+    (legacy / "default" / "files").mkdir(parents=True)   # 模拟上次只搬了一半
+    assert workspace.migrate_legacy_layout(tmp_path, "u1") is True
+    assert (legacy / "default" / "tmp").is_dir()
+    assert (legacy / "files").is_dir()                    # 已存在冲突项保持原样

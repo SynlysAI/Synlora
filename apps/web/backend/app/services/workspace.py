@@ -25,7 +25,7 @@ def workspace_root(data_root: Path, user_id: str) -> Path:
         {data_root}/workspaces/{user_id} 路径。
     """
     root = data_root / "workspaces" / user_id
-    for sub in ("files", "output", "tmp"):
+    for sub in PROJECT_SUBDIRS:
         (root / sub).mkdir(parents=True, exist_ok=True)
     return root
 
@@ -100,7 +100,8 @@ def sanitize_dir_name(name: str) -> str:
         name: 用户输入的项目名。
 
     Returns:
-        只含字母/数字/下划线/连字符/中文的目录名；全被过滤时返回空串。
+        只含字母/数字/下划线/连字符/中文的目录名；全被过滤时返回空串
+        （调用方须对空串做回退或拒绝）。
     """
     return _SAFE_NAME.sub("_", name.strip()).strip("_")
 
@@ -111,11 +112,16 @@ def project_root(data_root: Path, user_id: str, dir_name: str) -> Path:
     Args:
         data_root: 数据根目录。
         user_id: 用户 sub。
-        dir_name: 已 sanitize 的目录名。
+        dir_name: 项目目录名（须非空且不含路径分隔符）。
 
     Returns:
         {data_root}/workspaces/{user_id}/{dir_name} 路径。
+
+    Raises:
+        ValueError: dir_name 为空、为 . / .. 或含路径分隔符（防止越界写出用户目录）。
     """
+    if not dir_name or dir_name in {".", ".."} or "/" in dir_name or "\\" in dir_name:
+        raise ValueError(f"非法项目目录名: {dir_name!r}")
     root = data_root / "workspaces" / user_id / dir_name
     for sub in PROJECT_SUBDIRS:
         (root / sub).mkdir(parents=True, exist_ok=True)
@@ -123,25 +129,33 @@ def project_root(data_root: Path, user_id: str, dir_name: str) -> Path:
 
 
 def migrate_legacy_layout(data_root: Path, user_id: str) -> bool:
-    """把旧版 {uid}/files|output|tmp 迁移进 {uid}/default/（幂等）。
+    """把旧版 {uid}/files|output|tmp 逐个子目录迁进 {uid}/default/（幂等）。
+
+    逐个子目录独立判断而非整体早退：只有部分子目录存在、或上次迁移中断时，
+    仍能把剩余目录搬过去，不会永久遗弃旧数据。
 
     Args:
         data_root: 数据根目录。
         user_id: 用户 sub。
 
     Returns:
-        True 表示本次执行了迁移，False 表示无需迁移。
+        True 表示本次至少搬动了一个子目录，False 表示无可迁移项。
+
+    Raises:
+        OSError: 底层文件操作失败（可能已部分迁移，下次调用会续迁剩余部分）。
     """
     user_dir = data_root / "workspaces" / user_id
     target = user_dir / DEFAULT_PROJECT_DIR
-    if target.exists() or not (user_dir / "files").is_dir():
-        return False
-    target.mkdir(parents=True, exist_ok=True)
+    moved = False
     for sub in PROJECT_SUBDIRS:
         src = user_dir / sub
-        if src.is_dir():
-            os.replace(src, target / sub)
-    return True
+        dst = target / sub
+        if not src.is_dir() or dst.exists():
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        os.replace(src, dst)
+        moved = True
+    return moved
 
 
 def resolve_in_project(root: Path, rel: str) -> Path:
@@ -168,12 +182,17 @@ def free_dir_name(user_dir: Path, base: str, taken: set[str]) -> str:
 
     Args:
         user_dir: 该用户的工作区目录（{data_root}/workspaces/{user_id}）。
-        base: sanitize 后的基础目录名。
+        base: sanitize 后的基础目录名（须非空）。
         taken: 仍被活跃项目引用的目录名集合。
 
     Returns:
         base 本身，或 base-2 / base-3 …
+
+    Raises:
+        ValueError: base 为空（调用方须先回退占位名或拒绝该请求）。
     """
+    if not base:
+        raise ValueError("base 不能为空（调用方须先回退占位名或拒绝该请求）")
     name = base
     i = 1
     while name in taken or (user_dir / name).exists():
@@ -183,13 +202,16 @@ def free_dir_name(user_dir: Path, base: str, taken: set[str]) -> str:
 
 
 def remove_project_dir(target: Path) -> bool:
-    """删除项目目录；失败则改名为 {name}.trash-{ts} 释放目录名并保住数据。
+    """删除项目目录；失败则改名为 {name}.trash-{纳秒时间戳} 释放目录名并保住数据。
 
     Args:
         target: 项目根目录。
 
     Returns:
         True 表示已彻底删除，False 表示退化为 trash 改名。
+
+    Raises:
+        OSError: 删除与兜底改名均失败（此时目录既未删除、名字也未释放）。
     """
     if not target.exists():
         return True
@@ -197,5 +219,11 @@ def remove_project_dir(target: Path) -> bool:
         shutil.rmtree(target)
         return True
     except OSError:
-        target.rename(target.with_name(f"{target.name}.trash-{int(time.time())}"))
-        return False
+        pass
+    # 纳秒时间戳：同一秒内多次失败改名也不会撞名（秒级粒度会 FileExistsError）
+    trash = target.with_name(f"{target.name}.trash-{time.time_ns()}")
+    try:
+        target.rename(trash)
+    except OSError as exc:
+        raise OSError(f"删除项目目录失败且无法改名为 trash：{target}") from exc
+    return False
