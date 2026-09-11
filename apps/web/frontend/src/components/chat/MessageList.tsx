@@ -1,6 +1,9 @@
 /**
  * 消息列表：滚动容器（near-bottom 自动跟随、上滚停止跟随 + 回到底部按钮）、
- * 条目渲染（用户/助手/工具卡片/流式气泡）、空态欢迎页（示例问题点击即发）。
+ * 条目渲染（用户/助手/工具卡片/流式）、对话组间距节奏、空态欢迎页。
+ *
+ * 排版节奏：上一条是用户消息时（即新一组对话开始）加大上间距，
+ * 组内的工具卡片与助手回复保持紧凑。
  */
 import { useEffect, useRef, useState } from 'react'
 import type { ChatItem } from '@/stores/chat'
@@ -14,49 +17,50 @@ const NEAR_BOTTOM = 48
 
 /** 空态示例问题（点击即发送）。 */
 const EXAMPLES = [
-  '用 Python 算一下 2 + 3',
-  '帮我在工作区写一个 README.md',
-  '列出我的工作区里有哪些文件',
+  { icon: '🧮', text: '用 Python 算一下 2 + 3' },
+  { icon: '📄', text: '帮我在工作区写一个 README.md' },
+  { icon: '🗂️', text: '列出我的工作区里有哪些文件' },
 ]
 
 interface EmptyStateProps {
   /** 当前助手名（无会话/未关联时回退产品名）。 */
   assistantName: string
+  /** 助手头像字符。 */
+  assistantAvatar: string
   /** 点击示例即发送。 */
   onSend: (text: string) => void
 }
 
-/** 空态欢迎页：Logo + 助手名 + 示例问题。 */
-function EmptyState({ assistantName, onSend }: EmptyStateProps) {
+/** 空态欢迎页：头像 + 大标题 + 示例问题卡。 */
+function EmptyState({ assistantName, assistantAvatar, onSend }: EmptyStateProps) {
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-5 py-10">
-      <svg width="44" height="44" viewBox="0 0 20 20" aria-hidden="true">
-        <rect x="1" y="1" width="18" height="18" rx="5" fill="var(--sa-alias-button-primary-fill)" />
-        <path
-          d="M12.9 6.3a4 4 0 1 0 1.3 5.2"
-          stroke="var(--sa-alias-label-primary-foreground)"
-          strokeWidth="1.8"
-          fill="none"
-          strokeLinecap="round"
-        />
-      </svg>
+    <div className="flex flex-1 flex-col items-center justify-center gap-6 py-10">
+      <div
+        aria-hidden="true"
+        className="flex h-14 w-14 items-center justify-center rounded-[var(--sa-radius-lg)] bg-[var(--sa-specific-bubble)] text-[26px] leading-none"
+      >
+        {assistantAvatar}
+      </div>
       <div className="text-center">
-        <div className="text-[17px] font-medium text-[var(--sa-alias-label-primary)]">
+        <div className="text-[22px] font-semibold tracking-tight text-[var(--sa-alias-label-primary)]">
           {assistantName}
         </div>
-        <div className="pt-1 text-[13px] text-[var(--sa-alias-label-caption)]">
+        <div className="pt-1.5 text-[14px] text-[var(--sa-alias-label-caption)]">
           有什么可以帮你的？
         </div>
       </div>
       <div className="flex w-full max-w-sm flex-col gap-2">
-        {EXAMPLES.map((text) => (
+        {EXAMPLES.map((ex) => (
           <button
-            key={text}
+            key={ex.text}
             type="button"
-            onClick={() => onSend(text)}
-            className="rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] px-3.5 py-2.5 text-left text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+            onClick={() => onSend(ex.text)}
+            className="flex items-center gap-2.5 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-4 py-3 text-left text-[13.5px] text-[var(--sa-alias-label-secondary)] shadow-sm transition-all duration-[var(--sa-duration-base)] hover:-translate-y-px hover:border-[var(--sa-alias-border-l3)] hover:text-[var(--sa-alias-label-primary)] hover:shadow-md"
           >
-            {text}
+            <span aria-hidden="true" className="text-[15px]">
+              {ex.icon}
+            </span>
+            {ex.text}
           </button>
         ))}
       </div>
@@ -64,20 +68,36 @@ function EmptyState({ assistantName, onSend }: EmptyStateProps) {
   )
 }
 
+interface ChatEntryProps {
+  item: ChatItem
+  /** 是否为新一组对话的开始（上一条是用户消息时加大上间距）。 */
+  newGroup: boolean
+  /** 助手头像字符。 */
+  assistantAvatar: string
+}
+
 /** 单条聊天条目渲染分发。 */
-function ChatEntry({ item }: { item: ChatItem }) {
-  if (item.kind === 'user') return <UserMessage text={item.text} />
-  if (item.kind === 'assistant') return <AssistantMessage content={item.content} />
-  return <ToolCallCard call={item.call} result={item.result} />
+function ChatEntry({ item, newGroup, assistantAvatar }: ChatEntryProps) {
+  const groupSpacing = newGroup ? 'mt-7' : ''
+  if (item.kind === 'user') return <div className={groupSpacing}><UserMessage text={item.text} /></div>
+  if (item.kind === 'assistant')
+    return <div className={groupSpacing}><AssistantMessage content={item.content} avatar={assistantAvatar} /></div>
+  return (
+    <div className={groupSpacing}>
+      <ToolCallCard call={item.call} result={item.result} />
+    </div>
+  )
 }
 
 interface MessageListProps {
   /** 当前助手名（空态展示）。 */
   assistantName: string
+  /** 当前助手头像字符。 */
+  assistantAvatar: string
 }
 
 /** 消息列表组件（中间列上部的滚动区）。 */
-export default function MessageList({ assistantName }: MessageListProps) {
+export default function MessageList({ assistantName, assistantAvatar }: MessageListProps) {
   const messages = useChatStore((s) => s.messages)
   const streamingText = useChatStore((s) => s.streamingText)
   const send = useChatStore((s) => s.send)
@@ -115,13 +135,24 @@ export default function MessageList({ assistantName }: MessageListProps) {
           }`}
         >
           {empty ? (
-            <EmptyState assistantName={assistantName} onSend={(t) => void send(t)} />
+            <EmptyState
+              assistantName={assistantName}
+              assistantAvatar={assistantAvatar}
+              onSend={(t) => void send(t)}
+            />
           ) : (
             <>
               {messages.map((item, i) => (
-                <ChatEntry key={i} item={item} />
+                <ChatEntry
+                  key={i}
+                  item={item}
+                  newGroup={i > 0 && messages[i - 1].kind === 'user'}
+                  assistantAvatar={assistantAvatar}
+                />
               ))}
-              {streamingText && <AssistantMessage content={streamingText} streaming />}
+              {streamingText && (
+                <AssistantMessage content={streamingText} streaming avatar={assistantAvatar} />
+              )}
             </>
           )}
         </div>

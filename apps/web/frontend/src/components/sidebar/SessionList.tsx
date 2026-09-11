@@ -8,6 +8,31 @@ import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
 import { formatRelativeTime } from '@/utils/format'
 
+/** 按更新时间分组标签（今天/昨天/更早）。 */
+function groupLabel(updatedAt: number): string {
+  const d = new Date(updatedAt)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate()
+  if (sameDay(d, today)) return '今天'
+  if (sameDay(d, yesterday)) return '昨天'
+  return '更早'
+}
+
+/** 分组插入标题行（相邻同组只插一次）。 */
+function withGroupHeaders(list: Session[]): { label: string; session: Session }[] {
+  const out: { label: string; session: Session }[] = []
+  let prev = ''
+  for (const s of list) {
+    const label = groupLabel(s.updated_at)
+    out.push({ label: label === prev ? '' : label, session: s })
+    prev = label
+  }
+  return out
+}
+
 interface SessionItemProps {
   /** 会话文档。 */
   session: Session
@@ -102,7 +127,7 @@ function SessionItem({ session, active, onSelect }: SessionItemProps) {
           type="button"
           onClick={onSelect}
           title={session.title}
-          className={`w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
+          className={`relative w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
             active
               ? 'bg-[var(--sa-specific-sidebar-nav-item-active)]'
               : session.archived
@@ -110,6 +135,13 @@ function SessionItem({ session, active, onSelect }: SessionItemProps) {
                 : ''
           }`}
         >
+          {/* 选中态左侧强调条 */}
+          {active && (
+            <span
+              aria-hidden="true"
+              className="absolute left-0 top-1/2 h-[14px] w-[2.5px] -translate-y-1/2 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
+            />
+          )}
           <span className="block truncate pr-5 text-[13px] text-[var(--sa-alias-label-primary)]">
             {session.title || '新对话'}
           </span>
@@ -232,16 +264,22 @@ export default function SessionList({ query, onNavigate }: SessionListProps) {
           无匹配会话
         </div>
       )}
-      {active.map((s) => (
-        <SessionItem
-          key={s._id}
-          session={s}
-          active={s._id === currentId}
-          onSelect={() => {
-            setCurrent(s._id)
-            onNavigate?.()
-          }}
-        />
+      {withGroupHeaders(active).map(({ label, session: s }) => (
+        <div key={s._id}>
+          {label && (
+            <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wider text-[var(--sa-alias-label-caption)]">
+              {label}
+            </div>
+          )}
+          <SessionItem
+            session={s}
+            active={s._id === currentId}
+            onSelect={() => {
+              setCurrent(s._id)
+              onNavigate?.()
+            }}
+          />
+        </div>
       ))}
 
       {/* 归档折叠组 */}

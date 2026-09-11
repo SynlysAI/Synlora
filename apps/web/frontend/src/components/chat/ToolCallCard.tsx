@@ -1,6 +1,6 @@
 /**
- * 工具调用卡片：头行（工具名 + 状态）+ 参数折叠块（默认展开，JSON 展示）
- * + 结果折叠块（默认收起；content 代码风格文本，truncated 尾部截断标记）。
+ * 工具调用卡片：头行（状态点 + 中文标签 + 等宽工具名）+ 参数/结果折叠区
+ * （默认收起保持消息流安静；结果含 truncated 标记与错误文案）。
  */
 import { useState, type ReactNode } from 'react'
 import type { ToolCallPayload, ToolResultPayload } from '@/types'
@@ -10,7 +10,7 @@ import { TOOL_LABELS } from './toolLabels'
 function CodeBlock({ text }: { text: string }) {
   return (
     <pre
-      className="max-h-72 overflow-auto rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-markdown-code-block)] px-3 py-2 text-[12.5px] leading-relaxed text-[var(--sa-alias-label-primary)]"
+      className="max-h-72 overflow-auto rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-markdown-code-block)] px-3 py-2.5 text-[12.5px] leading-relaxed text-[var(--sa-alias-label-primary)]"
       style={{ fontFamily: 'var(--sa-font-code)' }}
     >
       {text}
@@ -38,7 +38,7 @@ function Section({ title, open, badge, onToggle, children }: SectionProps) {
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+        className="flex w-full items-center gap-1.5 px-3.5 py-1.5 text-[12px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
       >
         <svg
           width="10"
@@ -57,8 +57,25 @@ function Section({ title, open, badge, onToggle, children }: SectionProps) {
         {title}
         {badge}
       </button>
-      {open && <div className="px-3 pb-2.5">{children}</div>}
+      {open && <div className="px-3.5 pb-2.5">{children}</div>}
     </div>
+  )
+}
+
+/** 状态点：色点 + 文案（running 时脉冲呼吸）。 */
+function StatusDot({ tone }: { tone: 'running' | 'ok' | 'error' }) {
+  const color =
+    tone === 'ok'
+      ? 'var(--sa-alias-state-success-primary)'
+      : tone === 'error'
+        ? 'var(--sa-alias-state-error-primary)'
+        : 'var(--sa-alias-label-tertiary)'
+  return (
+    <span
+      aria-hidden="true"
+      className={`h-[7px] w-[7px] shrink-0 rounded-[var(--sa-radius-full)] ${tone === 'running' ? '[animation:sa-pulse_1.2s_ease-in-out_infinite]' : ''}`}
+      style={{ background: color }}
+    />
   )
 }
 
@@ -69,67 +86,45 @@ interface ToolCallCardProps {
   result?: ToolResultPayload
 }
 
-/** 工具调用卡片组件（左对齐占满、边框 l2 圆角容器）。 */
+/** 工具调用卡片组件（安静的窄卡片：状态点 + 标签 + 等宽名 + 折叠详情）。 */
 export default function ToolCallCard({ call, result }: ToolCallCardProps) {
-  const [paramsOpen, setParamsOpen] = useState(true)
+  const [paramsOpen, setParamsOpen] = useState(false)
   const [resultOpen, setResultOpen] = useState(false)
 
   const name = call.tool_call.name
   const label = TOOL_LABELS[name] ?? name
   const args = call.tool_call.arguments ?? {}
   const hasArgs = Object.keys(args).length > 0
+  const tone: 'running' | 'ok' | 'error' = !result ? 'running' : result.ok ? 'ok' : 'error'
+  const statusText = !result ? '执行中' : result.ok ? '完成' : '失败'
 
   return (
-    <div className="overflow-hidden rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)]">
-      {/* 头行：图标 + 名称 + 状态 */}
-      <div className="flex items-center gap-2 px-3 py-2">
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="shrink-0 text-[var(--sa-alias-label-secondary)]"
-          aria-hidden="true"
-        >
-          <path d="M9.3 3.2a3.2 3.2 0 0 1 4.4 4.4l-1.4 1.4-4.4-4.4 1.4-1.4Z" />
-          <path d="m7.5 5 1.5 1.5M6 6.5 2.9 9.6a2.3 2.3 0 0 0 3.2 3.2L9.3 9.7" />
-        </svg>
+    <div className="ml-[42px] overflow-hidden rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)] transition-colors duration-[var(--sa-duration-base)] hover:border-[var(--sa-alias-border-l2)]">
+      {/* 头行：状态点 + 中文标签 + 等宽工具名 + 状态文案 */}
+      <div className="flex items-center gap-2 px-3.5 py-[7px]">
+        <StatusDot tone={tone} />
         <span className="text-[13px] font-medium text-[var(--sa-alias-label-primary)]">{label}</span>
-        <span className="truncate text-xs text-[var(--sa-alias-label-caption)]" title={name}>
+        <span
+          className="truncate text-[11.5px] text-[var(--sa-alias-label-caption)]"
+          style={{ fontFamily: 'var(--sa-font-code)' }}
+          title={name}
+        >
           {name}
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-1 text-xs">
-          {!result ? (
-            <span className="flex items-center gap-1 text-[var(--sa-alias-label-tertiary)]">
-              <svg className="h-3 w-3 animate-spin" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
-                <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-              执行中
-            </span>
-          ) : result.ok ? (
-            <span className="flex items-center gap-1 text-[var(--sa-alias-state-success-primary)]">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="m3 8.5 3.2 3L13 4.5" />
-              </svg>
-              成功
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-[var(--sa-alias-state-error-primary)]">
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-                <path d="M4 4l8 8M12 4l-8 8" />
-              </svg>
-              失败
-            </span>
-          )}
+        <span
+          className={`ml-auto shrink-0 text-[12px] ${
+            tone === 'ok'
+              ? 'text-[var(--sa-alias-state-success-primary)]'
+              : tone === 'error'
+                ? 'text-[var(--sa-alias-state-error-primary)]'
+                : 'text-[var(--sa-alias-label-tertiary)]'
+          }`}
+        >
+          {statusText}
         </span>
       </div>
 
-      {/* 参数：默认展开 */}
+      {/* 参数：默认收起 */}
       <Section title="参数" open={paramsOpen} onToggle={() => setParamsOpen((v) => !v)}>
         {hasArgs ? (
           <CodeBlock text={JSON.stringify(args, null, 2)} />

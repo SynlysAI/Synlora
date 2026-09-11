@@ -19,11 +19,11 @@ export default function Rightbar() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* 标签栏 */}
+      {/* 标签栏：底边框 + 选中态下划线 */}
       <div
         role="tablist"
         aria-label="右栏面板"
-        className="flex shrink-0 gap-1 p-2.5 pb-2"
+        className="flex shrink-0 border-b border-[var(--sa-alias-border-l1)] px-2.5"
       >
         {TABS.map(({ key, label }) => (
           <button
@@ -32,13 +32,19 @@ export default function Rightbar() {
             type="button"
             aria-selected={tab === key}
             onClick={() => setTab(key)}
-            className={`flex-1 rounded-[var(--sa-radius-sm)] px-2 py-1 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
+            className={`relative px-2.5 pb-2 pt-2.5 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
               tab === key
-                ? 'bg-[var(--sa-alias-button-ghost-active-fill)] font-medium text-[var(--sa-alias-label-primary)]'
-                : 'text-[var(--sa-alias-label-tertiary)] hover:bg-[var(--sa-alias-interactive-bg-hover)]'
+                ? 'font-medium text-[var(--sa-alias-label-primary)]'
+                : 'text-[var(--sa-alias-label-tertiary)] hover:text-[var(--sa-alias-label-secondary)]'
             }`}
           >
             {label}
+            {tab === key && (
+              <span
+                aria-hidden="true"
+                className="absolute inset-x-1.5 bottom-[-1px] h-[2px] rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
+              />
+            )}
           </button>
         ))}
       </div>
