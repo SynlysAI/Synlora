@@ -109,7 +109,8 @@ class AgentService:
         return self._runs.get(run_id)
 
     async def chat(self, session_id: str, user: dict, assistant: dict,
-                   provider_cfg: ModelProviderConfig, text: str) -> str:
+                   provider_cfg: ModelProviderConfig, text: str,
+                   workspace_root: Path | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         Args:
@@ -118,6 +119,9 @@ class AgentService:
             assistant: 助手文档（system_prompt/tool_whitelist）。
             provider_cfg: 已解密的模型服务配置。
             text: 用户消息文本。
+            workspace_root: 工作区根目录（项目目录，由调用方按会话所属项目解析）；
+                传 None 回落到旧的用户目录 {data_root}/workspaces/{sub}
+                （保留给直接调用 chat 的老调用点/测试的兼容路径）。
 
         Returns:
             run_id。
@@ -174,7 +178,10 @@ class AgentService:
             if history:
                 log.seed(history)
             backend = OpenAICompatibleBackend(provider_cfg)
-            workspace = self._settings.data_root / "workspaces" / user["sub"]
+            # 工作区根由调用方（sessions_api）按会话所属项目解析后传入；服务自身
+            # 不再拼路径。None 回落到旧行为（用户目录），兼容直连 chat 的调用点。
+            workspace = workspace_root if workspace_root is not None else (
+                self._settings.data_root / "workspaces" / user["sub"])
             workspace.mkdir(parents=True, exist_ok=True)
             session = RunSession(
                 config=AgentConfig(

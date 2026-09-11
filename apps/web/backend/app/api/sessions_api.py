@@ -7,6 +7,7 @@ events?after_seq=N 补齐）；cancel 仅 POST /runs/{run_id}/cancel。
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
@@ -82,12 +83,37 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
     )
 
 
+async def _resolve_workspace_root(request: Request, user: dict, doc: dict) -> Path:
+    """解析会话本轮运行使用的工作区根目录（项目目录）。
+
+    会话绑定的项目优先；老会话没有 project_id、或项目已被删除时回落到该用户的
+    第一个项目；一个项目都没有（全新用户）就建一个「默认项目」。
+
+    Args:
+        request: 当前请求（取 app.state.project_service）。
+        user: 当前用户 payload。
+        doc: 会话文档（读 project_id）。
+
+    Returns:
+        项目根目录 Path（files/output/tmp 已就绪）。
+    """
+    service = request.app.state.project_service
+    project_id = doc.get("project_id")
+    project = await service.get(user["sub"], project_id) if project_id else None
+    if project is None:
+        projects = await service.list_projects(user["sub"])
+        project = projects[0] if projects else await service.create_project(
+            user["sub"], "默认项目")
+    return service.root_for(project)
+
+
 class SessionCreateBody(BaseModel):
     """新建会话请求体。"""
 
     assistant_id: str
     title: str = ""
     model_provider_id: str | None = None
+    project_id: str | None = None
 
 
 class SessionUpdateBody(BaseModel):
@@ -139,6 +165,7 @@ async def create_session(body: SessionCreateBody, user=Depends(get_current_user)
         "archived": False,
         "message_count": 0,
         "model_provider_id": body.model_provider_id,
+        "project_id": body.project_id,
     })
 
 
@@ -214,10 +241,12 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     owner = doc.get("title") or assistant.get("name") or sid
     cfg = await _resolve_provider(pid, str(owner), repos)
     service = _agent_service(request)
+    workspace_root = await _resolve_workspace_root(request, user, doc)
 
     # 先 chat（可能 429）：被拒消息零副作用（不计数、不生成标题），无需回滚
     try:
-        run_id = await service.chat(sid, user, assistant, cfg, body.text)
+        run_id = await service.chat(sid, user, assistant, cfg, body.text,
+                                    workspace_root=workspace_root)
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
 

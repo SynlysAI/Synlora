@@ -83,9 +83,11 @@ async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     assert "mean_a=2" in tool_result["content"]
     assert "mean_b=3" in tool_result["content"]
 
-    # 5. 工作区产物真实存在且内容正确（tmp/ 的 ../output 即工作区 output/）
-    result_txt = (app.state.settings.data_root / "workspaces" / "u-admin"
-                  / "output" / "result.txt")
+    # 5. 工作区产物真实存在且内容正确：agent 跑在会话所属项目目录（此处为首个项目
+    #    = 迁移旧布局后补种的 default），python.run 的 cwd=项目 tmp/，故 ../output
+    #    即项目 output/；第 4 步能读出均值也证明上传的 CSV 已在项目 files/ 内
+    projects = await app.state.project_service.list_projects("u-admin")
+    result_txt = app.state.project_service.root_for(projects[0]) / "output" / "result.txt"
     assert result_txt.exists(), f"产物未落盘: {result_txt}"
     assert result_txt.read_text(encoding="utf-8") == "mean_a=2\nmean_b=3\n"
 

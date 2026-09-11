@@ -14,6 +14,8 @@ from synlys_harness import (
     ModelProviderConfig, ReasoningDelta, TextDelta, ToolCallChunk, Usage,
 )
 
+from app.services import agent_service as agent_service_mod
+
 PROVIDER_BODY = {
     "name": "chat-mock",
     "base_url": "https://api.chat-mock.local/v1",
@@ -825,3 +827,106 @@ async def test_session_model_invalid_422(client, admin_headers, user_headers):
     r = await client.get("/api/v1/sessions", headers=user_headers)
     mine = next(s for s in r.json() if s["_id"] == sid)
     assert mine["model_provider_id"] is None
+
+
+# ---------- 会话绑定项目（agent 跑在项目目录而非用户目录） ----------
+
+
+async def _make_project(client, headers, name: str = "p1") -> str:
+    """建项目，返回项目 id。
+
+    Args:
+        client: httpx 异步客户端。
+        headers: 请求头。
+        name: 项目名。
+
+    Returns:
+        新建项目 _id。
+    """
+    r = await client.post("/api/v1/projects", headers=headers, json={"name": name})
+    assert r.status_code == 201, r.text
+    return r.json()["_id"]
+
+
+async def test_session_binds_project_and_uses_project_workspace(client, user_headers):
+    """建会话带 project_id：落库并原样返回（会话挂到指定项目）。"""
+    pid = (await client.post("/api/v1/projects", json={"name": "p1"},
+                             headers=user_headers)).json()["_id"]
+    r = await client.post("/api/v1/sessions",
+                          json={"assistant_id": "asst-research", "project_id": pid},
+                          headers=user_headers)
+    assert r.status_code == 201
+    assert r.json()["project_id"] == pid
+
+    # 列表回读同样带 project_id（前端据此渲染会话所属项目）
+    r = await client.get("/api/v1/sessions", headers=user_headers)
+    assert [s["project_id"] for s in r.json()] == [pid]
+
+
+async def test_session_without_project_id_compatible(app, client, admin_headers,
+                                                     user_headers, monkeypatch):
+    """不传 project_id：会话照常创建（project_id 为 None），发消息回落默认项目仍正常收尾。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+
+    r = await client.post("/api/v1/sessions", headers=user_headers,
+                          json={"assistant_id": "asst-data"})
+    assert r.status_code == 201, r.text
+    assert r.json().get("project_id") is None
+
+    await _chat_once(client, user_headers, r.json()["_id"])
+    # 老会话发消息时自动补种了默认项目（后续会话有项目可挂）
+    projects = await app.state.project_service.list_projects("u-user")
+    assert len(projects) == 1
+
+
+async def test_agent_workspace_is_project_root(app, client, admin_headers,
+                                               user_headers, monkeypatch):
+    """agent 实际拿到的工作区根目录 = 会话所属项目目录（不是用户目录）。
+
+    观察方式：把 agent_service 模块内的 RunSession 换成记录 kwargs 的包装，
+    再交给真实 RunSession —— 断言 workspace_root 这一实参，而非间接推断。
+    """
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="一"), Usage()], [TextDelta(text="二"), Usage()]]
+
+    captured: list = []
+    real_run_session = agent_service_mod.RunSession
+
+    def _capturing_run_session(*args, **kwargs):
+        """记录 workspace_root 实参后转交真实 RunSession。
+
+        Args:
+            args: RunSession 位置参数。
+            kwargs: RunSession 关键字参数（含 workspace_root）。
+
+        Returns:
+            真实 RunSession 实例。
+        """
+        captured.append(kwargs.get("workspace_root"))
+        return real_run_session(*args, **kwargs)
+
+    monkeypatch.setattr(agent_service_mod, "RunSession", _capturing_run_session)
+    user_dir = app.state.settings.data_root / "workspaces" / "u-user"
+
+    # 1) 显式绑定项目 → 工作区根 = 该项目目录
+    pid = await _make_project(client, user_headers, "绑项目")
+    sid = (await client.post("/api/v1/sessions", headers=user_headers,
+                             json={"assistant_id": "asst-data",
+                                   "project_id": pid})).json()["_id"]
+    await _chat_once(client, user_headers, sid)
+    project = await app.state.project_service.get("u-user", pid)
+    assert captured[-1] == app.state.project_service.root_for(project)
+    assert captured[-1] != user_dir
+    assert captured[-1].parent == user_dir
+    assert (captured[-1] / "tmp").is_dir()  # python.run 的 cwd 落在项目内
+
+    # 2) 未绑定项目（老会话/项目已删）→ 回落第一个可用项目，仍不是用户目录
+    sid2 = (await client.post("/api/v1/sessions", headers=user_headers,
+                              json={"assistant_id": "asst-data"})).json()["_id"]
+    await _chat_once(client, user_headers, sid2, "第二问")
+    projects = await app.state.project_service.list_projects("u-user")
+    assert captured[-1] == app.state.project_service.root_for(projects[0])
+    assert captured[-1] != user_dir
