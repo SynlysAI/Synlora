@@ -137,20 +137,21 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
           <span className="min-w-0 flex-1 truncate pr-2 text-[13px] text-[var(--sa-alias-label-primary)]">
             {session.title || '新对话'}
           </span>
-          <span className="shrink-0 text-[11px] text-[var(--sa-alias-label-caption)]">
+          {/* 时间：悬停 / 键盘聚焦时淡出，把位置让给右侧「⋯」（两者交叉淡入淡出） */}
+          <span className="shrink-0 text-[11px] text-[var(--sa-alias-label-caption)] transition-opacity duration-[var(--sa-duration-fast)] group-hover:opacity-0 group-focus-within:opacity-0">
             {formatRelativeTime(session.updated_at)}
           </span>
         </button>
       )}
 
-      {/* hover 操作入口（重命名态隐藏） */}
+      {/* hover 操作入口（重命名态隐藏）；与时间同位，靠上面那行的淡出腾出位置 */}
       {!editing && (
         <button
           type="button"
           aria-label={`会话操作：${session.title || '新对话'}`}
           onClick={() => setMenuOpen((v) => !v)}
-          className={`absolute right-1 top-1.5 flex h-6 w-6 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-tertiary)] transition-opacity duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-accent)] ${
-            menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          className={`absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-tertiary)] transition-opacity duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-accent)] ${
+            menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
           }`}
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
