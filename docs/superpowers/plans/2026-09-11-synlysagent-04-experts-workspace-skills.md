@@ -1141,9 +1141,17 @@ async def skill_read(ctx: ToolContext, args: dict) -> ToolResult:
     return ToolResult(ok=True, content=content, data={"name": name, "content": content})
 ```
 
-- [ ] **Step 4: 跑测试确认通过** — `pytest tests/test_builtin.py -v`
+- [x] **Step 4: 跑测试确认通过** — `pytest tests/test_builtin.py -v`
 
-- [ ] **Step 5: Commit** — `feat(harness): skill.list / skill.read 渐进披露工具`
+- [x] **Step 5: Commit** — `feat(harness): skill.list / skill.read 渐进披露工具`
+
+> **本任务已完成**：`001084d`。要点：
+> - **注册机制是显式函数元组**，不是自动扫描——`register_builtin_tools` 里那个 `for fn in (...)` 元组必须手动加新工具，**加漏了就等于没做**。这正是实现者加的那条 `test_skill_tools_registered` 要守的东西。
+> - `tools/__init__.py` **无需改动**（它只 re-export `register_builtin_tools`，不逐个收集工具函数）。
+> - `tests/test_builtin.py` 的 `EXPECTED` 工具名集合扩为 8 项（仍是精确集合相等，未削弱断言）。
+> - 独立核验：`register_builtin_tools` 后 `registry.names` = `['file.list','file.read','file.write','http.request','knowledge.search','python.run','skill.list','skill.read']`。
+>
+> harness 测试 89 → 96 passed。
 
 ---
 
