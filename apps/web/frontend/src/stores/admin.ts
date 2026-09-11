@@ -1,12 +1,12 @@
 /**
- * 管理页 store：模型服务与助手管理两页的列表数据源。
+ * 管理页 store：模型服务/助手/技能三页的列表数据源。
  *
  * 沿用 files/sessions 等 store 惯例——列表态与加载集中在 zustand，
  * 组件 effect 只调用 load*（不在组件内 setState，规避级联渲染）；
  * 助手变更后同时刷新工作台的 assistants store，返回工作台即时可见。
  */
 import { create } from 'zustand'
-import type { Assistant, ModelProvider } from '@/types'
+import type { Assistant, ModelProvider, Skill } from '@/types'
 import { api } from '@/api/client'
 import { useAssistantsStore } from './assistants'
 
@@ -21,10 +21,16 @@ interface AdminState {
   enabledModels: ModelProvider[]
   /** assistants/enabledModels 是否完成首次成功加载。 */
   assistantsLoaded: boolean
+  /** 全局技能列表（含 builtin 标记）。 */
+  skills: Skill[]
+  /** skills 是否完成首次成功加载。 */
+  skillsLoaded: boolean
   /** 拉取全部模型服务（含停用项）。 */
   loadProviders: () => Promise<void>
   /** 拉取助手列表与 enabled 模型，并同步工作台助手 store。 */
   loadAssistants: () => Promise<void>
+  /** 拉取全局技能列表。 */
+  loadSkills: () => Promise<void>
 }
 
 export const useAdminStore = create<AdminState>((set) => ({
@@ -33,6 +39,8 @@ export const useAdminStore = create<AdminState>((set) => ({
   assistants: [],
   enabledModels: [],
   assistantsLoaded: false,
+  skills: [],
+  skillsLoaded: false,
 
   loadProviders: async () => {
     const providers = await api<ModelProvider[]>('/api/v1/models?all=true')
@@ -47,5 +55,10 @@ export const useAdminStore = create<AdminState>((set) => ({
     set({ assistants, enabledModels, assistantsLoaded: true })
     // 工作台顶栏标题/左栏选择列表的联查数据同步刷新
     await useAssistantsStore.getState().load()
+  },
+
+  loadSkills: async () => {
+    const skills = await api<Skill[]>('/api/v1/skills')
+    set({ skills, skillsLoaded: true })
   },
 }))

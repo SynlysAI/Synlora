@@ -3,12 +3,13 @@
  *
  * 简易 hash 路由（无 react-router 依赖）：
  * - 默认（含空 hash）→ AppShell 三栏工作台
- * - #/admin/models | #/admin/assistants → AdminLayout 管理页（内部再守卫 admin 角色）
+ * - #/admin/models | #/admin/assistants | #/admin/skills
+ *   → AdminLayout 管理页（内部再守卫 admin 角色）
  *
  * ready 前（init 校验 token 中）全屏 loading；未登录渲染登录页。
  */
 import { useEffect, useState } from 'react'
-import { AdminLayout, ModelsAdmin, AssistantsAdmin, type AdminTab } from '@/components/admin'
+import { AdminLayout, ModelsAdmin, AssistantsAdmin, SkillsAdmin, type AdminTab } from '@/components/admin'
 import { AppShell } from '@/components/layout'
 import LoginPage from '@/components/LoginPage'
 import { useAuthStore } from '@/stores/auth'
@@ -26,6 +27,7 @@ function FullscreenLoading() {
 function adminTabFromHash(hash: string): AdminTab | null {
   if (hash === '#/admin/models') return 'models'
   if (hash === '#/admin/assistants') return 'assistants'
+  if (hash === '#/admin/skills') return 'skills'
   return null
 }
 
@@ -57,7 +59,13 @@ function App() {
   if (adminTab) {
     return (
       <AdminLayout key={user.sub} tab={adminTab}>
-        {adminTab === 'models' ? <ModelsAdmin /> : <AssistantsAdmin />}
+        {adminTab === 'models' ? (
+          <ModelsAdmin />
+        ) : adminTab === 'assistants' ? (
+          <AssistantsAdmin />
+        ) : (
+          <SkillsAdmin />
+        )}
       </AdminLayout>
     )
   }

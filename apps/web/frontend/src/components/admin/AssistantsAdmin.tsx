@@ -3,7 +3,7 @@
  *
  * 列表：avatar/名称/描述/内置徽标/关联模型名/操作（编辑、删除——内置禁用）；
  * 新建/编辑模态表单：name、avatar、description、system_prompt、
- * 模型选择（当前 enabled 的模型服务）、六项工具白名单多选（全选/全清）。
+ * 模型选择（当前 enabled 的模型服务）、工具白名单多选（全选/全清）。
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { api } from '@/api/client'
@@ -14,7 +14,7 @@ import { useAdminStore } from '@/stores/admin'
 import { FormError, GrayBadge, Modal } from './shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from './form'
 
-/** 六个合法工具名（与后端 ToolRegistry 注册项一一对应）。 */
+/** 全部合法工具名（与后端 ToolRegistry 注册项一一对应，标签见 toolLabels.ts）。 */
 const TOOL_NAMES = Object.keys(TOOL_LABELS)
 
 /** 新建/编辑共用表单值（modelProviderId 空串 = 不关联模型）。 */

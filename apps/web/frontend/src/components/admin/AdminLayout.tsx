@@ -1,7 +1,8 @@
 /**
  * 管理页布局：顶栏（返回工作台 + 页签切换 + 主题切换 + 用户名）+ 内容区。
  *
- * hash 路由 #/admin/models | #/admin/assistants 由 App.tsx 解析后传入 tab；
+ * hash 路由 #/admin/models | #/admin/assistants | #/admin/skills
+ * 由 App.tsx 解析后传入 tab；
  * 非 admin 渲染无权限页（菜单入口已隐藏，此处为直链访问兜底）。
  */
 import type { ReactNode } from 'react'
@@ -10,12 +11,13 @@ import { useAuthStore } from '@/stores/auth'
 import { useDarkTheme } from '@/utils/theme'
 
 /** 管理页页签。 */
-export type AdminTab = 'models' | 'assistants'
+export type AdminTab = 'models' | 'assistants' | 'skills'
 
 /** 页签定义：key + 目标 hash + 展示名。 */
 const TABS: Array<{ key: AdminTab; hash: string; label: string }> = [
   { key: 'models', hash: '#/admin/models', label: '模型服务' },
   { key: 'assistants', hash: '#/admin/assistants', label: '助手管理' },
+  { key: 'skills', hash: '#/admin/skills', label: '技能管理' },
 ]
 
 /** 无权限页：仅管理员可访问的直链兜底。 */
@@ -55,7 +57,7 @@ function NoPermission() {
 interface AdminLayoutProps {
   /** 当前页签（App.tsx 按 hash 解析）。 */
   tab: AdminTab
-  /** 页签内容（ModelsAdmin / AssistantsAdmin）。 */
+  /** 页签内容（ModelsAdmin / AssistantsAdmin / SkillsAdmin）。 */
   children: ReactNode
 }
 

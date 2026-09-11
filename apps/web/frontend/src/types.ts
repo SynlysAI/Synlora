@@ -69,6 +69,21 @@ export interface Assistant {
   model_name: string | null
 }
 
+/** 全局技能（磁盘 SKILL.md 扫描结果；content 为正文，不含 frontmatter）。 */
+export interface Skill {
+  /** 技能名（即目录名，kebab-case）。 */
+  name: string
+  description: string
+  version: string
+  author: string
+  tags: string[]
+  allowed_tools: string[]
+  /** SKILL.md 正文（不含 frontmatter）。 */
+  content: string
+  /** 内置技能不可删除（data-analysis / pdf-extraction 等）。 */
+  builtin: boolean
+}
+
 /** 会话元数据文档。 */
 export interface Session {
   _id: string

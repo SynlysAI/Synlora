@@ -6,4 +6,6 @@ export const TOOL_LABELS: Record<string, string> = {
   'file.list': '列出文件',
   'knowledge.search': '知识库搜索',
   'http.request': 'HTTP 请求',
+  'skill.list': '列出可用技能',
+  'skill.read': '读取技能正文',
 }
