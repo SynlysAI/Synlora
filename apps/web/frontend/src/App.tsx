@@ -53,14 +53,15 @@ function App() {
 
   if (!ready) return <FullscreenLoading />
   if (!user) return <LoginPage />
+  // key=用户 id：切换账号时整树重挂载，杜绝任何跨账号残留
   if (adminTab) {
     return (
-      <AdminLayout tab={adminTab}>
+      <AdminLayout key={user.sub} tab={adminTab}>
         {adminTab === 'models' ? <ModelsAdmin /> : <AssistantsAdmin />}
       </AdminLayout>
     )
   }
-  return <AppShell />
+  return <AppShell key={user.sub} />
 }
 
 export default App

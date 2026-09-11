@@ -29,6 +29,8 @@ interface SessionsState {
   remove: (id: string) => Promise<void>
   /** 切换当前会话。 */
   setCurrent: (id: string | null) => void
+  /** 清空全部状态（切换账号时调用，防止上一账号的会话被新账号引用）。 */
+  resetAll: () => void
 }
 
 export const useSessionsStore = create<SessionsState>((set) => ({
@@ -85,4 +87,6 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   },
 
   setCurrent: (id) => set({ currentId: id }),
+
+  resetAll: () => set({ sessions: [], currentId: null, loaded: false }),
 }))

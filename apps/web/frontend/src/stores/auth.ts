@@ -10,6 +10,8 @@
 import { create } from 'zustand'
 import type { AuthUser, LoginResponse, MeResponse } from '@/types'
 import { api, getToken, setToken, UNAUTHORIZED_EVENT } from '@/api/client'
+import { useSessionsStore } from './sessions'
+import { useChatStore } from './chat'
 
 /** URL hash 中门户 token 的提取正则。 */
 const HASH_TOKEN_RE = /token=([^&]+)/
@@ -99,6 +101,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const me = await api<MeResponse>('/api/v1/auth/me')
       set({ user: { sub: me.sub, username: me.username, role: me.role } })
+      resetWorkspaceStores()
     } catch {
       set({ token: null, user: null })
     }
@@ -108,13 +111,21 @@ export const useAuthStore = create<AuthState>((set) => ({
     // fetchMe 失败时已清理 token，这里只需捕获后保持未登录
     const user = await fetchMe(token)
     set({ token, user, ready: true })
+    resetWorkspaceStores()
   },
 
   logout: () => {
     setToken(null)
     set({ token: null, user: null })
+    resetWorkspaceStores()
   },
 }))
+
+/** 清空与会话相关的 store（切换账号时防止上一账号的会话被新账号引用）。 */
+function resetWorkspaceStores() {
+  useSessionsStore.getState().resetAll()
+  useChatStore.getState().reset()
+}
 
 // 任意 API 请求 401（token 过期/被改坏）：自动登出回登录页
 window.addEventListener(UNAUTHORIZED_EVENT, () => {
