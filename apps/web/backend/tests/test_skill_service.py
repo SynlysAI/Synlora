@@ -83,3 +83,27 @@ def test_write_skill_roundtrips_unicode_description(tmp_path):
     desc = '把 "CSV" 转成图表：输出到 output/'
     svc.write_skill(name="rt-skill", description=desc, content="# 目标\n做事")
     assert svc.list_skills()[0]["description"] == desc
+
+
+def test_delete_skill_rejects_path_traversal(tmp_path):
+    """非法技能名不得删除 skills 根之外的目录。"""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "victim.txt").write_text("important", encoding="utf-8")
+
+    svc = SkillService(tmp_path)
+    for bad in ("../outside", "../../outside", "a/b", "", ".", ".."):
+        assert svc.delete_skill(bad) is False
+    assert outside.exists() and (outside / "victim.txt").exists()
+
+
+def test_read_body_rejects_path_traversal(tmp_path):
+    """非法技能名不得读到 skills 根之外的内容。"""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text(
+        "---\nname: leak\ndescription: 泄露\n---\n\nSECRET", encoding="utf-8")
+
+    svc = SkillService(tmp_path)
+    for bad in ("../outside", "../../outside", "a/b", "", ".", ".."):
+        assert svc.read_body(bad) is None

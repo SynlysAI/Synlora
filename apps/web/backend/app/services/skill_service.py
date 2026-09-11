@@ -129,8 +129,10 @@ class SkillService:
             name: 技能名（即目录名）。
 
         Returns:
-            正文文本；技能不存在或不可解析时返回 None。
+            正文文本；名字非法、技能不存在或不可解析时返回 None。
         """
+        if not NAME_OK.match(name):
+            return None
         md = self.skills_dir / name / "SKILL.md"
         if not md.is_file():
             return None
@@ -177,11 +179,13 @@ class SkillService:
             name: 技能名（即目录名）。
 
         Returns:
-            目录存在并已删除返回 True；目录不存在返回 False。
+            目录存在并已删除返回 True；名字非法或目录不存在返回 False。
 
         Raises:
             ValueError: 技能名属于内置技能（不可删除）。
         """
+        if not NAME_OK.match(name):
+            return False
         target = self.skills_dir / name
         if not target.is_dir():
             return False
