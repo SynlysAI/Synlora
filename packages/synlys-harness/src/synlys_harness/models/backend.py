@@ -25,6 +25,12 @@ class TextDelta(BaseModel):
     text: str
 
 
+class ReasoningDelta(BaseModel):
+    """流式思考增量（OpenAI 兼容流的 delta.reasoning_content 字段）。"""
+
+    text: str
+
+
 class ToolCallChunk(BaseModel):
     """聚合完成的工具调用。"""
 
@@ -41,7 +47,7 @@ class Usage(BaseModel):
     completion_tokens: int = 0
 
 
-StreamEvent = TextDelta | ToolCallChunk | Usage
+StreamEvent = TextDelta | ReasoningDelta | ToolCallChunk | Usage
 
 
 @runtime_checkable
@@ -58,7 +64,7 @@ class LLMBackend(Protocol):
             tools: function calling schema（None 表示不带工具）。
 
         Yields:
-            TextDelta / ToolCallChunk / Usage。
+            TextDelta / ReasoningDelta / ToolCallChunk / Usage。
         """
         ...
 
@@ -92,7 +98,7 @@ def _to_openai_messages(messages: list[Message]) -> list[dict]:
 
 
 async def aggregate_stream(raw_stream: AsyncIterator[Any]) -> AsyncIterator[StreamEvent]:
-    """聚合 openai SDK 原始流：文本直通、tool-call delta 按索引拼装、usage 透传。
+    """聚合 openai SDK 原始流：文本/思考直通、tool-call delta 按索引拼装、usage 透传。
 
     Args:
         raw_stream: chat.completions.create(stream=True) 的异步迭代器。
@@ -115,6 +121,9 @@ async def aggregate_stream(raw_stream: AsyncIterator[Any]) -> AsyncIterator[Stre
             text = getattr(delta, "content", None)
             if text:
                 yield TextDelta(text=text)
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield ReasoningDelta(text=reasoning)
             for tc in getattr(delta, "tool_calls", None) or []:
                 slot = calls.setdefault(tc.index, {"id": "", "name": "", "args": ""})
                 if tc.id:

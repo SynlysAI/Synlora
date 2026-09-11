@@ -34,14 +34,15 @@ class EventLog:
         """用历史事件预填充日志（跨轮恢复 seq 与上下文）。
 
         Args:
-            events: 历史事件（须按 seq 升序且从 0 连续）。
+            events: 历史事件（须按 seq 严格递增；瞬态 delta 类事件由宿主
+                过滤不落盘，持久层存在 seq 洞属预期，不再要求从 0 连续）。
 
         Raises:
-            ValueError: seq 不连续或非升序。
+            ValueError: seq 非严格递增（乱序/重复）。
         """
-        for i, ev in enumerate(events):
-            if ev.seq != i:
-                raise ValueError(f"历史事件 seq 不连续: 期望 {i} 实际 {ev.seq}")
+        for prev, cur in zip(events, events[1:]):
+            if cur.seq <= prev.seq:
+                raise ValueError(f"历史事件 seq 非严格递增: {prev.seq} 后出现 {cur.seq}")
         self._events = list(events)
 
     async def append(self, type_: EventType, payload: dict[str, Any]) -> SessionEvent:
@@ -54,8 +55,11 @@ class EventLog:
         Returns:
             构造完成的 SessionEvent（seq 已分配）。
         """
+        # 续号取 last.seq+1（空日志 0 起）而非 len(events)：seed 的历史
+        # 可能带 seq 洞（瞬态事件不落盘），len 续号会与洞位冲突
+        next_seq = (self._events[-1].seq + 1) if self._events else 0
         event = SessionEvent(
-            seq=len(self._events), type=type_, payload=dict(payload), ts=time.time()
+            seq=next_seq, type=type_, payload=dict(payload), ts=time.time()
         )
         self._events.append(event)
         for sink in self._sinks:

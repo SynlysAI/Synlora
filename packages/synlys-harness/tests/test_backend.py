@@ -42,6 +42,22 @@ async def test_aggregate_text_and_usage():
     assert events[-1].prompt_tokens == 10
 
 
+async def test_aggregate_reasoning_deltas():
+    """reasoning_content 增量聚合为 ReasoningDelta，与 TextDelta 共存且保持到达顺序。"""
+    chunks = [
+        _Chunk({"reasoning_content": "想"}),
+        _Chunk({"reasoning_content": "一想"}),
+        _Chunk({"content": "答"}),
+        _Chunk({"content": "案"}),
+    ]
+    events = [e async for e in aggregate_stream(_aiter(chunks))]
+    kinds = [(type(e).__name__, getattr(e, "text", None)) for e in events]
+    assert kinds == [
+        ("ReasoningDelta", "想"), ("ReasoningDelta", "一想"),
+        ("TextDelta", "答"), ("TextDelta", "案"),
+    ]
+
+
 async def test_aggregate_tool_call_deltas():
     """分片到达的 tool call 参数被聚合成完整 ToolCallChunk。"""
     chunks = [

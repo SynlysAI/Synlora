@@ -18,6 +18,11 @@ def derive_messages(events: list[SessionEvent], include_system: bool = True) -> 
     结果"），否则下轮会产出非法的"assistant(tool_calls) 后无 tool
     响应"序列。
 
+    思考事件（reasoning/delta 与 assistant/reasoning）不投影：思考内容
+    只做展示回放，不回投给 LLM（与 DeepSeek 官方多轮语义一致）——下方
+    elif 链无对应分支，自然跳过。llm/delta 同理由 assistant/message
+    承载最终文本。
+
     Args:
         events: 会话全部事件（按 seq 升序）。
         include_system: 是否把 turn/start 中的 system_prompt 投影为首条 system 消息。

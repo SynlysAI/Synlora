@@ -27,6 +27,8 @@ class EventType(str, enum.Enum):
     TURN_START = "turn/start"
     USER_MESSAGE = "user/message"
     LLM_DELTA = "llm/delta"
+    REASONING_DELTA = "reasoning/delta"  # 瞬态：思考流增量（仅 SSE 推送，不落盘）
+    ASSISTANT_REASONING = "assistant/reasoning"  # 定稿：本轮思考全文（落盘，供回放展示）
     ASSISTANT_MESSAGE = "assistant/message"
     TOOL_CALL = "tool/call"
     TOOL_RESULT = "tool/result"

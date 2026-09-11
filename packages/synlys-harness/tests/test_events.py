@@ -83,15 +83,38 @@ async def test_seed_then_append_assigns_next_seq():
     assert log.events[:3] == [_history_event(i) for i in range(3)]
 
 
-def test_seed_rejects_non_contiguous_seq():
-    """seed 校验 seq 必须从 0 升序连续：乱序/跳号抛 ValueError。"""
+def test_seed_allows_seq_holes():
+    """seed 容忍 seq 有洞（瞬态 delta 不落盘后持久层出现洞）：0,1,3,4 通过。"""
     log = EventLog()
-    with pytest.raises(ValueError, match="不连续"):
-        log.seed([_history_event(0), _history_event(2)])
-    with pytest.raises(ValueError, match="不连续"):
+    log.seed([_history_event(i) for i in (0, 1, 3, 4)])
+    assert [e.seq for e in log.events] == [0, 1, 3, 4]
+    assert log.last() is not None and log.last().seq == 4
+
+
+async def test_append_after_hole_continues_from_last():
+    """洞后 append 续号为 last.seq+1（而非 len(events)，避免撞洞）：seed 0,1,3 → append 4。"""
+    log = EventLog()
+    log.seed([_history_event(0), _history_event(1), _history_event(3)])
+    ev = await log.append(EventType.TURN_END, {})
+    assert ev.seq == 4
+    assert [e.seq for e in log.events] == [0, 1, 3, 4]
+
+
+async def test_append_on_seeded_empty_starts_at_zero():
+    """seed 空列表后 append 从 0 起号。"""
+    log = EventLog()
+    log.seed([])
+    ev = await log.append(EventType.TURN_START, {})
+    assert ev.seq == 0
+
+
+def test_seed_rejects_non_increasing_seq():
+    """seed 校验 seq 严格递增：乱序/重复抛 ValueError（有洞合法，见上）。"""
+    log = EventLog()
+    with pytest.raises(ValueError, match="严格递增"):
         log.seed([_history_event(1), _history_event(0)])
-    with pytest.raises(ValueError, match="不连续"):
-        log.seed([_history_event(1)])
+    with pytest.raises(ValueError, match="严格递增"):
+        log.seed([_history_event(0), _history_event(0)])
 
 
 def test_seed_empty_keeps_log_clean():

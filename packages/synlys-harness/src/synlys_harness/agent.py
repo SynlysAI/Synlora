@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from .events import EventLog
-from .models.backend import LLMBackend, TextDelta, ToolCallChunk, Usage
+from .models.backend import LLMBackend, ReasoningDelta, TextDelta, ToolCallChunk, Usage
 from .session import derive_messages
 from .tools.pipeline import ToolPipeline
 from .tools.registry import ToolRegistry
@@ -160,6 +160,7 @@ class RunSession:
                     messages = await self._hooks.before_llm_call(messages)
 
                 text_parts: list[str] = []
+                reasoning_parts: list[str] = []
                 tool_calls: list[ToolCallChunk] = []
                 try:
                     # aclosing：消费中断/异常时确定性地关闭后端流（否则流要等 GC 才收尾）
@@ -177,6 +178,12 @@ class RunSession:
                                     EventType.LLM_DELTA, {"text": ev.text, "step": step},
                                 )
                                 text_parts.append(ev.text)
+                            elif isinstance(ev, ReasoningDelta):
+                                # 瞬态：仍经 EventLog 分配 seq（SSE 照推），宿主落盘层过滤
+                                yield await self._emit(
+                                    EventType.REASONING_DELTA, {"text": ev.text},
+                                )
+                                reasoning_parts.append(ev.text)
                             elif isinstance(ev, ToolCallChunk):
                                 tool_calls.append(ev)
                             elif isinstance(ev, Usage):
@@ -194,6 +201,13 @@ class RunSession:
                 if self._llm_failed:
                     aborted = True
                     break
+
+                # 思考定稿：本 step 思考全文在 assistant/message 与 tool 循环
+                # 之前落账（每 step 一条；多 step turn 会有多条，回放按序展示）
+                if reasoning_parts:
+                    yield await self._emit(
+                        EventType.ASSISTANT_REASONING, {"content": "".join(reasoning_parts)},
+                    )
 
                 turn_text = "".join(text_parts)
                 if text_parts and not tool_calls:
@@ -253,6 +267,12 @@ class RunSession:
             payload = (
                 {"step_reached": True, "reason": self._abort_reason()} if aborted else {}
             )
+            # turn/end 透传本轮 token 用量（多次 step 为 last-wins 累计视角）
+            if not aborted and self._last_usage is not None:
+                payload["usage"] = {
+                    "prompt_tokens": self._last_usage.prompt_tokens,
+                    "completion_tokens": self._last_usage.completion_tokens,
+                }
             closer = await self._emit(closer_type, payload)
             if self._hooks and self._hooks.on_session_end:
                 await self._hooks.on_session_end(self)

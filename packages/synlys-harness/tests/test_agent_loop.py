@@ -5,7 +5,8 @@ import pytest
 
 from synlys_harness.agent import RunSession
 from synlys_harness.events import EventLog
-from synlys_harness.models.backend import TextDelta, ToolCallChunk, Usage
+from synlys_harness.models.backend import ReasoningDelta, TextDelta, ToolCallChunk, Usage
+from synlys_harness.session import derive_messages
 from synlys_harness.tools.pipeline import ToolPipeline
 from synlys_harness.tools.registry import ToolRegistry, tool
 from synlys_harness.types import AgentConfig, EventType, ExtensionHooks, ToolResult
@@ -278,6 +279,47 @@ async def test_context_extra_reaches_tools(tmp_path):
     events = [ev async for ev in session.run("探测")]
     assert EventType.TOOL_RESULT in [e.type for e in events]
     assert seen.get("http_allowed_hosts") == ["api.example.com"]
+
+
+async def test_reasoning_flow_delta_and_final():
+    """思考链路：reasoning/delta 流出 + assistant/reasoning 定稿全文 + turn/end 带 usage。"""
+    backend = FakeBackend([[
+        ReasoningDelta(text="先想"),
+        ReasoningDelta(text="一想"),
+        TextDelta(text="答"),
+        Usage(prompt_tokens=7, completion_tokens=4),
+    ]])
+    session = _session(backend)
+    events = await _collect(session, "问")
+    types = [e.type for e in events]
+    deltas = [e for e in events if e.type is EventType.REASONING_DELTA]
+    assert [d.payload["text"] for d in deltas] == ["先想", "一想"]
+    finals = [e for e in events if e.type is EventType.ASSISTANT_REASONING]
+    assert len(finals) == 1
+    assert finals[0].payload["content"] == "先想一想"
+    # 定稿先于 assistant/message 发出
+    assert types.index(EventType.ASSISTANT_REASONING) < types.index(EventType.ASSISTANT_MESSAGE)
+    # turn/end payload 携带 usage
+    end = [e for e in events if e.type is EventType.TURN_END][0]
+    assert end.payload["usage"] == {"prompt_tokens": 7, "completion_tokens": 4}
+    # 思考事件不进入投影（LLM 上下文不受影响）
+    msgs = derive_messages(session._log.events)
+    assert [(m.role.value, m.content) for m in msgs] == [
+        ("system", "你是助手"), ("user", "问"), ("assistant", "答"),
+    ]
+
+
+async def test_reasoning_finalized_each_step():
+    """多 step turn（工具循环）每 step 各发一条 assistant/reasoning 定稿；无 Usage 时 turn/end 不带 usage。"""
+    backend = FakeBackend([
+        [ReasoningDelta(text="查"), ToolCallChunk(id="c1", name="add", arguments={"a": 1, "b": 2})],
+        [ReasoningDelta(text="总"), TextDelta(text="3")],
+    ])
+    events = await _collect(_session(backend), "1+2")
+    finals = [e for e in events if e.type is EventType.ASSISTANT_REASONING]
+    assert [f.payload["content"] for f in finals] == ["查", "总"]
+    end = [e for e in events if e.type is EventType.TURN_END][0]
+    assert "usage" not in end.payload
 
 
 async def test_multi_tool_calls_single_step():

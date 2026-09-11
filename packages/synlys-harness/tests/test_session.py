@@ -40,6 +40,24 @@ def test_delta_not_projected():
     assert len(msgs) == 1 and msgs[0].content == "部分"
 
 
+def test_reasoning_events_not_projected():
+    """思考事件（reasoning/delta 与 assistant/reasoning）不进入 LLM 上下文投影。
+
+    与 DeepSeek 官方多轮语义一致：思考内容只做展示回放，不回投给 LLM。
+    """
+    events = [
+        _ev(0, EventType.TURN_START, {"system_prompt": "你是助手"}),
+        _ev(1, EventType.USER_MESSAGE, {"text": "问"}),
+        _ev(2, EventType.REASONING_DELTA, {"text": "想"}),
+        _ev(3, EventType.ASSISTANT_REASONING, {"content": "想"}),
+        _ev(4, EventType.ASSISTANT_MESSAGE, {"content": "答"}),
+        _ev(5, EventType.TURN_END, {}),
+    ]
+    msgs = derive_messages(events, include_system=True)
+    assert [m.role.value for m in msgs] == ["system", "user", "assistant"]
+    assert msgs[-1].content == "答"
+
+
 def test_no_system_when_disabled():
     """include_system=False 时不产出 system 消息。"""
     events = [_ev(0, EventType.TURN_START, {"system_prompt": "x"})]
