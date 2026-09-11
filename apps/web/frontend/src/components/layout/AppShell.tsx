@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { ToastHost } from './ToastHost'
+import BrandWordmark from './BrandWordmark'
 import { ChatPanel } from '@/components/chat'
 import { Rightbar } from '@/components/rightbar'
 import { Sidebar } from '@/components/sidebar'
@@ -245,7 +246,10 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
           </IconButton>
         )}
         <LogoMark />
-        <span className="text-[19px] font-semibold leading-6">Synlora</span>
+        <BrandWordmark
+          height={26}
+          className="text-[var(--sa-alias-label-primary)]"
+        />
       </div>
       {/* 中部：新会话/助手/会话列表 */}
       <div className="min-h-0 flex-1">
