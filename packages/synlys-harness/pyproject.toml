@@ -23,6 +23,14 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# 内置技能种子（resources 不是包，无 __init__.py，必须显式声明随包安装，
+# 否则正式安装后 SkillService.seed_builtins 找不到 src 树）。
+[tool.setuptools.package-data]
+synlys_harness = [
+    "resources/skills/**/*",
+    "resources/skills/*/*",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

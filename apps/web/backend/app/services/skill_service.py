@@ -1,0 +1,200 @@
+"""技能：磁盘 SKILL.md 的扫描/解析/写入（不入库）。
+
+字段与正文骨架遵循 jiuwen `skill-spec.md`：frontmatter 必填
+`name`（= 目录名，kebab-case）/ `description`（做什么 + 何时用），可选
+`version` / `author` / `tags` / `allowed_tools`；正文骨架
+`# 标题 → ## 目标 → ## 工作流 → ## 决策规则 → ## 输出要求`。
+
+frontmatter 刻意不声明 `tools`：权限由系统分配（jiuwen 明确禁止）。
+"""
+from __future__ import annotations
+
+import re
+import shutil
+from pathlib import Path
+
+import synlys_harness
+import yaml
+
+NAME_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+BUILTIN_SKILL_NAMES = frozenset({"data-analysis", "pdf-extraction"})
+RESOURCE_SKILLS = Path(synlys_harness.__file__).resolve().parent / "resources" / "skills"
+
+
+def parse_skill_md(text: str) -> dict:
+    """解析 SKILL.md 全文。
+
+    Args:
+        text: SKILL.md 内容。
+
+    Returns:
+        含 name/description/version/author/tags/allowed_tools/content 的字典。
+
+    Raises:
+        ValueError: frontmatter 缺失，或缺 name/description，或 name 非 kebab-case。
+    """
+    match = FRONTMATTER.match(text)
+    if not match:
+        raise ValueError("缺少 frontmatter")
+    meta = yaml.safe_load(match.group(1)) or {}
+    name = str(meta.get("name") or "").strip()
+    description = str(meta.get("description") or "").strip()
+    if not NAME_OK.match(name):
+        raise ValueError(f"技能名必须是 kebab-case: {name!r}")
+    if not description:
+        raise ValueError("description 必填")
+    return {
+        "name": name,
+        "description": description,
+        "version": str(meta.get("version") or "1.0"),
+        "author": str(meta.get("author") or ""),
+        "tags": [str(t) for t in (meta.get("tags") or [])],
+        "allowed_tools": [str(t) for t in (meta.get("allowed_tools") or [])],
+        "content": match.group(2).strip(),
+    }
+
+
+def render_skill_md(skill: dict) -> str:
+    """把技能字段渲染回 SKILL.md 文本（落盘/导出共用）。
+
+    Args:
+        skill: 含 name/description/content 等的字典。
+
+    Returns:
+        SKILL.md 全文（frontmatter + 正文）。
+    """
+    front = yaml.safe_dump(
+        {
+            "name": skill["name"],
+            "description": skill["description"],
+            "version": skill.get("version") or "1.0",
+            "author": skill.get("author") or "",
+            "tags": skill.get("tags") or [],
+            "allowed_tools": skill.get("allowed_tools") or [],
+        },
+        allow_unicode=True, sort_keys=False,
+    ).strip()
+    return f"---\n{front}\n---\n\n{skill['content'].strip()}\n"
+
+
+class SkillService:
+    """{data_root}/skills 下的技能读写与扫描。"""
+
+    def __init__(self, data_root: Path) -> None:
+        """保存数据根。
+
+        Args:
+            data_root: 应用数据根目录。
+        """
+        self._data_root = data_root
+
+    @property
+    def skills_dir(self) -> Path:
+        """技能根目录（自动创建）。
+
+        Returns:
+            {data_root}/skills 路径，不存在时已创建。
+        """
+        d = self._data_root / "skills"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def list_skills(self) -> list[dict]:
+        """扫描全部技能。
+
+        按目录名排序；单个技能解析失败（缺 frontmatter / 名不合法 / YAML 语法
+        错误）只跳过该目录，不影响其余技能。
+
+        Returns:
+            技能字典列表，每项在解析结果上追加 `builtin` 标记。
+        """
+        out: list[dict] = []
+        for entry in sorted(self.skills_dir.iterdir()):
+            md = entry / "SKILL.md"
+            if not md.is_file():
+                continue
+            try:
+                skill = parse_skill_md(md.read_text(encoding="utf-8"))
+            except (ValueError, yaml.YAMLError):
+                continue
+            skill["builtin"] = skill["name"] in BUILTIN_SKILL_NAMES
+            out.append(skill)
+        return out
+
+    def read_body(self, name: str) -> str | None:
+        """读技能正文（不含 frontmatter）。
+
+        Args:
+            name: 技能名（即目录名）。
+
+        Returns:
+            正文文本；技能不存在或不可解析时返回 None。
+        """
+        md = self.skills_dir / name / "SKILL.md"
+        if not md.is_file():
+            return None
+        try:
+            return parse_skill_md(md.read_text(encoding="utf-8"))["content"]
+        except (ValueError, yaml.YAMLError):
+            return None
+
+    def write_skill(self, *, name: str, description: str, content: str,
+                    version: str = "1.0", author: str = "",
+                    tags: list[str] | None = None,
+                    allowed_tools: list[str] | None = None) -> dict:
+        """写入（新建或覆盖）一个技能目录。
+
+        Args:
+            name: 技能名（kebab-case，同时作为目录名）。
+            description: 技能描述（做什么 + 何时用）。
+            content: 正文（不含 frontmatter）。
+            version: 版本号。
+            author: 作者。
+            tags: 标签列表。
+            allowed_tools: 允许的工具名列表。
+
+        Returns:
+            写入后的技能字典（含 `builtin` 标记）。
+
+        Raises:
+            ValueError: 技能名不是 kebab-case。
+        """
+        if not NAME_OK.match(name):
+            raise ValueError(f"技能名必须是 kebab-case: {name!r}")
+        skill = {"name": name, "description": description, "content": content,
+                 "version": version, "author": author,
+                 "tags": tags or [], "allowed_tools": allowed_tools or []}
+        target = self.skills_dir / name
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
+        return {**skill, "builtin": name in BUILTIN_SKILL_NAMES}
+
+    def delete_skill(self, name: str) -> bool:
+        """删除技能目录。
+
+        Args:
+            name: 技能名（即目录名）。
+
+        Returns:
+            目录存在并已删除返回 True；目录不存在返回 False。
+
+        Raises:
+            ValueError: 技能名属于内置技能（不可删除）。
+        """
+        target = self.skills_dir / name
+        if not target.is_dir():
+            return False
+        if name in BUILTIN_SKILL_NAMES:
+            raise ValueError("内置技能不可删除")
+        shutil.rmtree(target)
+        return True
+
+    def seed_builtins(self) -> None:
+        """把随包发布的内置技能拷到用户技能目录（幂等，不覆盖已有目录）。"""
+        if not RESOURCE_SKILLS.is_dir():
+            return
+        for src in RESOURCE_SKILLS.iterdir():
+            dst = self.skills_dir / src.name
+            if not dst.exists():
+                shutil.copytree(src, dst)
