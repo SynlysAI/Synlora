@@ -117,7 +117,7 @@ function ChatEntry({ item, newGroup, assistantAvatar, assistantName, turnActive 
   const header = newGroup ? (
     <TurnHeader avatar={assistantAvatar} name={assistantName} active={turnActive} />
   ) : null
-  const wrapper = newGroup ? 'mt-7' : 'ml-[42px]'
+  const groupCls = newGroup ? 'mt-7' : 'mt-1.5'
 
   if (item.kind === 'user') {
     return (
@@ -128,7 +128,7 @@ function ChatEntry({ item, newGroup, assistantAvatar, assistantName, turnActive 
   }
   if (item.kind === 'reasoning') {
     return (
-      <section className={newGroup ? 'mt-7' : wrapper}>
+      <section className={groupCls}>
         {header}
         <ReasoningPanel text={item.text} running={false} />
       </section>
@@ -136,20 +136,18 @@ function ChatEntry({ item, newGroup, assistantAvatar, assistantName, turnActive 
   }
   if (item.kind === 'assistant') {
     return (
-      <section className={newGroup ? 'mt-7' : ''}>
+      <section className={groupCls}>
         {header}
-        <div className={newGroup ? '' : wrapper}>
-          <AssistantMessage
-            content={item.content}
-            elapsedMs={item.elapsedMs}
-            usage={item.usage}
-          />
-        </div>
+        <AssistantMessage
+          content={item.content}
+          elapsedMs={item.elapsedMs}
+          usage={item.usage}
+        />
       </section>
     )
   }
   return (
-    <section className={newGroup ? 'mt-7' : wrapper}>
+    <section className={groupCls}>
       {header}
       <ToolCallCard call={item.call} result={item.result} />
     </section>
@@ -225,7 +223,7 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
               ))}
               {/* 流式思考（turn 头部跟随 lastIsUser 判定） */}
               {thinkingText && (
-                <section className={lastIsUser ? 'mt-1' : 'ml-[42px]'}>
+                <section className="mt-1.5">
                   {lastIsUser && (
                     <TurnHeader avatar={assistantAvatar} name={assistantName} active />
                   )}
@@ -234,7 +232,7 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
               )}
               {/* 流式正文 */}
               {streamingText && (
-                <section className={lastIsUser && !thinkingText ? 'mt-1' : 'ml-[42px]'}>
+                <section className="mt-1.5">
                   {lastIsUser && !thinkingText && (
                     <TurnHeader avatar={assistantAvatar} name={assistantName} active />
                   )}

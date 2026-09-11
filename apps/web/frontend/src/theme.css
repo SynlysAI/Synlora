@@ -389,3 +389,25 @@ body {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.45; transform: scale(0.82); }
 }
+
+/* 思考/工具执行中标题的扫光动画（Jiuwen 式：亮带从左向右扫过灰字） */
+@keyframes sa-shimmer {
+  0% { background-position: 220% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* 思考/工具折叠的 grid 高度过渡（Jiuwen 式平滑下拉） */
+.sa-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.3s ease;
+}
+
+.sa-collapse.is-open {
+  grid-template-rows: 1fr;
+}
+
+.sa-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
