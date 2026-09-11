@@ -57,7 +57,7 @@ export default function ChatPanel() {
 
   const session = sessions.find((s) => s._id === currentId)
   const assistant = assistants.find((a) => a._id === session?.assistant_id)
-  const assistantName = assistant?.name ?? 'SynlysAgent'
+  const assistantName = assistant?.name ?? 'Synlora'
   // 头像取助手的 emoji；没配则回退到「当前显示名的首字符」——未选专家时即平台名的 S
   const assistantAvatar = assistant?.avatar?.trim() || assistantName.slice(0, 1) || 'S'
   const messages = useChatStore((s) => s.messages)
@@ -72,7 +72,7 @@ export default function ChatPanel() {
         <div className="m-auto w-full pt-6 pb-24">
           <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
             <h1 className="mb-5 text-[32px] font-semibold leading-[48px] tracking-tight text-[var(--sa-alias-label-primary)]">
-              SynlysAgent 轻松解决科研每个问题！
+              Synlora 轻松解决科研每个问题！
             </h1>
           </div>
           <Composer empty={empty} />

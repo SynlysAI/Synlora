@@ -91,7 +91,7 @@ export default function LoginPage() {
         <div className="flex flex-col items-center gap-2 pb-6">
           <LogoMark />
           <h1 className="text-[18px] font-medium tracking-tight text-[var(--sa-alias-label-primary)]">
-            登录 SynlysAgent
+            登录 Synlora
           </h1>
         </div>
 

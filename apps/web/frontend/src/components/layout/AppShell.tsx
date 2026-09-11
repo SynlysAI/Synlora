@@ -242,7 +242,7 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
           </IconButton>
         )}
         <LogoMark />
-        <span className="text-[21px] font-bold tracking-tight">SynlysAgent</span>
+        <span className="text-[21px] font-bold tracking-tight">Synlora</span>
       </div>
       {/* 中部：新会话/助手/会话列表 */}
       <div className="min-h-0 flex-1">

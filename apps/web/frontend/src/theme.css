@@ -1,5 +1,5 @@
 /* =====================================================================
-   SynlysAgent 设计令牌（前缀 --sa-）
+   Synlora 设计令牌（前缀 --sa- 沿用项目早期代号，未随产品名调整）
    自 deepseek-harness packages/client/ui-theme/src/styles/ 三层体系移植：
    1. 基础 token（:root）：字体栈 / 动效 / 圆角 / 内容字号基准
    2. --sa-static-*   原始色板（明暗共用，色值逐字照抄 design-platform.css）

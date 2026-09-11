@@ -145,7 +145,7 @@ export default function Composer({ empty }: ComposerProps) {
         disabled={streaming}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={streaming ? '回复生成中…' : '给 SynlysAgent 发送消息'}
+        placeholder={streaming ? '回复生成中…' : '给 Synlora 发送消息'}
         aria-label="消息输入框"
         style={{ minHeight: empty ? MIN_INPUT_HEIGHT_EMPTY : MIN_INPUT_HEIGHT_CHAT }}
         className="max-h-[148px] w-full resize-none bg-transparent py-0.5 text-[15px] leading-[22px] text-[var(--sa-alias-label-primary)] placeholder:text-[var(--sa-alias-label-caption)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
