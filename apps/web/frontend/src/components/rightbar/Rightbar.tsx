@@ -1,9 +1,9 @@
 /**
- * 右栏工作区：文件 / 运行信息 两页标签切换。
+ * 右栏工作区：文件（当前项目上传 + 目录树）/ 运行信息 两页标签切换。
  */
 import { useState } from 'react'
-import FilesPanel from './FilesPanel'
 import RunInfoPanel from './RunInfoPanel'
+import WorkspacePanel from './WorkspacePanel'
 
 /** 标签页定义。 */
 const TABS = [
@@ -51,7 +51,7 @@ export default function Rightbar() {
 
       {/* 面板区 */}
       <div className="min-h-0 flex-1">
-        {tab === 'files' ? <FilesPanel /> : <RunInfoPanel />}
+        {tab === 'files' ? <WorkspacePanel /> : <RunInfoPanel />}
       </div>
     </div>
   )

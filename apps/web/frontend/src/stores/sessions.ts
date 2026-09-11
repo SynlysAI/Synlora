@@ -1,12 +1,14 @@
 /**
  * 会话列表 store：CRUD 与当前选中态。
  *
- * 列表按 updated_at 倒序（后端排序）；create 成功后置为当前会话；
+ * 列表按 updated_at 倒序（后端排序）；create 成功后置为当前会话，并带上
+ * 当前项目 id（后端按该字段把会话绑定到项目，缺失则回落到活跃项目）；
  * remove 删除当前会话时清空 currentId（由面板层决定后续引导）。
  */
 import { create } from 'zustand'
 import type { Session } from '@/types'
 import { api } from '@/api/client'
+import { useProjectsStore } from './projects'
 
 interface SessionsState {
   /** 当前用户全部会话（updated_at 倒序）。 */
@@ -44,9 +46,13 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   },
 
   create: async (assistantId, title = '') => {
+    // 新会话绑定当前项目（无项目时不带该字段，由后端回落到活跃项目）
+    const projectId = useProjectsStore.getState().currentId
     const session = await api<Session>('/api/v1/sessions', {
       method: 'POST',
-      body: { assistant_id: assistantId, title },
+      body: projectId
+        ? { assistant_id: assistantId, title, project_id: projectId }
+        : { assistant_id: assistantId, title },
     })
     // 新会话 updated_at 最新：插到列表头并选中
     set((s) => ({ sessions: [session, ...s.sessions], currentId: session._id }))

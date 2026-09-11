@@ -7,6 +7,7 @@
  * - assistants_api.py -> Assistant
  * - sessions_api.py   -> Session / SessionEvent / EventType
  * - files_api.py  -> FileDoc / UploadResponse
+ * - projects_api.py -> Project / TreeEntry
  *
  * 时间戳约定：created_at / updated_at 为 Unix 浮点秒（存储层 TEXT 列）。
  */
@@ -78,6 +79,8 @@ export interface Session {
   message_count: number
   /** 会话级模型覆盖（null = 跟随助手绑定；前端用户在输入区可切换）。 */
   model_provider_id: string | null
+  /** 会话绑定的项目 id（创建时可选传入；旧会话可能缺该字段）。 */
+  project_id?: string | null
   created_at: number
   updated_at: number
 }
@@ -131,6 +134,28 @@ export interface ToolResultPayload {
   content: string
   error: string | null
   truncated: boolean
+}
+
+/** 项目文档（GET /api/v1/projects 列表项）。 */
+export interface Project {
+  _id: string
+  user_id: string
+  name: string
+  /** 磁盘目录名（重名时后端自动加后缀，与 name 可能不同）。 */
+  dir_name: string
+  archived: boolean
+  created_at: number
+  updated_at: number
+}
+
+/** 项目目录树的一级条目（GET /api/v1/projects/{pid}/tree）。 */
+export interface TreeEntry {
+  name: string
+  /** 相对项目根的路径（POSIX 分隔符；目录可直接作为下一层的 path 参数）。 */
+  path: string
+  is_dir: boolean
+  size: number
+  mtime: number
 }
 
 /** 文件上传响应（207 简化：逐项结果 + 顶层 status）。 */

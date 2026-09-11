@@ -11,6 +11,7 @@ import { create } from 'zustand'
 import type { AuthUser, LoginResponse, MeResponse } from '@/types'
 import { api, getToken, setToken, UNAUTHORIZED_EVENT } from '@/api/client'
 import { useSessionsStore } from './sessions'
+import { useProjectsStore } from './projects'
 import { useChatStore } from './chat'
 
 /** URL hash 中门户 token 的提取正则。 */
@@ -121,9 +122,10 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 }))
 
-/** 清空与会话相关的 store（切换账号时防止上一账号的会话被新账号引用）。 */
+/** 清空与会话相关的 store（切换账号时防止上一账号的会话/项目被新账号引用）。 */
 function resetWorkspaceStores() {
   useSessionsStore.getState().resetAll()
+  useProjectsStore.getState().reset()
   useChatStore.getState().reset()
 }
 

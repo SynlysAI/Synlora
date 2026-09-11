@@ -1,12 +1,14 @@
 /**
  * 底部输入区（DSH 形态）：大圆角容器内多行自适应输入 + 底部功能行
- * （左：模型选择器；右：发送/停止圆形按钮）。Enter 发送 / Shift+Enter 换行
- * （IME 组合中的 Enter 不发送）；streaming 时输入禁用且发送变停止按钮；
- * 错误提示条（含 429 话术）。
+ * （左：模型选择器；右：发送/停止圆形按钮）；容器下方一行当前项目 chip
+ * （Jiuwen 工作上下文行形态，见 ProjectPicker）。Enter 发送 /
+ * Shift+Enter 换行（IME 组合中的 Enter 不发送）；streaming 时输入禁用且
+ * 发送变停止按钮；错误提示条（含 429 话术）。
  */
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { useChatStore } from '@/stores/chat'
 import ModelPicker from './ModelPicker'
+import ProjectPicker from './ProjectPicker'
 
 /** 输入框最大高度（px，约 6 行：行高 22 + 上下 padding 12×2 + 边框）。 */
 const MAX_INPUT_HEIGHT = 148
@@ -123,6 +125,11 @@ export default function Composer() {
               </button>
             )}
           </div>
+        </div>
+
+        {/* 输入框下方：当前项目 chip（切换/新建项目） */}
+        <div className="mt-2 flex items-center gap-2 px-0.5">
+          <ProjectPicker />
         </div>
       </div>
     </div>

@@ -1,10 +1,12 @@
 /**
- * 中间列聊天面板：启动引导（加载列表 → 选中首个未归档会话 / 自动用第一个
- * 助手创建）+ 消息列表 + 输入区。左栏会话树 Task 5 接入后接管选中逻辑。
+ * 中间列聊天面板：启动引导（加载项目/会话/助手 → 选中首个未归档会话 /
+ * 自动用第一个助手创建）+ 消息列表 + 输入区。左栏会话树 Task 5 接入后
+ * 接管选中逻辑。
  */
 import { useEffect } from 'react'
 import { useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
+import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import Composer from './Composer'
 import MessageList from './MessageList'
@@ -15,12 +17,18 @@ export default function ChatPanel() {
   const currentId = useSessionsStore((s) => s.currentId)
   const assistants = useAssistantsStore((s) => s.assistants)
 
-  // 启动引导：并行加载会话与助手；无当前会话时选首个未归档或自动创建
+  // 启动引导：并行加载项目/会话/助手；无当前会话时选首个未归档或自动创建。
+  // 项目必须在此加载并在建会话之前完成：GET /api/v1/projects 首次访问会触发
+  // 后端旧布局迁移并补种「默认项目」，且新会话要带上当前项目 id。
   useEffect(() => {
     let cancelled = false
     void (async () => {
-      const [ss, as] = [useSessionsStore.getState(), useAssistantsStore.getState()]
-      await Promise.all([ss.load(), as.load()]).catch(() => {})
+      const [ss, as, ps] = [
+        useSessionsStore.getState(),
+        useAssistantsStore.getState(),
+        useProjectsStore.getState(),
+      ]
+      await Promise.all([ss.load(), as.load(), ps.load()]).catch(() => {})
       if (cancelled) return
       const st = useSessionsStore.getState()
       if (st.currentId) return

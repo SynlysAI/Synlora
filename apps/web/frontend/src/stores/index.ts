@@ -2,6 +2,7 @@
 export { useAuthStore } from './auth'
 export { useAssistantsStore, pickSelectedAssistant } from './assistants'
 export { useSessionsStore } from './sessions'
+export { useProjectsStore } from './projects'
 export { useChatStore, reduceEvent, reduceStats, emptyStats } from './chat'
 export type { ChatItem, ChatProjection, RunStats, ToolStat } from './chat'
 export { useToastsStore, toast } from './toasts'
