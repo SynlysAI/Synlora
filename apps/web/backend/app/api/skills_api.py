@@ -23,6 +23,17 @@ class SkillBody(BaseModel):
     allowed_tools: list[str] = []
 
 
+class SkillUpdateBody(BaseModel):
+    """更新请求体（技能名以路径参数为准，故此处不带 name）。"""
+
+    description: str
+    content: str
+    version: str = "1.0"
+    author: str = ""
+    tags: list[str] = []
+    allowed_tools: list[str] = []
+
+
 class SkillImportBody(BaseModel):
     """导入请求体。"""
 
@@ -89,14 +100,14 @@ async def create_skill(request: Request, body: SkillBody, user=Depends(require_a
 
 
 @router.patch("/{name}")
-async def update_skill(request: Request, name: str, body: SkillBody,
+async def update_skill(request: Request, name: str, body: SkillUpdateBody,
                        user=Depends(require_admin)):
     """覆盖写技能（技能名不可改，改名前请另建再删）。
 
     Args:
         request: FastAPI 请求。
-        name: 技能名（路径参数，以它为准）。
-        body: 技能字段。
+        name: 技能名（路径参数，以它为准；请求体不带 name）。
+        body: 技能字段（不含 name）。
         user: 当前登录用户（须为管理员）。
 
     Returns:

@@ -72,6 +72,18 @@ async def test_patch_skill_overwrites(client, admin_headers):
     assert skills["patch-me"]["content"] == "# 新正文"
 
 
+async def test_patch_skill_without_name_in_body(client, admin_headers):
+    """PATCH 的请求体不需要 name（技能名以路径参数为准）。"""
+    await client.post("/api/v1/skills",
+                      json={"name": "no-name-body", "description": "旧", "content": "# 旧"},
+                      headers=admin_headers)
+    r = await client.patch("/api/v1/skills/no-name-body",
+                           json={"description": "新", "content": "# 新"},
+                           headers=admin_headers)
+    assert r.status_code == 200
+    assert r.json()["name"] == "no-name-body" and r.json()["description"] == "新"
+
+
 async def test_delete_custom_skill_removes_it(client, admin_headers):
     """删除自建技能 200，之后列表里不再出现。"""
     await client.post("/api/v1/skills",
