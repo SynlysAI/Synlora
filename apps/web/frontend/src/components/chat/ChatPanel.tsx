@@ -57,9 +57,9 @@ export default function ChatPanel() {
 
   const session = sessions.find((s) => s._id === currentId)
   const assistant = assistants.find((a) => a._id === session?.assistant_id)
+  // 未选专家时头部即平台身份：名用平台名（消息头部会渲染成字标而非文字）
   const assistantName = assistant?.name ?? 'Synlora'
-  // 头像取助手的 emoji；没配则回退到「当前显示名的首字符」——未选专家时即平台名的 S
-  const assistantAvatar = assistant?.avatar?.trim() || assistantName.slice(0, 1) || 'S'
+  const platformDefault = !assistant
   const messages = useChatStore((s) => s.messages)
   const streamingText = useChatStore((s) => s.streamingText)
   const thinkingText = useChatStore((s) => s.thinkingText)
@@ -83,7 +83,7 @@ export default function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col">
-      <MessageList assistantName={assistantName} assistantAvatar={assistantAvatar} />
+      <MessageList assistantName={assistantName} platformDefault={platformDefault} />
       <Composer empty={empty} />
     </div>
   )

@@ -14,7 +14,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatItem } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import AssistantMessage, { formatElapsed } from './AssistantMessage'
-import Avatar from './Avatar'
+import BrandMark from '@/components/layout/BrandMark'
+import BrandWordmark from '@/components/layout/BrandWordmark'
 import ReasoningPanel from './ReasoningPanel'
 import ToolCallCard from './ToolCallCard'
 import UserMessage from './UserMessage'
@@ -53,12 +54,26 @@ function pushTo(turn: Turn, item: ChatItem) {
   else if (item.kind !== 'user') turn.work.push(item)
 }
 
-/** turn 头部行：头像 + 名称（+ 进行中 spinner）。 */
-function TurnHeader({ avatar, name, active }: { avatar: string; name: string; active: boolean }) {
+/**
+ * turn 头部行：品牌标记 + 名称（+ 进行中 spinner）。
+ *
+ * 标记统一用平台的品牌方块（与左栏品牌区同一个图形，不再按助手显示 emoji 头像）；
+ * 名称在「未选专家」时是平台名，直接用几何字标渲染，与侧栏品牌区完全一致；
+ * 选了专家则显示该专家名（可变文本，字标渲染不了）。
+ */
+function TurnHeader({ name, platformDefault, active }: {
+  name: string
+  platformDefault: boolean
+  active: boolean
+}) {
   return (
     <div className="flex items-center gap-2">
-      <Avatar char={avatar} />
-      <span className="text-[13px] font-semibold text-[var(--sa-alias-label-primary)]">{name}</span>
+      <BrandMark size={24} />
+      {platformDefault ? (
+        <BrandWordmark height={15} className="text-[var(--sa-alias-label-primary)]" />
+      ) : (
+        <span className="text-[13px] font-semibold text-[var(--sa-alias-label-primary)]">{name}</span>
+      )}
       {active && (
         <svg
           className="h-3 w-3 animate-spin text-[var(--sa-alias-label-tertiary)]"
@@ -141,12 +156,13 @@ interface TurnBlockProps {
   turn: Turn
   /** 本 turn 是否仍在流式进行（最后一组）。 */
   active: boolean
-  assistantAvatar: string
   assistantName: string
+  /** 未选专家（头部渲染平台字标而非专家名）。 */
+  platformDefault: boolean
 }
 
 /** 单个 turn 渲染：头部 → [chip 折叠的 work 区 | 流式 work 区] → 正文。 */
-function TurnBlock({ turn, active, assistantAvatar, assistantName }: TurnBlockProps) {
+function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockProps) {
   const [workOpen, setWorkOpen] = useState(false)
   const lastAnswer = turn.answers[turn.answers.length - 1]
   const elapsedMs = lastAnswer?.elapsedMs
@@ -159,7 +175,7 @@ function TurnBlock({ turn, active, assistantAvatar, assistantName }: TurnBlockPr
       {turn.user && <UserMessage text={turn.user.text} />}
       <div className="flex flex-col gap-1.5">
         {hasHeader && (
-          <TurnHeader avatar={assistantAvatar} name={assistantName} active={active} />
+          <TurnHeader name={assistantName} platformDefault={platformDefault} active={active} />
         )}
         {/* 思考/工具区：完成后收进 chip，流式中直接展示 */}
         {turn.work.length > 0 && (
@@ -204,14 +220,14 @@ function TurnBlock({ turn, active, assistantAvatar, assistantName }: TurnBlockPr
 }
 
 interface MessageListProps {
-  /** 当前助手名（空态/turn 头部展示）。 */
+  /** 当前助手名（turn 头部展示；未选专家时即平台名）。 */
   assistantName: string
-  /** 当前助手头像字符。 */
-  assistantAvatar: string
+  /** 未选专家（turn 头部渲染平台字标而非专家名）。 */
+  platformDefault: boolean
 }
 
 /** 消息列表组件（中间列上部的滚动区）。 */
-export default function MessageList({ assistantName, assistantAvatar }: MessageListProps) {
+export default function MessageList({ assistantName, platformDefault }: MessageListProps) {
   const messages = useChatStore((s) => s.messages)
   const streamingText = useChatStore((s) => s.streamingText)
   const thinkingText = useChatStore((s) => s.thinkingText)
@@ -250,8 +266,8 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
               key={i}
               turn={turn}
               active={streaming && i === turns.length - 1}
-              assistantAvatar={assistantAvatar}
               assistantName={assistantName}
+              platformDefault={platformDefault}
             />
           ))}
           {/* 流式区（头部已由最后一个 TurnBlock 渲染，此处只接内容） */}
