@@ -59,8 +59,10 @@ export default function WorkspaceGroup({
         return (
           <div key={project._id} className="group/ws flex flex-col">
             {/* 工作区行：文件夹图标 + 名称 + 展开箭头，点行展开/收起。
-                「+」绝对定位在行右侧、默认透明，hover 或键盘聚焦时替代箭头出现
+                「+」绝对定位在行右侧、默认透明，hover 或键盘聚焦时**原地替代**箭头出现
                 （照 jiuwen `.conversation-entity-row__plus`：opacity 0 → 行 hover 时 1）。
+                两者位置重叠、交叉淡入淡出，所以**不给「+」预留右内边距**——预留会把
+                箭头从行右缘往里推 36px，短名字时看着像悬在半空。
                 两枚按钮必须是兄弟节点——不能把「+」嵌进行按钮里（HTML 不允许按钮嵌套）。 */}
             <div className="relative">
               <button
@@ -68,7 +70,7 @@ export default function WorkspaceGroup({
                 onClick={() => onToggle(project._id)}
                 aria-expanded={isExpanded}
                 title={project.name}
-                className="flex min-h-9 w-full items-center gap-2 rounded-[var(--sa-radius-md)] px-2 pr-9 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)]"
+                className="flex min-h-9 w-full items-center gap-2 rounded-[var(--sa-radius-md)] px-2 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)]"
               >
                 {isExpanded ? (
                   <FolderFoldIcon className="h-3.5 w-3.5 shrink-0" />
