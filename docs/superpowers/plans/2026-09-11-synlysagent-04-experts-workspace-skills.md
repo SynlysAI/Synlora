@@ -1602,8 +1602,15 @@ app.include_router(skills_router)
 
 > **路由顺序坑**：`/import` 必须注册在 `/{name}/export` 之前吗？——不必，两者路径段数不同（1 vs 2），FastAPI 不会混淆。但若将来加 `GET /{name}`，需把 `/import` 放前面。
 
-- [ ] **Step 4: 跑测试确认通过**
-- [ ] **Step 5: Commit** — `feat(web): 技能 API（磁盘 SKILL.md 读写 + 导入导出）`
+- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 5: Commit** — `feat(web): 技能 API（磁盘 SKILL.md 读写 + 导入导出）`
+
+> **本任务已完成**：`ab5c2a5`（初版）+ `3bcc4c3`（PATCH 契约改进）。要点：
+> - 路由：`GET ""`（任意登录用户）、`GET /{name}/export`（PlainTextResponse）、`POST ""`（201/admin）、`PATCH /{name}`（**用独立的 `SkillUpdateBody`，请求体不需要 `name`，技能名以路径参数为准**）、`DELETE /{name}`（admin，内置 409 / 不存在 404）、`POST /import`（201，解析失败 422）。
+> - 单例建在 **lifespan 内**：`app.state.skill_service = SkillService(settings.data_root)`，**紧接着调一次 `seed_builtins()`**（幂等；这是内置技能能被列出来的前提）。位置照 `project_service`。
+> - **穿越实测结论（重要）**：`DELETE /api/v1/skills/..%2F..%2Fcanary` 这种**斜杠**穿越根本到不了路由——Starlette 的 `{name}` 是 `[^/]+`，跨不过 `/`（会落到 SPA 静态挂载返回 405）。真正能到达路由的是 **Windows 反斜杠** `..%5C..%5Ccanary`（解码后是单段路径），由 `SkillService` 的 `NAME_OK` 拒绝 → 404。**所以服务层的 `NAME_OK` 校验是这条防线的唯一有效一环，不能删。**
+>
+> 后端测试 162 → 173 passed。
 
 ---
 
