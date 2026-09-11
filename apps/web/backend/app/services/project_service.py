@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 from app.db.repos import ProjectRepo
 from app.services import workspace
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectService:
@@ -83,25 +86,29 @@ class ProjectService:
             return project
 
     async def delete_project(self, user_id: str, project_id: str) -> bool:
-        """删除项目记录与磁盘目录（目录删不掉时改名 trash 释放名字）。
+        """删除项目记录与磁盘目录。
+
+        目录删除失败时 `remove_project_dir` 会把它改名成 `{name}.trash-{ts}-{uuid}`
+        以释放目录名并保住数据，这属于正常兜底而非失败——只要记录删掉了就返回 True。
 
         Args:
             user_id: 用户 sub。
             project_id: 项目 id。
 
         Returns:
-            True 表示记录与目录都已彻底删除；目录删不掉但已改名为 trash 时返回
-            False（记录仍会被删除）；项目不存在返回 False。
+            True 表示记录已删除；项目不存在（或不属于该用户）返回 False。
 
         Raises:
-            OSError: 删除与兜底改名均失败（记录会残留，目录名也未释放）。
+            OSError: 删除目录与兜底改名均失败（此时记录会残留）。
         """
         project = await self.get(user_id, project_id)
         if project is None:
             return False
-        removed = workspace.remove_project_dir(self.root_for(project))
+        trash_fallback = not workspace.remove_project_dir(self.root_for(project))
         await self._repo.delete(project_id)
-        return removed
+        if trash_fallback:
+            logger.warning("项目目录未能删除，已改名为 trash：%s", project["dir_name"])
+        return True
 
     async def get(self, user_id: str, project_id: str) -> dict | None:
         """取项目（校验归属）。

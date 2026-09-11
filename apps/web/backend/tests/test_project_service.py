@@ -114,7 +114,7 @@ async def test_delete_cross_user_returns_false(tmp_path, store):
 
 
 async def test_delete_falls_back_to_trash_and_drops_record(tmp_path, store, monkeypatch):
-    """rmtree 失败时目录改名 trash 保住数据，记录仍删除，返回 False。"""
+    """rmtree 失败时目录改名 trash 保住数据，记录仍删除，返回 True（成功语义）。"""
     svc = ProjectService(store, tmp_path)
     p = await svc.create_project("u1", "实验一")
 
@@ -123,7 +123,7 @@ async def test_delete_falls_back_to_trash_and_drops_record(tmp_path, store, monk
 
     monkeypatch.setattr(shutil, "rmtree", _boom)
     removed = await svc.delete_project("u1", p["_id"])
-    assert removed is False
+    assert removed is True
     user_dir = tmp_path / "workspaces" / "u1"
     assert not (user_dir / "实验一").exists()
     assert len(list(user_dir.glob("实验一.trash-*"))) == 1

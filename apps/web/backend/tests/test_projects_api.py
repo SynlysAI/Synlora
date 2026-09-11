@@ -44,6 +44,16 @@ async def test_delete_project_removes_it(client, user_headers):
     assert (await client.get("/api/v1/projects", headers=user_headers)).json() == []
 
 
+async def test_delete_project_twice_second_is_404(client, user_headers):
+    """删除成功后再次删除同一 id 返回 404（404 只代表记录不存在，不代表目录删不掉）。"""
+    pid = (await client.post("/api/v1/projects", json={"name": "x"},
+                             headers=user_headers)).json()["_id"]
+    assert (await client.delete(f"/api/v1/projects/{pid}",
+                                headers=user_headers)).status_code == 200
+    assert (await client.delete(f"/api/v1/projects/{pid}",
+                                headers=user_headers)).status_code == 404
+
+
 async def test_tree_missing_project_404(client, user_headers):
     """tree 对不存在的项目 id 返回 404（服务层 ValueError 映射）。"""
     r = await client.get("/api/v1/projects/no-such-project/tree", headers=user_headers)
