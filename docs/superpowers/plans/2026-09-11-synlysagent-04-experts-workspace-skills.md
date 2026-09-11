@@ -632,7 +632,12 @@ class ProjectService:
 
 **Files:** Create `apps/web/backend/app/api/projects_api.py`；Modify `app/main.py`；Test `apps/web/backend/tests/test_projects_api.py`
 
-- [ ] **Step 1: 写失败测试**
+> **两处订正**（实测得到）：
+> 1. conftest 里**没有 `auth_headers`**，只有 `user_headers`（普通用户）与 `admin_headers`。下文测试代码中的 `auth_headers` 一律读作 `user_headers`。
+> 2. `delete_project` 的返回语义最终定为「**记录是否被删除**」而非「目录是否被彻底删除」——`remove_project_dir` 在 rmtree 失败时改名 `.trash-*` 是保护数据的正常兜底，不算失败。否则「记录已删、目录改名为 trash」会被 API 误判成 404。见文末完成记录。
+> 3. 单例必须建在 **lifespan 内**（`store` 在 lifespan 里才创建，`create_app` 时还是 `None`），与 `agent_service` 同位置。
+
+- [x] **Step 1: 写失败测试**
 
 ```python
 async def test_list_projects_returns_empty(client, auth_headers):
@@ -691,12 +696,6 @@ class ProjectCreateBody(BaseModel):
     name: str
 
 
-class ProjectRenameBody(BaseModel):
-    """改名请求体。"""
-
-    name: str
-
-
 @router.get("")
 async def list_projects(request: Request, user=Depends(get_current_user)):
     """列出当前用户的项目（首次访问会补种默认项目）。"""
@@ -737,8 +736,10 @@ app.state.project_service = ProjectService(store, settings.data_root)
 app.include_router(projects_router)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
-- [ ] **Step 5: Commit** — `feat(web): 项目 API 与目录树接口`
+- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 5: Commit** — `feat(web): 项目 API 与目录树接口`
+
+> **本任务已完成**：`9c1a87c`（初版）+ `671fdf95`（修删除语义误报 404）。测试文件用 `user_headers` 夹具；共 8 个用例。全量后端 133 passed / 36 skipped。
 
 ---
 
@@ -1733,7 +1734,7 @@ export default function AttachMenu({ items }: { items: AttachMenuItem[] }) {
 - 「计划模式 / 追求目标」开关（jiuwen 有）本轮不做。
 - jiuwen 的 `skill_index` 结构化检索、marketplace、技能版本管理本轮不做，只做 `skill.list` + `skill.read`。
 - DSH 的 `dsh-skill` 多来源 provider 注册表 + 技能目录**文件监听（watcher）**本轮不做——技能改动后需刷新页面/重进会话才生效（jiuwen 同样需要重扫）。
-- 项目改名本轮只做 API（`PATCH /projects/{id}`），不做前端入口。
+- 项目改名本轮不做（`ProjectRepo.rename` 已就绪但无服务层/路由/前端；改名要同步改磁盘目录名，留到后续）。
 - 技能目录里的 `scripts/ references/ assets/` 不做编辑 UI（可手动放文件；`skill.read` 只读 `SKILL.md` 正文）。
 
 **类型一致性**：`TreeEntry`（C7）字段与 `list_dir` 返回（C3）一致；`Project` 字段与 `ProjectRepo.create`（C2）一致；`build_system_prompt` 签名在 B1 定义、B5 调用一致。
