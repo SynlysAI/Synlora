@@ -7,8 +7,8 @@
  * 时序要点（见 harness agent.py）：
  * - llm/delta 先行累积为流式气泡；assistant/message 携带完整 content 定稿并
  *   清空累积（避免重复）；
- * - 工具调用前的解说文本只出现在 delta 中（tool/call.content 为冗余副本），
- *   故 tool/call 时将累积文本定稿为助手消息；
+ * - 工具调用前的解说文本在实时流里来自 delta，落盘则冗余存进 tool/call.content；
+ *   故 tool/call 时将其中一段定稿为助手消息（优先 payload.content，见 reduceEvent）；
  * - 终止标志是 turn/end / turn/aborted 事件而非连接关闭；收尾时残留累积
  *   文本（中止/断连）定稿保留。
  */
@@ -180,13 +180,17 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
       return { ...state, items: [...state.items, { kind: 'assistant', content }], streamingText: '' }
     }
     case 'tool/call': {
-      // 工具调用前若有思考/解说文本（仅 delta 中出现），先定稿
+      // 工具调用前若有思考/解说文本，先定稿。解说文本在实时流里只出现在 delta
+      // 中，同时被冗余写进 tool/call.content 落盘——**优先取 payload.content**，
+      // 这样刷新/重进会话（无 delta）也能还原同一段解说，实时与回放渲染一致。
+      const narration =
+        (typeof payload.content === 'string' && payload.content) || state.streamingText
       let items = state.items
       if (state.thinkingText) {
         items = [...items, { kind: 'reasoning', text: state.thinkingText }]
       }
-      if (state.streamingText) {
-        items = [...items, { kind: 'assistant', content: state.streamingText }]
+      if (narration) {
+        items = [...items, { kind: 'assistant', content: narration }]
       }
       return {
         ...state,

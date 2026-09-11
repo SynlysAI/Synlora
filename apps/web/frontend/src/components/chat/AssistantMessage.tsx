@@ -152,8 +152,14 @@ interface AssistantMessageProps {
   content: string
   /** 流式进行中：尾部渲染渐变脉冲光标。 */
   streaming?: boolean
-  /** 本轮任务用时（turn/end 计算）。 */
-  elapsedMs?: number
+  /**
+   * 中间解说（非本轮最终回答）：不渲染尾部时间/复制/用量。
+   *
+   * 照 jiuwen `buildTurnTimeline` 的 `hideMeta` 与 DSH 的 turn-process——
+   * 一轮里只要有后续正文，前面的正文都是工具调用之间的过程解说，
+   * 收进「任务用时」折叠区，不该有自己的复制按钮。
+   */
+  hideMeta?: boolean
   /** 本轮 token 用量（turn/end payload）。 */
   usage?: { prompt_tokens: number; completion_tokens: number }
   /** 本轮完成时间戳（秒，尾部首个展示）。 */
@@ -161,7 +167,9 @@ interface AssistantMessageProps {
 }
 
 /** 助手消息组件（文档流排版 + 尾部操作行）。 */
-export default function AssistantMessage({ content, streaming, usage, finishedTs }: AssistantMessageProps) {
+export default function AssistantMessage({
+  content, streaming, hideMeta, usage, finishedTs,
+}: AssistantMessageProps) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     try {
@@ -186,8 +194,9 @@ export default function AssistantMessage({ content, streaming, usage, finishedTs
           />
         )}
       </div>
-      {/* 尾部操作行（Jiuwen 顺序）：完成时间 → 复制（hover 显现）→ token 用量 */}
-      {!streaming && (
+      {/* 尾部操作行（Jiuwen 顺序）：完成时间 → 复制（hover 显现）→ token 用量。
+          中间解说（hideMeta）不渲染，操作行一轮只有最终回答这一份。 */}
+      {!streaming && !hideMeta && (
         <div className="flex items-center gap-3 pt-0.5 text-[11.5px] text-[var(--sa-alias-label-caption)]">
           {finishedTs != null && (
             <span className="tabular-nums">{formatClock(finishedTs)}</span>

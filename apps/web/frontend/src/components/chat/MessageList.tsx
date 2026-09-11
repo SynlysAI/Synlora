@@ -4,11 +4,11 @@
  *
  * Jiuwen 展示模式：
  * - turn 头部行（头像 + 助手名）在整组回答上方
- * - 本轮的思考/工具行收进"任务用时 X.XXs"折叠 chip（completed-work-chip），
- *   完成后默认收起，点击展开才看到思考与工具调用，页面精简
- * - 流式进行中：思考/工具行直接实时展示（各组件自带折叠与扫光）
- * - 回答正文（assistant）在 chip 之后文档流展示；间距：组内紧（gap-1）、
- *   turn 之间松（mt-6）
+ * - 本轮的思考/工具行/中间解说收进"任务用时 X.XXs"折叠 chip（completed-work-chip），
+ *   完成后默认收起，点击展开才看到过程，页面精简
+ * - 流式进行中：过程直接实时展示（各组件自带折叠与扫光）
+ * - **只有本轮的最终回答**在 chip 之后文档流展示，并带尾部时间/复制/用量；
+ *   间距：组内紧（gap-1）、turn 之间松（mt-6）
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatItem } from '@/stores/chat'
@@ -23,35 +23,46 @@ import UserMessage from './UserMessage'
 /** near-bottom 判定阈值（px）。 */
 const NEAR_BOTTOM = 48
 
-/** turn 分组视图结构：user 起始，work = 思考+工具（收进 chip），answers = 正文。 */
+/** 分组中间态：一轮的全部 AI 条目，保持事件原始顺序。 */
+interface RawTurn {
+  user: Extract<ChatItem, { kind: 'user' }> | null
+  items: ChatItem[]
+}
+
+/**
+ * turn 分组视图结构：
+ * - `process`：本轮的思考/工具/**中间解说正文**，保持事件原始顺序，收进「任务用时」chip；
+ * - `answer`：本轮**最后一条** assistant 正文（最终回答），文档流展示并带尾部操作行。
+ *
+ * 中间解说与最终回答的区分照抄参考实现：jiuwen `buildTurnTimeline` 反向扫描把
+ * 一轮里靠前的 assistant 消息标 `hideMeta`（折进「已完成」折叠条、不出复制按钮），
+ * DSH 把它算作 turn-process（`Reply-bearing durable Assistant messages before the
+ * final answer`），只有 turn-tail 带复制/用时/用量。
+ *
+ * process 保持原顺序是必须的：工具调用前的解说若被单独归到"正文"分区，会整段
+ * 排到所有工具调用之后，与真实发生顺序相反。
+ */
 interface Turn {
   user: Extract<ChatItem, { kind: 'user' }> | null
-  work: Extract<ChatItem, { kind: 'reasoning' } | { kind: 'tool' }>[]
-  answers: Extract<ChatItem, { kind: 'assistant' }>[]
+  process: ChatItem[]
+  answer: Extract<ChatItem, { kind: 'assistant' }> | null
 }
 
-/** 按 user 边界把平铺 items 切成 turn 组。 */
+/** 按 user 边界把平铺 items 切成 turn 组，并摘出每轮的最终回答。 */
 function groupTurns(items: ChatItem[]): Turn[] {
-  const turns: Turn[] = []
+  const raw: RawTurn[] = []
   for (const item of items) {
-    const last = turns[turns.length - 1]
-    if (item.kind === 'user') {
-      turns.push({ user: item, work: [], answers: [] })
-    } else if (!last) {
-      // 没有前置 user 的 AI 块（异常防御）：独立成组
-      turns.push({ user: null, work: [], answers: [] })
-      pushTo(turns[turns.length - 1], item)
-    } else {
-      pushTo(last, item)
-    }
+    const last = raw[raw.length - 1]
+    if (item.kind === 'user') raw.push({ user: item, items: [] })
+    else if (!last) raw.push({ user: null, items: [item] }) // 无前置 user 的 AI 块（异常防御）
+    else last.items.push(item)
   }
-  return turns
-}
-
-/** 把 AI 块放入对应分区。 */
-function pushTo(turn: Turn, item: ChatItem) {
-  if (item.kind === 'assistant') turn.answers.push(item)
-  else if (item.kind !== 'user') turn.work.push(item)
+  return raw.map(({ user, items: all }) => {
+    const answerIdx = all.findLastIndex((it) => it.kind === 'assistant')
+    if (answerIdx === -1) return { user, process: all, answer: null }
+    const answer = all[answerIdx] as Extract<ChatItem, { kind: 'assistant' }>
+    return { user, process: all.filter((_, i) => i !== answerIdx), answer }
+  })
 }
 
 /**
@@ -141,13 +152,17 @@ function WorkChip({ elapsedMs, failed, open, onToggle }: WorkChipProps) {
   )
 }
 
-/** work 区条目（思考面板/工具行）。 */
+/** process 区条目（思考面板/工具行/中间解说）。 */
 function WorkItem({ item }: { item: ChatItem }) {
   if (item.kind === 'reasoning') {
     return <ReasoningPanel text={item.text} running={false} />
   }
   if (item.kind === 'tool') {
     return <ToolCallCard call={item.call} result={item.result} />
+  }
+  // 中间解说：正文照常渲染，但不带尾部时间/复制/用量（那属于最终回答）
+  if (item.kind === 'assistant') {
+    return <AssistantMessage content={item.content} hideMeta />
   }
   return null
 }
@@ -161,12 +176,12 @@ interface TurnBlockProps {
   platformDefault: boolean
 }
 
-/** 单个 turn 渲染：头部 → [chip 折叠的 work 区 | 流式 work 区] → 正文。 */
+/** 单个 turn 渲染：头部 → [chip 折叠的 process 区 | 流式 process 区] → 最终回答。 */
 function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockProps) {
   const [workOpen, setWorkOpen] = useState(false)
-  const lastAnswer = turn.answers[turn.answers.length - 1]
-  const elapsedMs = lastAnswer?.elapsedMs
-  const failed = turn.work.some((w) => w.kind === 'tool' && w.result && !w.result.ok)
+  const answer = turn.answer
+  const elapsedMs = answer?.elapsedMs
+  const failed = turn.process.some((w) => w.kind === 'tool' && w.result && !w.result.ok)
   const done = !active && elapsedMs != null
   const hasHeader = turn.user != null
 
@@ -177,8 +192,8 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
         {hasHeader && (
           <TurnHeader name={assistantName} platformDefault={platformDefault} active={active} />
         )}
-        {/* 思考/工具区：完成后收进 chip，流式中直接展示 */}
-        {turn.work.length > 0 && (
+        {/* 过程区（思考/工具/中间解说）：完成后收进 chip，流式中直接展示 */}
+        {turn.process.length > 0 && (
           <>
             {done ? (
               <>
@@ -190,7 +205,7 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
                 />
                 {workOpen && (
                   <div className="flex flex-col gap-1 pl-1">
-                    {turn.work.map((w, i) => (
+                    {turn.process.map((w, i) => (
                       <WorkItem key={i} item={w} />
                     ))}
                   </div>
@@ -198,22 +213,21 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
               </>
             ) : (
               <div className="flex flex-col gap-1 pl-1">
-                {turn.work.map((w, i) => (
+                {turn.process.map((w, i) => (
                   <WorkItem key={i} item={w} />
                 ))}
               </div>
             )}
           </>
         )}
-        {/* 回答正文（最后一个带完成元信息） */}
-        {turn.answers.map((a, i) => (
+        {/* 最终回答（本轮唯一带尾部时间/复制/用量的正文） */}
+        {answer && (
           <AssistantMessage
-            key={i}
-            content={a.content}
-            usage={i === turn.answers.length - 1 ? a.usage : undefined}
-            finishedTs={i === turn.answers.length - 1 ? a.finishedTs : undefined}
+            content={answer.content}
+            usage={answer.usage}
+            finishedTs={answer.finishedTs}
           />
-        ))}
+        )}
       </div>
     </section>
   )
