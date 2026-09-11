@@ -1068,8 +1068,15 @@ def build_system_prompt(
     return "\n\n".join(rendered)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
-- [ ] **Step 5: Commit** — `feat(harness): 系统提示词分段组合器与技能索引`
+- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 5: Commit** — `feat(harness): 系统提示词分段组合器与技能索引`
+
+> **本任务已完成**：`fa0652c`（初版）+ `983bfa2`（审查修复）。要点：
+> - `{{workspace}}` 替换用 **`workspace.as_posix()`**（不是 `str()`）——Windows 上 `str()` 给反斜杠，模型若抄进生成的 Python 字符串会踩转义陷阱，且与 `file.list` 返回的 `.as_posix()` 路径口径不一致。
+> - 新增 `test_skill_section_precedes_workspace_section` 锁住「SKILLS(40) 早于 WORKSPACE(70)」——此前**删掉 `sorted()` 也不会让任何测试变红**（因为 SKILLS 恰好在 WORKSPACE 之后 append，顺序会错成 10/21/70/40）。
+> - `SKILLS_HEADER` 里引用了 `skill.read` 工具，它由 **Task B2** 落地；B2 未合入前该引用是悬空的（当前无运行时调用点，无实际危害）。
+>
+> harness 测试 88 → 89 passed。
 
 ---
 
