@@ -820,8 +820,19 @@ async def test_upload_rejects_executable(client, auth_headers):
 
 把 `files_api.py` 的落盘根从 `workspace.workspace_root(...)` 换成 `project_service.root_for(project)` 下的 `files/`；新增项目作用域路由 `POST/GET /api/v1/projects/{pid}/files`，**保留旧 `/api/v1/files`**（内部解析为当前默认项目）以免既有前端报错。文档 `stored_path` 语义不变（相对 `files/`）。
 
-- [ ] **Step 4: 跑测试确认通过**
-- [ ] **Step 5: Commit** — `feat(web): 文件上传按项目作用域化`
+- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 5: Commit** — `feat(web): 文件上传按项目作用域化`
+
+> **本任务已完成**：`23fd770`（初版）+ `b6b54a8`（审查修复）。最终形态（**后续任务以这段为准**）：
+> - `FileRepo` 记录带 `project_id`；`stored_path` 保持「相对项目根」（`files/a.txt`）。**不要**把 `project_id` 加进 `store.py` 的 `COLLECTION_INDEXES`——sqlite 的 `CREATE TABLE IF NOT EXISTS` 不会给存量表补列，新代码的 `INSERT` 会直接报错，而按该列 `SELECT` 会因 DQS **静默返回 0 行**（文件「凭空消失」且无报错线索）。过滤只能在 Python 端做。
+> - **文件归属统一走 `_resolve_file_project(service, user_id, record)`**：有 `project_id` 就**只认它**（取不到 → `None` → 404，绝不回落，否则会拿到别的项目里的同名文件）；无 `project_id` 的历史记录**按文件实际所在磁盘位置**在各项目根里探测（物理位置是权威的，免疫 `projects[0]` 漂移）。`download` / `DELETE` / 两个列表接口共用这一口径。
+> - 新增 `ProjectService.list_projects_readonly(user_id)`（内部即 `ProjectRepo.list_for_user`，**不触发迁移、无写副作用**），供只读的文件接口使用。
+> - 新增 `workspace.user_root()`（只算路径不建目录）供配额计量；`workspace_root()` 已无调用者，docstring 标注「旧路径兼容用，新代码勿用」（它会重建已被迁移走的旧目录）。
+> - DELETE 在归属解析不到时**只删记录、不动磁盘**（孤儿记录要能清掉，且绝不能拿 `stored_path` 去别的项目误删同名文件）。
+> - **遗留取舍（C7 依赖）**：只读的文件接口不触发旧布局迁移，所以「C6 之后、C7 之前」这个窗口里，C6 之前的历史文件在列表里看不到。**C7 的前端启动必须调用 `GET /api/v1/projects`**（`stores/projects.ts` 的 `load()`），迁移即会触发，此窗口自消解。
+> - 上传校验契约**保持现状**：顶层 200 + 逐项 `results[].code`（非法扩展名是 `results[0].code == 422`，**不是**顶层 422）；全成功才 201。
+>
+> 测试从 138 → 151 passed。E2E 的「上传 → 发消息 → agent 读到」现在是**真的**走通，不再靠时序巧合。
 
 ---
 
