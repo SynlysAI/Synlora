@@ -196,7 +196,7 @@ export default function AssistantMessage({ content, streaming, usage, finishedTs
             type="button"
             onClick={() => void copy()}
             aria-label="复制回复"
-            className="flex items-center gap-1 rounded-[var(--sa-radius-sm)] px-1 py-0.5 opacity-0 transition-all duration-[var(--sa-duration-base)] group-hover/assistant:opacity-100 hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-secondary)]"
+            className="flex items-center gap-1 rounded-[var(--sa-radius-sm)] px-1 py-0.5 transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-secondary)]"
           >
             {copied ? (
               '已复制'

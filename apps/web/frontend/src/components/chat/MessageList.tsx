@@ -301,7 +301,7 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto px-4 sm:px-6">
         <div
-          className={`mx-auto flex h-full max-w-3xl flex-col py-6 ${
+          className={`mx-auto flex h-full max-w-3xl flex-col pt-6 pb-10 ${
             empty ? 'justify-center' : 'justify-start'
           }`}
         >
