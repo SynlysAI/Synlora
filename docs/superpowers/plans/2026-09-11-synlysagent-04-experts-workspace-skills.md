@@ -332,9 +332,11 @@ git commit -m "feat(web): 工作区多项目目录布局与旧数据迁移"
 
 ## Task C2: ProjectRepo
 
-**Files:** Modify `apps/web/backend/app/db/repos.py`；Test `apps/web/backend/tests/test_repos.py`（追加）
+**Files:** Modify `apps/web/backend/app/db/repos.py`、`apps/web/backend/app/db/store.py`；Test `apps/web/backend/tests/test_repos.py`（追加）
 
-- [ ] **Step 1: 写失败测试**
+> **实现时发现的计划缺口**：`SqliteStore.init()` 只对 `COLLECTION_INDEXES` 里声明过的 collection 建表，且 `list()` 的 filters 会生成 `WHERE "col" = ?`——未声明的 collection 不仅 insert 抛 `no such table`，查询还会被 SQLite 当成字符串字面量**静默返回空**。所以 `store.py` 必须加一行 `"projects": ["user_id"],`。**不要把 `updated_at` 加进索引列**：sqlite 索引列是 TEXT，`ORDER BY updated_at` 会退化成字典序（`"999" > "1000"`），`list_for_user` 刻意在 Python 侧按 float 排序正是为了绕开这个坑。
+
+- [x] **Step 1: 写失败测试**
 
 ```python
 async def test_project_create_and_list(store):
@@ -398,9 +400,11 @@ class ProjectRepo(BaseRepo):
             "name": name, "dir_name": dir_name, "updated_at": time.time()})
 ```
 
-- [ ] **Step 4: 跑测试确认通过** — `pytest tests/test_repos.py -v`，PASS
+- [x] **Step 4: 跑测试确认通过** — `pytest tests/test_repos.py -v`，PASS
 
-- [ ] **Step 5: Commit** — `feat(web): 项目仓储`
+- [x] **Step 5: Commit** — `feat(web): 项目仓储`
+
+> **本任务已完成**：`b5f6e078`（初版）+ `97c9b5a`（审查后补归档过滤/边界用例、`used_dir_names` 容错脏文档）。实现时按既有约定复用 `BaseRepo.create/update` 与 `_new_id()`（12 位 hex），未采用计划原文的 `uuid.uuid4().hex`。
 
 ---
 
@@ -458,6 +462,16 @@ async def test_delete_frees_name_for_recreate(tmp_path, store):
     b = await svc.create_project("u1", "实验一")
     assert b["dir_name"] == "实验一"
     assert (tmp_path / "workspaces" / "u1" / "实验一").is_dir()
+
+
+async def test_concurrent_create_same_name_gets_distinct_dirs(tmp_path, store):
+    """并发建同名项目必须拿到不同目录（check-then-act 有 per-user 锁兜住）。"""
+    svc = ProjectService(store, tmp_path)
+    a, b = await asyncio.gather(
+        svc.create_project("u1", "实验一"),
+        svc.create_project("u1", "实验一"),
+    )
+    assert {a["dir_name"], b["dir_name"]} == {"实验一", "实验一-2"}
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -478,8 +492,29 @@ class ProjectService:
     """项目与其磁盘目录的编排层。"""
 
     def __init__(self, store, data_root: Path) -> None:
+        """保存仓储与数据根。
+
+        Args:
+            store: DocumentStore 实例。
+            data_root: 数据根目录。
+        """
         self._repo = ProjectRepo(store)
         self._data_root = data_root
+        # used_dir_names → free_dir_name → create 是 check-then-act，两步之间
+        # 无唯一约束可依赖（store 的索引列不支持 UNIQUE(user_id, dir_name)）。
+        # 用 per-user 锁把「算名 → 建目录 → 落库」整段串行化，照 SessionRepo._count_lock 范式。
+        self._user_locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, user_id: str) -> asyncio.Lock:
+        """取该用户的建项目锁（懒创建）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            该用户专属的 asyncio.Lock。
+        """
+        return self._user_locks.setdefault(user_id, asyncio.Lock())
 
     async def list_projects(self, user_id: str) -> list[dict]:
         """列出项目（首次访问时执行旧布局迁移并补种默认项目）。"""
@@ -492,16 +527,30 @@ class ProjectService:
         return await self._repo.list_for_user(user_id)
 
     async def create_project(self, user_id: str, name: str) -> dict:
-        """新建项目并创建其目录（目录名重复时自动加后缀，不会因重名失败）。"""
+        """新建项目并创建其目录（目录名重复时自动加后缀，不会因重名失败）。
+
+        Args:
+            user_id: 用户 sub。
+            name: 项目显示名。
+
+        Returns:
+            新建的项目文档。
+
+        Raises:
+            ValueError: 项目名全被过滤为空。
+        """
         base = workspace.sanitize_dir_name(name)
         if not base:
             raise ValueError("项目名不合法")
         user_dir = self._data_root / "workspaces" / user_id
-        taken = await self._repo.used_dir_names(user_id)
-        dir_name = workspace.free_dir_name(user_dir, base, taken)
-        project = await self._repo.create(user_id=user_id, name=name.strip(), dir_name=dir_name)
-        workspace.project_root(self._data_root, user_id, dir_name)
-        return project
+        # 锁内完成「算名 → 建目录 → 落库」：并发双击建同名项目时不会算出同一个 dir_name
+        async with self._lock_for(user_id):
+            taken = await self._repo.used_dir_names(user_id)
+            dir_name = workspace.free_dir_name(user_dir, base, taken)
+            project = await self._repo.create(
+                user_id=user_id, name=name.strip(), dir_name=dir_name)
+            workspace.project_root(self._data_root, user_id, dir_name)
+            return project
 
     async def delete_project(self, user_id: str, project_id: str) -> bool:
         """删除项目记录与磁盘目录（目录删不掉时改名 trash 释放名字）。
