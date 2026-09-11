@@ -1783,8 +1783,41 @@ export default function AttachMenu({ items }: { items: AttachMenuItem[] }) {
 
 - [ ] **Step 1:** `SkillPicker` 照 `SkillPickerPanel.tsx`：搜索 + 列表 + 选中打勾，数据来自 `stores/skills.ts`（`GET /api/v1/skills`）。
 - [ ] **Step 2:** 已选技能在输入框上方渲染为可删除 chip；随发送请求带上（`POST /sessions/{sid}/messages` body 增 `skills: string[]`），后端按名过滤注入 `context_extra["skills"]` 与技能索引；**发送后清空**（jiuwen 的一次性语义）。
-- [ ] **Step 3: 验证**：选 `data-analysis` → 发送 → 后端日志显示该技能正文可被 `skill.read` 读到、且索引进了 system prompt。
-- [ ] **Step 4: Commit** — `feat(frontend): 技能选择器与会话技能透传`
+- [x] **Step 3: 验证**：选 `data-analysis` → 发送 → 后端日志显示该技能正文可被 `skill.read` 读到、且索引进了 system prompt。
+- [x] **Step 4: Commit** — `feat(frontend): 技能选择器与会话技能透传`
+
+---
+
+# Phase A 完成小结
+
+Phase A 的后端前置改动（会话切专家 + 技能透传）与前端收口一并落地。真机验证（playwright 有头模式）逐项通过：
+
+| 验证项 | 结果 |
+|---|---|
+| 底部功能行布局 | 左下 `+` + 「🧪 科研助手 ▾」专家 chip；右下模型选择器紧贴发送键（**用户明确要求的位置**） |
+| `+` 菜单形态 | 向上弹出，「上传文件 / 专家 › / 技能 ›」，与 jiuwen 截图一致；`role=menu/menuitem` 无障碍语义正确 |
+| 专家二级面板 | 右侧 `left: calc(100% + 11px)` 展开，搜索框 + 头像/名/内置徽标/描述 + 当前项打勾 |
+| 切换专家 | 切到「数据分析助手」→ chip 更新 → `GET /sessions` 确认文档 `assistant_id` 落库为 `asst-data`；模型自动跟成该助手的默认 |
+| 技能二级面板 | 多选语义 `menuitemcheckbox`，选中后菜单项带计数徽标 `1`；输入框上方出现可移除 chip |
+| 发送带技能 | POST `/messages` 200；**发送后 chip 自动清空**（jiuwen 的一次性语义） |
+| **专家 persona 真的生效** | 回复来自「数据分析助手」并自称"我是你的数据分析助手"——证明切换的不只是 UI |
+| 控制台 | 0 error / 0 warning |
+
+设计取舍（实现者提出，我认可）：
+- 「没有当前会话时选专家」→ 写 `assistants.select(id)` 作为「新对话默认专家」（欢迎页正是挑专家的场景，不是死路）
+- 「没有当前项目时上传」→ 菜单项 `disabled` + 提示，不发必然 404 的请求
+- **技能 chip 放在输入框上方**而非内联进输入框：jiuwen 是 `contenteditable` 支持原子节点，本项目是 `<textarea>`，无法内联——有意适配
+- 已知未做：上传成功后**右栏目录树不会自动刷新**（刷新信号在 WorkspacePanel 内部 state，Composer 够不到），需另加一条外部刷新通道
+
+---
+
+# 全部 18 个任务完成
+
+从 `beb5062` 到 HEAD 共 **41 个提交**（含每个任务的审查修复与计划同步）。三阶段验收：
+- **后端**：`cd apps/web/backend && pytest -q` → 183 passed / 36 skipped
+- **harness**：`cd packages/synlys-harness && pytest -q` → 96 passed
+- **前端**：`cd apps/web/frontend && npm run build && npm run lint` → 通过 / 仅剩 1 条既有警告
+- **真机**：Phase C 与 Phase A 的所有界面路径均用 playwright 有头模式走过并截图自查
 
 ---
 
