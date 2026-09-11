@@ -8,7 +8,7 @@
  *   （`.chat-work-select__trigger:hover:not(:disabled)` → `--color-surface-card`）；
  * - 展开时 chevron 旋转 180°（`.chat-work-select--open .chat-work-select__chevron`）；
  * - 菜单项为工作区列表（当前项打勾）+ 分隔线 +「新建工作区」，新建走
- *   `window.prompt`（与侧栏「新建工作区」同做法）。
+ *   InputDialog 弹窗（与侧栏「新建工作区」同做法）。
  *
  * 本项目差异（两处，均因交互土壤不同）：
  * - 菜单**向上**弹出：本项目其余浮层（ModelPicker/AttachMenu）均为向上弹，且
@@ -17,6 +17,7 @@
  *   （"没选就默认"，与后端回落口径一致）。
  */
 import { useEffect, useRef, useState } from 'react'
+import InputDialog from '@/components/sidebar/InputDialog'
 import { pickDefaultProject, useProjectsStore } from '@/stores/projects'
 import { toast } from '@/stores/toasts'
 
@@ -78,16 +79,23 @@ export default function WorkspacePicker() {
     setCurrent(id)
   }
 
-  /** 新建工作区：prompt 取名字（空名/纯空白忽略），成功后自动切为当前。 */
-  const createWorkspace = async () => {
-    setOpen(false)
-    const name = window.prompt('新建工作区名称')?.trim()
-    if (!name) return
+  /** 新建工作区弹窗（InputDialog，与侧栏同做法）。 */
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
+
+  /** 新建工作区确认：成功后自动切为当前（store.create 已置 currentId）。 */
+  const createWorkspace = async (name: string) => {
+    setCreating(true)
+    setCreateError(null)
     try {
       const project = await create(name)
+      setDialogOpen(false)
       toast('success', `已创建工作区 ${project.name}`)
     } catch (err) {
-      toast('error', `新建工作区失败：${(err as Error).message}`)
+      setCreateError((err as Error).message)
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -182,7 +190,11 @@ export default function WorkspacePicker() {
           <button
             role="menuitem"
             type="button"
-            onClick={() => void createWorkspace()}
+            onClick={() => {
+              setOpen(false)
+              setCreateError(null)
+              setDialogOpen(true)
+            }}
             className={ITEM_CLASS}
           >
             <svg
@@ -202,6 +214,19 @@ export default function WorkspacePicker() {
             新建工作区
           </button>
         </div>
+      )}
+
+      {/* 新建工作区弹窗（与侧栏同款） */}
+      {dialogOpen && (
+        <InputDialog
+          title="新建工作区"
+          placeholder="输入工作区名称"
+          confirmLabel="创建"
+          busy={creating}
+          error={createError}
+          onCancel={() => setDialogOpen(false)}
+          onConfirm={(name) => void createWorkspace(name)}
+        />
       )}
     </div>
   )

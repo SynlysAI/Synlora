@@ -20,6 +20,7 @@ import type { Session } from '@/types'
 import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
+import InputDialog from './InputDialog'
 import SectionHeading from './SectionHeading'
 import SessionList from './SessionList'
 import WorkspaceGroup from './WorkspaceGroup'
@@ -80,16 +81,24 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
     onNavigate?.()
   }
 
-  /** 新建工作区：prompt 取名字（与 WorkspacePicker 同做法），成功后展开它。 */
-  const handleNewWorkspace = async () => {
-    const name = window.prompt('新建工作区名称')?.trim()
-    if (!name) return
+  /** 新建工作区弹窗（InputDialog，照删除确认弹窗同款样式）；失败不关弹窗便于重试。 */
+  const [wsDialogOpen, setWsDialogOpen] = useState(false)
+  const [creatingWs, setCreatingWs] = useState(false)
+  const [createWsError, setCreateWsError] = useState<string | null>(null)
+
+  /** 新建工作区确认：创建后展开它（重名由 store/后端报行内错误）。 */
+  const handleCreateWorkspace = async (name: string) => {
+    setCreatingWs(true)
+    setCreateWsError(null)
     try {
       const project = await createProject(name)
+      setWsDialogOpen(false)
       setExpanded((m) => ({ ...m, [project._id]: true }))
       toast('success', `已创建工作区 ${project.name}`)
     } catch (err) {
-      toast('error', `新建工作区失败：${(err as Error).message}`)
+      setCreateWsError((err as Error).message)
+    } finally {
+      setCreatingWs(false)
     }
   }
 
@@ -147,7 +156,10 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
             <SectionHeading
               label="工作区"
               actionLabel="新建工作区"
-              onAction={() => void handleNewWorkspace()}
+              onAction={() => {
+                setCreateWsError(null)
+                setWsDialogOpen(true)
+              }}
             />
             <WorkspaceGroup
               projects={workspaces}
@@ -169,6 +181,19 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
           </>
         )}
       </div>
+
+      {/* 新建工作区弹窗（样式同删除确认弹窗） */}
+      {wsDialogOpen && (
+        <InputDialog
+          title="新建工作区"
+          placeholder="输入工作区名称"
+          confirmLabel="创建"
+          busy={creatingWs}
+          error={createWsError}
+          onCancel={() => setWsDialogOpen(false)}
+          onConfirm={(name) => void handleCreateWorkspace(name)}
+        />
+      )}
     </div>
   )
 }

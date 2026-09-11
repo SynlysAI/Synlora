@@ -19,6 +19,7 @@ import type { Project, Session } from '@/types'
 import { useProjectsStore } from '@/stores/projects'
 import { toast } from '@/stores/toasts'
 import ConfirmDialog from './ConfirmDialog'
+import InputDialog from './InputDialog'
 import SessionList from './SessionList'
 import {
   ArrowRightIcon,
@@ -76,16 +77,27 @@ function WorkspaceRow({
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [menuOpen])
 
-  /** 重命名：弹窗取新名（与新建工作区同做法），后端同步改磁盘目录名。 */
-  const handleRename = async () => {
-    setMenuOpen(false)
-    const name = window.prompt('重命名工作区', project.name)?.trim()
-    if (!name || name === project.name) return
+  /** 重命名弹窗（InputDialog 预填现名，样式同删除确认弹窗）。 */
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [renameError, setRenameError] = useState<string | null>(null)
+
+  /** 重命名确认：后端同步改磁盘目录名；失败不关弹窗便于重试。 */
+  const handleRename = async (name: string) => {
+    if (name === project.name) {
+      setRenameOpen(false)
+      return
+    }
+    setRenaming(true)
+    setRenameError(null)
     try {
       const updated = await rename(project._id, name)
+      setRenameOpen(false)
       toast('success', `已重命名为 ${updated.name}`)
     } catch (err) {
-      toast('error', `重命名失败：${(err as Error).message}`)
+      setRenameError((err as Error).message)
+    } finally {
+      setRenaming(false)
     }
   }
 
@@ -165,7 +177,11 @@ function WorkspaceRow({
             <button
               type="button"
               role="menuitem"
-              onClick={() => void handleRename()}
+              onClick={() => {
+                setMenuOpen(false)
+                setRenameError(null)
+                setRenameOpen(true)
+              }}
               className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
             >
               <EditIcon className="h-3.5 w-3.5 shrink-0" />
@@ -187,6 +203,19 @@ function WorkspaceRow({
           </div>
         )}
       </div>
+
+      {/* 重命名弹窗（预填现名，打开时全选便于直接覆盖） */}
+      {renameOpen && (
+        <InputDialog
+          title="重命名工作区"
+          initialValue={project.name}
+          confirmLabel="重命名"
+          busy={renaming}
+          error={renameError}
+          onCancel={() => setRenameOpen(false)}
+          onConfirm={(name) => void handleRename(name)}
+        />
+      )}
 
       {/* 删除确认弹窗（照 jiuwen DeleteDialog：遮罩 + 面板 + 取消/危险确认） */}
       {confirmOpen && (
