@@ -27,12 +27,12 @@ import WorkspacePicker from './WorkspacePicker'
 const MAX_INPUT_HEIGHT = 148
 
 /**
- * 输入框最小高度（px），照 jiuwen `.chat-input-editor`：
- * 空态取 `--work-home` 的 88px，有消息取基础值 96px。
- * （本项目原为单行 24px，输入区过于局促。）
+ * 输入框最小高度（px）：空态约 2 行、有消息约 1.5 行（行高 22）。
+ * 比 jiuwen `.chat-input-editor`（88/96）紧凑得多——本项目是消息流型
+ * 工作台而非编码场景，输入区不宜长期占位。
  */
-const MIN_INPUT_HEIGHT_EMPTY = 88
-const MIN_INPUT_HEIGHT_CHAT = 96
+const MIN_INPUT_HEIGHT_EMPTY = 48
+const MIN_INPUT_HEIGHT_CHAT = 32
 
 /**
  * 卡片样式：外层灰卡（仅空态，jiuwen `.chat-input-container--work-home`）与
