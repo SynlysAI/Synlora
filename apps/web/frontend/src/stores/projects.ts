@@ -1,18 +1,25 @@
 /**
- * 项目 store：当前用户的项目列表 + 当前选中项目。
+ * 项目（工作区）store：当前用户的项目列表 + 当前选中工作区。
  *
  * 启动时必须调用 load()：后端 GET /api/v1/projects 首次访问会执行旧布局
  * 迁移并补种「默认项目」，会话创建与文件上传都依赖迁移后的项目存在。
- * 若 currentId 已失效（被删 / 换了账号）或为空，回落取列表首个项目。
+ *
+ * `currentId` 是**用户显式选择**：`null` = 没选（不是"没有项目"），语义是
+ * 「用默认工作区」——新建会话不传 project_id 由后端回落，只读消费侧（上传
+ * 目录 / 右栏文件树）用 pickActiveProject 回落默认工作区。故 load() **不**
+ * 自动选中列表首个：自动选中会把"没选"这个状态吃掉，用户清掉后又被选回来。
  */
 import { create } from 'zustand'
 import type { Project } from '@/types'
 import { api } from '@/api/client'
 
+/** 默认工作区的磁盘目录名（后端 `workspace.DEFAULT_PROJECT_DIR`）。 */
+export const DEFAULT_PROJECT_DIR = 'default'
+
 interface ProjectsState {
   /** 当前用户未归档项目列表（后端排序）。 */
   projects: Project[]
-  /** 当前选中的项目 id（null 表示尚无项目）。 */
+  /** 当前显式选中的工作区 id（null = 未选，消费侧回落默认工作区）。 */
   currentId: string | null
   /** load() 是否完成（空态区分加载中）。 */
   loaded: boolean
@@ -34,9 +41,9 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
   load: async () => {
     const projects = await api<Project[]>('/api/v1/projects')
     const { currentId } = get()
+    // 显式选择若仍有效则保留，否则回到「未选」（不自动选中首个，见文件头）
     const stillValid = currentId !== null && projects.some((p) => p._id === currentId)
-    const next = stillValid ? currentId : (projects[0]?._id ?? null)
-    set({ projects, currentId: next, loaded: true })
+    set({ projects, currentId: stillValid ? currentId : null, loaded: true })
   },
 
   create: async (name) => {
@@ -53,3 +60,31 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
   reset: () => set({ projects: [], currentId: null, loaded: false }),
 }))
+
+/**
+ * 取默认工作区（`dir_name === 'default'`，后端补种保证存在）。
+ *
+ * @param state projects store 快照。
+ * @returns 默认工作区；列表未加载时 null。
+ */
+export function pickDefaultProject(state: ProjectsState): Project | null {
+  return state.projects.find((p) => p.dir_name === DEFAULT_PROJECT_DIR) ?? null
+}
+
+/**
+ * 取当前**生效**的工作区：显式选中优先；未选（currentId 为 null）回落默认
+ * 工作区，没有默认工作区再回落列表首个——与"没选就用默认工作区"的语义一致，
+ * 供上传落盘目录 / 右栏文件树这类只读消费侧使用（新建会话仍走"不传
+ * project_id 由后端回落"的路径，见 sessions store）。
+ *
+ * @param state projects store 快照。
+ * @returns 当前生效的工作区；项目列表为空时 null。
+ */
+export function pickActiveProject(state: ProjectsState): Project | null {
+  return (
+    state.projects.find((p) => p._id === state.currentId) ??
+    pickDefaultProject(state) ??
+    state.projects[0] ??
+    null
+  )
+}

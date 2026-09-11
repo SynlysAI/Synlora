@@ -7,7 +7,7 @@
  * `top: 0` 与触发项顶边齐平；一级菜单贴近视口底部向上展开（direction='up'）时
  * 改为 `bottom: 0` 与触发项底边齐平、向上生长。
  *
- * 本项目映射：搜索框/条目密度照本项目已有弹层（ModelPicker/ProjectPicker 的
+ * 本项目映射：搜索框/条目密度照本项目已有弹层（ModelPicker/WorkspacePicker 的
  * 13px 行、12px 辅助字），面板壳 token 用 `--sa-*`。
  */
 import type { ReactNode } from 'react'

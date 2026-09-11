@@ -18,15 +18,12 @@
 import { useMemo, useState } from 'react'
 import type { Session } from '@/types'
 import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
-import { useProjectsStore } from '@/stores/projects'
+import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
 import SectionHeading from './SectionHeading'
 import SessionList from './SessionList'
 import WorkspaceGroup from './WorkspaceGroup'
-
-/** 默认工作区的磁盘目录名（后端 `workspace.DEFAULT_PROJECT_DIR`）。 */
-const DEFAULT_PROJECT_DIR = 'default'
 
 interface SidebarProps {
   /** 抽屉模式下点击导航项后关闭抽屉。 */
@@ -39,6 +36,8 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
   const create = useSessionsStore((s) => s.create)
   const projects = useProjectsStore((s) => s.projects)
   const projectsLoaded = useProjectsStore((s) => s.loaded)
+  /** 当前选中的工作区（null = 未选 → 新会话由后端回落默认工作区）。 */
+  const currentProjectId = useProjectsStore((s) => s.currentId)
   const createProject = useProjectsStore((s) => s.create)
   const [query, setQuery] = useState('')
   /** 工作区展开态（纯 UI 状态，不落 store）。 */
@@ -67,19 +66,22 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
 
   const searching = query.trim().length > 0
 
-  /** 新建会话：用「新对话默认专家」（可能为空 = 不使用专家）建到默认工作区。 */
+  /**
+   * 新建会话：用「新对话默认专家」（可能为空 = 不使用专家）建到**当前选中的
+   * 工作区**（输入框工作区行里选的，见 WorkspacePicker）；未选则不传 project_id，
+   * 由后端回落到默认工作区。主按钮与「会话」组 `+` 共走此路径。
+   */
   const handleNew = async () => {
     const assistant = pickSelectedAssistant(useAssistantsStore.getState())
     try {
-      // 不指定 project_id：由后端回落到默认工作区
-      await create(assistant?._id ?? null)
+      await create(assistant?._id ?? null, { projectId: currentProjectId ?? undefined })
       onNavigate?.()
     } catch (err) {
       toast('error', `新建会话失败：${(err as Error).message}`)
     }
   }
 
-  /** 新建工作区：prompt 取名字（与 ProjectPicker 同做法），成功后展开它。 */
+  /** 新建工作区：prompt 取名字（与 WorkspacePicker 同做法），成功后展开它。 */
   const handleNewWorkspace = async () => {
     const name = window.prompt('新建工作区名称')?.trim()
     if (!name) return

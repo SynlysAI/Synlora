@@ -19,7 +19,8 @@ export default function ChatPanel() {
 
   // 启动引导：并行加载项目/会话/助手；无当前会话时选首个未归档或自动创建。
   // 项目必须在此加载并在建会话之前完成：GET /api/v1/projects 首次访问会触发
-  // 后端旧布局迁移并补种「默认项目」，且新会话要带上当前项目 id。
+  // 后端旧布局迁移并补种「默认项目」，且新会话要带上当前选中的工作区 id
+  // （未选则不传，由后端回落默认工作区）。
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -39,7 +40,9 @@ export default function ChatPanel() {
       }
       // 专家可选：无显式选择时按「不使用专家」建会话（平台默认提示词）
       const assistant = pickSelectedAssistant(useAssistantsStore.getState())
-      await st.create(assistant?._id ?? null).catch(() => {})
+      // 工作区：取此刻已加载完的选择（未选 = undefined → 后端回落默认工作区）
+      const projectId = useProjectsStore.getState().currentId ?? undefined
+      await st.create(assistant?._id ?? null, { projectId }).catch(() => {})
     })()
     return () => {
       cancelled = true
@@ -71,7 +74,7 @@ export default function ChatPanel() {
               SynlysAgent 轻松解决科研每个问题！
             </h1>
           </div>
-          <Composer />
+          <Composer empty={empty} />
         </div>
       </div>
     )
@@ -80,7 +83,7 @@ export default function ChatPanel() {
   return (
     <div className="flex h-full flex-col">
       <MessageList assistantName={assistantName} assistantAvatar={assistantAvatar} />
-      <Composer />
+      <Composer empty={empty} />
     </div>
   )
 }

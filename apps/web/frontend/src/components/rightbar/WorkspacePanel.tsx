@@ -1,10 +1,11 @@
 /**
- * 工作区面板（右栏「文件」页）：当前项目的上传区 + 目录树。
+ * 工作区面板（右栏「文件」页）：当前工作区的上传区 + 目录树。
  *
  * 上传区沿用原 FilesPanel 的拖拽/点选交互，但改投项目作用域接口
  * （POST /api/v1/projects/{pid}/files，文件落该项目 files/）；上传成功后
- * 递增刷新信号，让 FileTree 丢弃各层缓存重取。下方目录树根为当前项目，
- * 切换项目（输入框下的 ProjectPicker）后树随之切换。
+ * 递增刷新信号，让 FileTree 丢弃各层缓存重取。下方目录树根为当前工作区
+ * （显式选中优先，未选回落默认工作区，见 store 的 pickActiveProject），
+ * 切换工作区（输入框空态的工作区行，见 WorkspacePicker）后树随之切换。
  *
  * 文件记录：目录树条目不带 file id，而下载/删除按 id 走，故此处另拉当前项目的
  * 文件记录（GET /api/v1/projects/{pid}/files），按 stored_path 建「相对项目根
@@ -14,7 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FileDoc, UploadResponse } from '@/types'
 import { api } from '@/api/client'
-import { useProjectsStore } from '@/stores/projects'
+import { pickActiveProject, useProjectsStore } from '@/stores/projects'
 import { toast } from '@/stores/toasts'
 import FileTree from './FileTree'
 
@@ -34,8 +35,9 @@ function normalizePath(path: string): string {
 
 /** 工作区面板组件（右栏「文件」页）。 */
 export default function WorkspacePanel() {
-  const projectId = useProjectsStore((s) => s.currentId)
-  const project = useProjectsStore((s) => s.projects.find((p) => p._id === s.currentId))
+  // 显式选中的工作区优先，未选回落默认工作区（pickActiveProject）；都无 → null
+  const project = useProjectsStore(pickActiveProject)
+  const projectId = project?._id ?? null
   const projectsLoaded = useProjectsStore((s) => s.loaded)
   const [uploading, setUploading] = useState(false)
   const [dragActive, setDragActive] = useState(false)
@@ -102,7 +104,7 @@ export default function WorkspacePanel() {
   if (!projectId) {
     return (
       <div className="flex h-full items-center justify-center p-3 text-xs text-[var(--sa-alias-label-caption)]">
-        {projectsLoaded ? '暂无项目' : '加载中…'}
+        {projectsLoaded ? '暂无工作区' : '加载中…'}
       </div>
     )
   }

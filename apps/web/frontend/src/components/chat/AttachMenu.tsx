@@ -19,13 +19,13 @@ import type { Assistant, UploadResponse } from '@/types'
 import { api } from '@/api/client'
 import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
-import { useProjectsStore } from '@/stores/projects'
+import { pickActiveProject, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
 import ExpertPicker from './ExpertPicker'
 import SkillPicker from './SkillPicker'
 
-/** 菜单项样式（13px 行，与 ModelPicker/ProjectPicker 菜单项一致）。 */
+/** 菜单项样式（13px 行，与 ModelPicker/WorkspacePicker 菜单项一致）。 */
 const ITEM_CLASS =
   'flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] transition-colors duration-[var(--sa-duration-fast)] ' +
   'text-[var(--sa-alias-label-secondary)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)] ' +
@@ -53,7 +53,8 @@ export default function AttachMenu({ selectedSkills, onToggleSkill }: AttachMenu
   const session = useSessionsStore((s) =>
     s.sessions.find((x) => x._id === s.currentId),
   )
-  const projectId = useProjectsStore((s) => s.currentId)
+  // 上传落盘目录：显式选中的工作区优先，未选回落默认工作区（pickActiveProject）
+  const projectId = useProjectsStore((s) => pickActiveProject(s)?._id ?? null)
 
   const [open, setOpen] = useState(false)
   /** 当前展开的二级面板（三选一互斥）。 */
