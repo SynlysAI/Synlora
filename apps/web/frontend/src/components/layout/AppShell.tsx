@@ -13,6 +13,8 @@ import { ChatPanel } from '@/components/chat'
 import { Rightbar } from '@/components/rightbar'
 import { Sidebar } from '@/components/sidebar'
 import { useAuthStore } from '@/stores/auth'
+import { FolderIcon } from '@/components/sidebar/icons'
+import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { useDarkTheme } from '@/utils/theme'
 
@@ -269,7 +271,16 @@ function ChatToolbar({
 }) {
   const sessions = useSessionsStore((s) => s.sessions)
   const currentId = useSessionsStore((s) => s.currentId)
-  const title = sessions.find((s) => s._id === currentId)?.title || '新对话'
+  const session = sessions.find((s) => s._id === currentId)
+  const title = session?.title || '新对话'
+  const projects = useProjectsStore((s) => s.projects)
+  // 工作区取**会话绑定**的那个（session.project_id），而输入框里的选择器管的是
+  // 「下一个新会话去哪儿」，两者不是一回事。会话未绑定（旧会话）或绑定的工作区
+  // 已删时回落到默认工作区，与 Sidebar 的归组口径一致。
+  const workspace =
+    projects.find((p) => p._id === session?.project_id) ??
+    projects.find((p) => p.dir_name === DEFAULT_PROJECT_DIR) ??
+    null
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-[var(--sa-alias-border-l1)] px-3">
@@ -280,9 +291,24 @@ function ChatToolbar({
           </svg>
         </IconButton>
       )}
-      <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-[var(--sa-alias-label-primary)]" title={title}>
-        {title}
-      </span>
+      {/* 标题 + 工作区（同行，照 jiuwen `chat-panel-header__meta`：flex row、gap 8） */}
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <span
+          className="min-w-0 truncate text-[13.5px] font-medium text-[var(--sa-alias-label-primary)]"
+          title={title}
+        >
+          {title}
+        </span>
+        {workspace && (
+          <span
+            className="inline-flex min-w-0 shrink-0 items-center gap-1 text-[12px] text-[var(--sa-alias-label-secondary)]"
+            title={`工作区：${workspace.name}`}
+          >
+            <FolderIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+            <span className="max-w-[160px] truncate">{workspace.name}</span>
+          </span>
+        )}
+      </div>
       <IconButton
         label={rightState === 'hidden' ? '展开右栏' : '收起右栏'}
         onClick={onToggleRight}
