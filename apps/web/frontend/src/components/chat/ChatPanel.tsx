@@ -58,7 +58,8 @@ export default function ChatPanel() {
   const session = sessions.find((s) => s._id === currentId)
   const assistant = assistants.find((a) => a._id === session?.assistant_id)
   const assistantName = assistant?.name ?? 'SynlysAgent'
-  const assistantAvatar = assistant?.avatar?.trim() || assistant?.name.slice(0, 1) || '科'
+  // 头像取助手的 emoji；没配则回退到「当前显示名的首字符」——未选专家时即平台名的 S
+  const assistantAvatar = assistant?.avatar?.trim() || assistantName.slice(0, 1) || 'S'
   const messages = useChatStore((s) => s.messages)
   const streamingText = useChatStore((s) => s.streamingText)
   const thinkingText = useChatStore((s) => s.thinkingText)
