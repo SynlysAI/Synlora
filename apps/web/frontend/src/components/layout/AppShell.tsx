@@ -204,15 +204,22 @@ function UserMenu() {
   )
 }
 
-/** Logo 标记：黑底圆角方块 + S 弧线（尺寸对齐 DSH 品牌标的量级）。 */
+/**
+ * Logo 标记：黑底圆角方块 + 单线「S」。
+ *
+ * 与旧版的区别：旧版是一条不闭合的圆弧（`M12.9 6.3a4 4 0 1 0 1.3 5.2`），
+ * 缩小后容易被看成「刷新/回环」；这里换成三段贝塞尔构成的完整 S，
+ * 上下两个碗形对称、笔画等宽、圆头收尾，28px 下仍能一眼读成 S。
+ * 全部用 currentColor 系 token，暗色主题下自动反色。
+ */
 function LogoMark() {
   return (
     <svg width="28" height="28" viewBox="0 0 20 20" aria-hidden="true">
       <rect x="1" y="1" width="18" height="18" rx="5" fill="var(--sa-alias-button-primary-fill)" />
       <path
-        d="M12.9 6.3a4 4 0 1 0 1.3 5.2"
+        d="M13.6 7.4C13.6 5.7 11.9 4.5 10 4.5C8.1 4.5 6.5 5.6 6.5 7.1C6.5 8.5 7.7 9.2 10 9.7C12.3 10.2 13.7 10.9 13.7 12.5C13.7 14.1 12 15.5 10 15.5C8 15.5 6.3 14.3 6.3 12.6"
         stroke="var(--sa-alias-label-primary-foreground)"
-        strokeWidth="1.8"
+        strokeWidth="1.7"
         fill="none"
         strokeLinecap="round"
       />
