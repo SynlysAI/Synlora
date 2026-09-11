@@ -207,3 +207,26 @@ async def test_project_delete_removes_record(store):
     assert await repo.used_dir_names("u1") == {"a"}
     assert await repo.delete(p["_id"]) is True
     assert await repo.list_for_user("u1") == []
+
+
+async def test_project_list_excludes_archived_but_keeps_dir_taken(store):
+    repo = ProjectRepo(store)
+    live = await repo.create(user_id="u1", name="在用", dir_name="在用")
+    gone = await repo.create(user_id="u1", name="归档", dir_name="归档")
+    # 直接改 archived 标记（ProjectRepo 未暴露归档能力）
+    await store.update("projects", gone["_id"], {"archived": True})
+
+    listed = await repo.list_for_user("u1")
+    assert [p["_id"] for p in listed] == [live["_id"]]
+    # 归档项目的目录仍在盘上，必须继续算「被占用」，否则新项目会复用它
+    assert await repo.used_dir_names("u1") == {"在用", "归档"}
+
+
+async def test_project_rename_missing_returns_none(store):
+    repo = ProjectRepo(store)
+    assert await repo.rename("nope", name="x", dir_name="x") is None
+
+
+async def test_project_delete_missing_returns_false(store):
+    repo = ProjectRepo(store)
+    assert await repo.delete("nope") is False

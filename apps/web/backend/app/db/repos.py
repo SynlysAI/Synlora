@@ -241,7 +241,7 @@ class ProjectRepo(BaseRepo):
             目录名集合。
         """
         docs = await self._store.list(self.collection, filters={"user_id": user_id})
-        return {d["dir_name"] for d in docs}
+        return {d["dir_name"] for d in docs if d.get("dir_name")}
 
     async def delete(self, project_id: str) -> bool:
         """删除项目记录。
