@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user
+from app.services.project_service import ProjectNameTaken
 
 router = APIRouter(prefix="/api/v1/projects", tags=["projects"])
 
@@ -43,10 +44,12 @@ async def create_project(request: Request, body: ProjectCreateBody,
         新建的项目文档。
 
     Raises:
-        HTTPException: 422 表示项目名不合法。
+        HTTPException: 409 表示已有同名工作区；422 表示项目名不合法。
     """
     try:
         return await request.app.state.project_service.create_project(user["sub"], body.name)
+    except ProjectNameTaken as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -74,6 +77,8 @@ async def rename_project(request: Request, pid: str, body: ProjectCreateBody,
         raise HTTPException(status_code=404, detail="项目不存在")
     try:
         return await service.rename_project(user["sub"], pid, body.name)
+    except ProjectNameTaken as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except OSError as exc:

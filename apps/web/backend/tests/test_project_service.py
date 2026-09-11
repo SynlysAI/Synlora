@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.services.project_service import ProjectService
+from app.services.project_service import ProjectNameTaken, ProjectService
 
 
 async def test_list_ensures_default_project_on_legacy(tmp_path, store):
@@ -83,12 +83,14 @@ async def test_tree_rejects_escape(tmp_path, store):
         await svc.list_dir("u1", p["_id"], "../../../etc")
 
 
-async def test_create_two_projects_same_name_gets_distinct_dirs(tmp_path, store):
+async def test_create_two_projects_same_name_rejected(tmp_path, store):
+    """显示名唯一：第二次建同名工作区被拒（ProjectNameTaken）。"""
     svc = ProjectService(store, tmp_path)
     a = await svc.create_project("u1", "实验一")
-    b = await svc.create_project("u1", "实验一")
     assert a["dir_name"] == "实验一"
-    assert b["dir_name"] == "实验一-2"
+    with pytest.raises(ProjectNameTaken):
+        await svc.create_project("u1", "实验一")
+    assert [p["name"] for p in await svc.list_projects("u1")] == ["实验一"]
 
 
 async def test_delete_frees_name_for_recreate(tmp_path, store):
@@ -130,14 +132,21 @@ async def test_delete_falls_back_to_trash_and_drops_record(tmp_path, store, monk
     assert p["_id"] not in [x["_id"] for x in await svc.list_projects("u1")]
 
 
-async def test_concurrent_create_same_name_gets_distinct_dirs(tmp_path, store):
-    """并发建同名项目必须拿到不同目录（check-then-act 有 per-user 锁兜住）。"""
+async def test_concurrent_create_same_name_only_one_wins(tmp_path, store):
+    """并发建同名工作区：per-user 锁保证「查重 → 落库」原子，只有一个能成。
+
+    没有这把锁，两个请求会各自查到「名字没被占」而同时建成功——正是这条用例守的东西。
+    """
     svc = ProjectService(store, tmp_path)
-    a, b = await asyncio.gather(
+    results = await asyncio.gather(
         svc.create_project("u1", "实验一"),
         svc.create_project("u1", "实验一"),
+        return_exceptions=True,
     )
-    assert {a["dir_name"], b["dir_name"]} == {"实验一", "实验一-2"}
+    ok = [r for r in results if isinstance(r, dict)]
+    rejected = [r for r in results if isinstance(r, ProjectNameTaken)]
+    assert len(ok) == 1 and len(rejected) == 1
+    assert [p["name"] for p in await svc.list_projects("u1")] == ["实验一"]
 
 
 async def test_concurrent_list_seeds_single_default_project(tmp_path, store):

@@ -8,6 +8,14 @@ from pathlib import Path
 from app.db.repos import ProjectRepo
 from app.services import workspace
 
+
+class ProjectNameTaken(ValueError):
+    """项目显示名已被同用户的其它项目占用。
+
+    继承 `ValueError`，这样既有的 `except ValueError` 调用方仍能兜住；
+    API 层把本异常优先映射成 409（与「名字不合法」的 422 区分开）。
+    """
+
 logger = logging.getLogger(__name__)
 
 
@@ -124,7 +132,29 @@ class ProjectService:
         if not base:
             raise ValueError("项目名不合法")
         async with self._lock_for(user_id):
+            await self._ensure_name_free(user_id, name, exclude_id=None)
             return await self._create_locked(user_id, name, base)
+
+    async def _ensure_name_free(
+        self, user_id: str, name: str, *, exclude_id: str | None
+    ) -> None:
+        """校验显示名未被同用户其它项目占用（须在 per-user 锁内调用）。
+
+        只比显示名（`name`，strip 后精确比较，区分大小写）；目录名仍由
+        `free_dir_name` 兜底加后缀，二者是两回事。
+
+        Args:
+            user_id: 用户 sub。
+            name: 待校验的显示名。
+            exclude_id: 要排除的项目 id（改名时排除自己，否则改回原名会被判重）。
+
+        Raises:
+            ProjectNameTaken: 已被其它项目占用。
+        """
+        target = name.strip()
+        for doc in await self._repo.list_for_user(user_id):
+            if doc["_id"] != exclude_id and doc.get("name") == target:
+                raise ProjectNameTaken(f"已存在同名工作区「{target}」")
 
     async def resolve_active_project(self, user_id: str, project_id: str | None) -> dict:
         """解析会话当前应用的项目（并发安全）。
@@ -207,6 +237,7 @@ class ProjectService:
         user_dir = self._data_root / "workspaces" / user_id
         old_dir = project["dir_name"]
         async with self._lock_for(user_id):
+            await self._ensure_name_free(user_id, name, exclude_id=project_id)
             if base == old_dir:
                 new_dir = old_dir
             else:

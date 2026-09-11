@@ -22,11 +22,12 @@ async def test_create_project_then_tree(client, user_headers):
     assert {e["name"] for e in r2.json()} == {"files", "output", "tmp"}
 
 
-async def test_create_duplicate_name_succeeds_with_distinct_dir(client, user_headers):
-    """同名项目不失败：第二个自动拿到带后缀的目录名。"""
+async def test_create_duplicate_name_409(client, user_headers):
+    """显示名唯一：建同名工作区直接拒绝（目录名加后缀只作兜底，不再用于消解重名）。"""
     await client.post("/api/v1/projects", json={"name": "x"}, headers=user_headers)
     r = await client.post("/api/v1/projects", json={"name": "x"}, headers=user_headers)
-    assert r.status_code == 201 and r.json()["dir_name"] == "x-2"
+    assert r.status_code == 409
+    assert "同名" in r.json()["detail"]
 
 
 async def test_create_project_rejects_empty_name(client, user_headers):
@@ -91,14 +92,17 @@ async def test_rename_same_name_is_noop(client, user_headers):
     assert r.status_code == 200 and r.json()["dir_name"] == "同名"
 
 
-async def test_rename_onto_existing_name_gets_suffix(client, user_headers):
-    """改成已被占用的名字：自动加后缀，不失败、不覆盖别人。"""
+async def test_rename_onto_existing_name_409(client, user_headers):
+    """改名撞上别人已用的显示名 → 409，不覆盖、不改动。"""
     await client.post("/api/v1/projects", json={"name": "被占"}, headers=user_headers)
     pid = (await client.post("/api/v1/projects", json={"name": "另一个"},
                              headers=user_headers)).json()["_id"]
     r = await client.patch(f"/api/v1/projects/{pid}", json={"name": "被占"},
                            headers=user_headers)
-    assert r.status_code == 200 and r.json()["dir_name"] == "被占-2"
+    assert r.status_code == 409
+    names = sorted(p["name"] for p in (await client.get("/api/v1/projects",
+                                                        headers=user_headers)).json())
+    assert names == ["另一个", "被占"]
 
 
 async def test_rename_missing_404_and_bad_name_422(client, user_headers):
@@ -108,3 +112,19 @@ async def test_rename_missing_404_and_bad_name_422(client, user_headers):
                              headers=user_headers)).json()["_id"]
     assert (await client.patch(f"/api/v1/projects/{pid}", json={"name": "   "},
                                headers=user_headers)).status_code == 422
+
+
+async def test_create_same_name_as_different_user_ok(client, user_headers, admin_headers):
+    """唯一性按用户隔离：别人用过的名字，我仍可建。"""
+    await client.post("/api/v1/projects", json={"name": "共享名"}, headers=user_headers)
+    r = await client.post("/api/v1/projects", json={"name": "共享名"}, headers=admin_headers)
+    assert r.status_code == 201
+
+
+async def test_rename_to_own_name_ok(client, user_headers):
+    """改回自己原名不算撞名（校验时排除自己）。"""
+    pid = (await client.post("/api/v1/projects", json={"name": "本体"},
+                             headers=user_headers)).json()["_id"]
+    r = await client.patch(f"/api/v1/projects/{pid}", json={"name": "本体"},
+                           headers=user_headers)
+    assert r.status_code == 200 and r.json()["dir_name"] == "本体"

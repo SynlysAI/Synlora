@@ -14,7 +14,7 @@ import { useSessionsStore } from '@/stores/sessions'
 import ConfirmDialog from './ConfirmDialog'
 import { toast } from '@/stores/toasts'
 import { formatRelativeTime } from '@/utils/format'
-import { MoreIcon } from './icons'
+import { ArchiveIcon, DeleteIcon, EditIcon, MoreIcon } from './icons'
 
 /** 默认显示的最近会话数（超出折叠为"展开其余 N 个会话"，DSH 式）。 */
 const COLLAPSE_AFTER = 8
@@ -172,15 +172,17 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
               setDraft(session.title)
               setEditing(true)
             }}
-            className="w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
           >
+            <EditIcon className="h-3.5 w-3.5 shrink-0" />
             重命名
           </button>
           <button
             type="button"
             onClick={() => void toggleArchive()}
-            className="w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
           >
+            <ArchiveIcon className="h-3.5 w-3.5 shrink-0" />
             {session.archived ? '取消归档' : '归档'}
           </button>
           <button
@@ -190,8 +192,9 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
               setDeleteError(null)
               setConfirmOpen(true)
             }}
-            className="w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
+            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
           >
+            <DeleteIcon className="h-3.5 w-3.5 shrink-0" />
             删除
           </button>
         </div>

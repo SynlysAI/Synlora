@@ -51,9 +51,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
   },
 
   create: async (name) => {
+    const trimmed = name.trim()
+    // 显示名唯一：本地先挡一道（省一次请求、报错更及时）；后端仍有权威校验（409）
+    if (get().projects.some((p) => p.name === trimmed)) {
+      throw new Error(`已存在同名工作区「${trimmed}」`)
+    }
     const project = await api<Project>('/api/v1/projects', {
       method: 'POST',
-      body: { name },
+      body: { name: trimmed },
     })
     // 新项目置于列表尾并选中（后端按创建序返回，插入位置与之保持一致）
     set((s) => ({ projects: [...s.projects, project], currentId: project._id }))
@@ -61,9 +66,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
   },
 
   rename: async (id, name) => {
+    const trimmed = name.trim()
+    // 撞上别人已用的名字本地先挡一道（排除自己，改回原名不算撞）
+    if (get().projects.some((p) => p._id !== id && p.name === trimmed)) {
+      throw new Error(`已存在同名工作区「${trimmed}」`)
+    }
     const project = await api<Project>(`/api/v1/projects/${id}`, {
       method: 'PATCH',
-      body: { name },
+      body: { name: trimmed },
     })
     set((s) => ({
       projects: s.projects.map((p) => (p._id === id ? project : p)),
