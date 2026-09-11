@@ -25,8 +25,8 @@ const RIGHT_MAX = 480
 /** 视口小于该宽度时左栏切换为 overlay 抽屉。 */
 const COMPACT_QUERY = '(max-width: 899px)'
 
-/** 右栏三态：隐藏 / 常态 / 全屏（占满中间列与右栏）。 */
-type RightPanelState = 'hidden' | 'normal' | 'fullscreen'
+/** 右栏两态：隐藏 / 展开。 */
+type RightPanelState = 'hidden' | 'normal'
 
 /** 数值钳制到 [min, max]。 */
 const clamp = (value: number, min: number, max: number) =>
@@ -243,6 +243,9 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
       </div>
       {/* 底部：主题切换 + 用户菜单（Jiuwen 式设置区） */}
       <div className="flex items-center gap-1 border-t border-[var(--sa-alias-border-l1)] p-2">
+        <div className="min-w-0 flex-1">
+          <UserMenu />
+        </div>
         <IconButton label={dark ? '切换浅色主题' : '切换深色主题'} onClick={toggleDark}>
           {dark ? (
             <svg {...iconProps}>
@@ -255,9 +258,6 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
             </svg>
           )}
         </IconButton>
-        <div className="min-w-0 flex-1">
-          <UserMenu />
-        </div>
       </div>
     </div>
   )
@@ -266,11 +266,11 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
 /** 中间列顶部工具条：左侧会话标题，右侧右栏三态切换（Jiuwen 式）。 */
 function ChatToolbar({
   rightState,
-  onCycleRight,
+  onToggleRight,
   onOpenDrawer,
 }: {
   rightState: RightPanelState
-  onCycleRight: () => void
+  onToggleRight: () => void
   onOpenDrawer?: () => void
 }) {
   const sessions = useSessionsStore((s) => s.sessions)
@@ -290,8 +290,8 @@ function ChatToolbar({
         {title}
       </span>
       <IconButton
-        label={`右栏：${rightState === 'hidden' ? '已隐藏' : rightState === 'normal' ? '常态' : '全屏'}（点击切换）`}
-        onClick={onCycleRight}
+        label={rightState === 'hidden' ? '展开右栏' : '收起右栏'}
+        onClick={onToggleRight}
       >
         <svg {...iconProps}>
           <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
@@ -325,20 +325,12 @@ export default function AppShell() {
     return () => mq.removeEventListener('change', onChange)
   }, [])
 
-  /** 右栏三态循环：隐藏 → 常态 → 全屏 → 隐藏。 */
-  const cycleRightState = () =>
-    setRightState((s) =>
-      s === 'hidden' ? 'normal' : s === 'normal' ? 'fullscreen' : 'hidden',
-    )
+  /** 右栏两态切换：隐藏 ↔ 展开。 */
+  const toggleRight = () => setRightState((s) => (s === 'hidden' ? 'normal' : 'hidden'))
 
-  // grid 列模板：全屏时中间列收 0、右栏列吃满剩余空间
-  const chatCol = rightState === 'fullscreen' ? '0px' : 'minmax(0, 1fr)'
-  const rightCol =
-    rightState === 'hidden'
-      ? '0px'
-      : rightState === 'fullscreen'
-        ? 'minmax(0, 1fr)'
-        : `${rightWidth}px`
+  // grid 列模板：隐藏时右栏列收 0
+  const chatCol = 'minmax(0, 1fr)'
+  const rightCol = rightState === 'hidden' ? '0px' : `${rightWidth}px`
   const gridTemplateColumns = compact
     ? `${chatCol} ${rightCol}`
     : `${leftWidth}px ${chatCol} ${rightCol}`
@@ -368,7 +360,7 @@ export default function AppShell() {
           <div className="flex h-full flex-col">
             <ChatToolbar
               rightState={rightState}
-              onCycleRight={cycleRightState}
+              onToggleRight={toggleRight}
               onOpenDrawer={compact ? () => setSidebarOpen(true) : undefined}
             />
             <div className="min-h-0 flex-1">
@@ -381,7 +373,7 @@ export default function AppShell() {
         <aside className="relative min-h-0 min-w-0 overflow-hidden border-l border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)]">
           <div
             className="h-full"
-            style={{ width: rightState === 'fullscreen' ? '100%' : rightWidth }}
+            style={{ width: rightWidth }}
           >
             <Rightbar />
           </div>
