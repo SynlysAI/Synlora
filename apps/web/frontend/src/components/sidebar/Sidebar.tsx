@@ -71,10 +71,15 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
    * 工作区**（输入框工作区行里选的，见 WorkspacePicker）；未选则不传 project_id，
    * 由后端回落到默认工作区。主按钮与「会话」组 `+` 共走此路径。
    */
-  const handleNew = async () => {
+  const handleNew = async (projectId?: string) => {
     const assistant = pickSelectedAssistant(useAssistantsStore.getState())
     try {
-      await create(assistant?._id ?? null, { projectId: currentProjectId ?? undefined })
+      // 指定了工作区（行内「+」）就建到那里；否则跟随输入框行里选中的工作区，
+      // 未选则由后端回落到默认工作区
+      const target = projectId ?? currentProjectId ?? undefined
+      await create(assistant?._id ?? null, { projectId: target })
+      // 从工作区行新建时把它展开，让新会话立刻可见
+      if (projectId) setExpanded((m) => ({ ...m, [projectId]: true }))
       onNavigate?.()
     } catch (err) {
       toast('error', `新建会话失败：${(err as Error).message}`)
@@ -156,6 +161,7 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
               sessionsByProject={sessionsByProject}
               expanded={expanded}
               onToggle={toggleWorkspace}
+              onNewSession={(projectId) => void handleNew(projectId)}
               onNavigate={onNavigate}
             />
 
