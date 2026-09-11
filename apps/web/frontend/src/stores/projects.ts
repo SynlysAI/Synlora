@@ -60,8 +60,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
       method: 'POST',
       body: { name: trimmed },
     })
-    // 新项目置于列表尾并选中（后端按创建序返回，插入位置与之保持一致）
-    set((s) => ({ projects: [...s.projects, project], currentId: project._id }))
+    // 新项目置于列表头并选中（后端列表按 updated_at 倒序，头插与刷新后的顺序一致）
+    set((s) => ({ projects: [project, ...s.projects], currentId: project._id }))
     return project
   },
 
@@ -76,7 +76,8 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
       body: { name: trimmed },
     })
     set((s) => ({
-      projects: s.projects.map((p) => (p._id === id ? project : p)),
+      // 重命名会刷新 updated_at，同步移到列表头（与后端倒序一致，刷新后位置不变）
+      projects: [project, ...s.projects.filter((p) => p._id !== id)],
     }))
     return project
   },
