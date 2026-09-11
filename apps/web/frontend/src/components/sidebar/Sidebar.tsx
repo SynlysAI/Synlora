@@ -1,111 +1,32 @@
 /**
- * 左栏："+ 新对话" 主按钮 → 助手选择区（头部卡 + 展开列表切换新对话默认
- * 助手，不影响已有会话）→ 会话搜索框 → 会话列表（SessionList）。
+ * 左栏：「+ 新会话」主按钮 → 会话搜索框 → 「工作区 / 会话」两级分组列表。
+ *
+ * 分组层级照抄 jiuwenswarm `multi-session/sidebar/ConversationSidebar.tsx`
+ * 1363-1461 行（`__body` 内两个 `conversation-sidebar__group`）：
+ * - 「工作区」组只列**非默认**工作区（默认工作区由「会话」组代表，对应参考项目
+ *   的 `regularProjects` vs `conversationSessions`，见 948-960 行）；
+ * - 「会话」组 = 默认工作区下的会话，标题右侧「+」新建会话（1434-1459 行）；
+ * - 分组标题的「+」默认隐藏、标题 hover 才显现（`__section-action`）。
+ *
+ * 会话归属纯前端推导（后端 `GET /api/v1/sessions` 已带 `project_id`）：
+ * `project_id` 指向某工作区即归入该组；为空（C5 之前的旧会话）或指向已不存在的
+ * 工作区时归入默认工作区。搜索框有内容时退化为跨全部会话的扁平列表。
+ *
+ * 本轮去掉助手选择区：专家改为可选（未选 = 平台默认提示词），选择入口收敛到
+ * 输入框的「+ → 专家」。
  */
-import { useState } from 'react'
-import type { Assistant } from '@/types'
+import { useMemo, useState } from 'react'
+import type { Session } from '@/types'
 import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
+import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
+import SectionHeading from './SectionHeading'
 import SessionList from './SessionList'
+import WorkspaceGroup from './WorkspaceGroup'
 
-/** 助手头像：avatar 字段（emoji/字符）缺省时取名称首字符。 */
-function AssistantAvatar({ assistant, active }: { assistant: Assistant; active?: boolean }) {
-  const label = assistant.avatar?.trim() || assistant.name.slice(0, 1)
-  return (
-    <span
-      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--sa-radius-sm)] text-[13px] font-medium ${
-        active
-          ? 'bg-[var(--sa-alias-button-primary-fill)] text-[var(--sa-alias-label-primary-foreground)]'
-          : 'bg-[var(--sa-specific-sidebar-nav-item-active-accent)] text-[var(--sa-alias-label-primary)]'
-      }`}
-      aria-hidden="true"
-    >
-      {label}
-    </span>
-  )
-}
-
-/** 助手选择区：当前默认助手头部卡 + 点击展开的切换列表（绝对定位浮层）。 */
-function AssistantPicker() {
-  const assistants = useAssistantsStore((s) => s.assistants)
-  const selectedId = useAssistantsStore((s) => s.selectedId)
-  const select = useAssistantsStore((s) => s.select)
-  const [open, setOpen] = useState(false)
-  // 显式选择优先，回退第一个（与 pickSelectedAssistant 同规则，订阅态直接推导）
-  const selected =
-    assistants.find((a) => a._id === selectedId) ?? assistants[0] ?? null
-
-  return (
-    <div className="relative">
-      {/* 头部卡：当前新对话默认助手 */}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2.5 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] px-2.5 py-2 text-left transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
-      >
-        {selected && <AssistantAvatar assistant={selected} />}
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium text-[var(--sa-alias-label-primary)]">
-            {selected?.name ?? '加载助手…'}
-          </span>
-          <span className="block truncate text-xs text-[var(--sa-alias-label-caption)]">
-            {selected?.description || '用于新对话'}
-          </span>
-        </span>
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`shrink-0 text-[var(--sa-alias-label-caption)] transition-transform duration-[var(--sa-duration-base)] ${open ? 'rotate-180' : ''}`}
-          aria-hidden="true"
-        >
-          <path d="m3.5 6 4.5 4.5L12.5 6" />
-        </svg>
-      </button>
-
-      {/* 展开列表：切换新对话默认助手（不影响已有会话） */}
-      {open && (
-        <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg">
-          {assistants.map((a) => (
-            <button
-              key={a._id}
-              type="button"
-              onClick={() => {
-                select(a._id)
-                setOpen(false)
-              }}
-              className={`flex w-full items-center gap-2.5 rounded-[var(--sa-radius-sm)] px-2 py-1.5 text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] ${
-                a._id === selectedId ? 'bg-[var(--sa-specific-sidebar-nav-item-active)]' : ''
-              }`}
-            >
-              <AssistantAvatar assistant={a} active={a._id === selectedId} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[13px] text-[var(--sa-alias-label-primary)]">
-                  {a.name}
-                  {a.builtin && (
-                    <span className="ml-1.5 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-markdown-tag)] px-1.5 py-px text-[10px] text-[var(--sa-alias-label-tertiary)]">
-                      内置
-                    </span>
-                  )}
-                </span>
-                <span className="block truncate text-xs text-[var(--sa-alias-label-caption)]">
-                  {a.description}
-                </span>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
+/** 默认工作区的磁盘目录名（后端 `workspace.DEFAULT_PROJECT_DIR`）。 */
+const DEFAULT_PROJECT_DIR = 'default'
 
 interface SidebarProps {
   /** 抽屉模式下点击导航项后关闭抽屉。 */
@@ -114,24 +35,70 @@ interface SidebarProps {
 
 /** 左栏组件（AppShell 左侧列 / compact 抽屉）。 */
 export default function Sidebar({ onNavigate }: SidebarProps) {
+  const sessions = useSessionsStore((s) => s.sessions)
   const create = useSessionsStore((s) => s.create)
+  const projects = useProjectsStore((s) => s.projects)
+  const projectsLoaded = useProjectsStore((s) => s.loaded)
+  const createProject = useProjectsStore((s) => s.create)
   const [query, setQuery] = useState('')
+  /** 工作区展开态（纯 UI 状态，不落 store）。 */
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  /** 新建会话：用当前默认助手创建并置为当前（chat 由 currentId 效应重置）。 */
+  // 默认工作区不单独成行（由「会话」组代表），其余全部列在「工作区」组
+  const defaultProject = projects.find((p) => p.dir_name === DEFAULT_PROJECT_DIR) ?? null
+  const workspaces = useMemo(
+    () => projects.filter((p) => p._id !== defaultProject?._id),
+    [projects, defaultProject],
+  )
+
+  /** 按 project_id 把会话归入各工作区；无归属的（旧会话/工作区已删）归默认工作区。 */
+  const { sessionsByProject, defaultSessions } = useMemo(() => {
+    const validIds = new Set(projects.map((p) => p._id))
+    const byProject: Record<string, Session[]> = {}
+    const orphans: Session[] = []
+    const defaultId = defaultProject?._id ?? null
+    for (const session of sessions) {
+      const pid = session.project_id
+      if (!pid || pid === defaultId || !validIds.has(pid)) orphans.push(session)
+      else (byProject[pid] ??= []).push(session)
+    }
+    return { sessionsByProject: byProject, defaultSessions: orphans }
+  }, [sessions, projects, defaultProject])
+
+  const searching = query.trim().length > 0
+
+  /** 新建会话：用「新对话默认专家」（可能为空 = 不使用专家）建到默认工作区。 */
   const handleNew = async () => {
     const assistant = pickSelectedAssistant(useAssistantsStore.getState())
-    if (!assistant) return
     try {
-      await create(assistant._id)
+      // 不指定 project_id：由后端回落到默认工作区
+      await create(assistant?._id ?? null)
       onNavigate?.()
     } catch (err) {
       toast('error', `新建会话失败：${(err as Error).message}`)
     }
   }
 
+  /** 新建工作区：prompt 取名字（与 ProjectPicker 同做法），成功后展开它。 */
+  const handleNewWorkspace = async () => {
+    const name = window.prompt('新建工作区名称')?.trim()
+    if (!name) return
+    try {
+      const project = await createProject(name)
+      setExpanded((m) => ({ ...m, [project._id]: true }))
+      toast('success', `已创建工作区 ${project.name}`)
+    } catch (err) {
+      toast('error', `新建工作区失败：${(err as Error).message}`)
+    }
+  }
+
+  /** 切换工作区展开态（点工作区行 = 展开/收起，照 jiuwen ProjectEntityRow）。 */
+  const toggleWorkspace = (projectId: string) =>
+    setExpanded((m) => ({ ...m, [projectId]: !m[projectId] }))
+
   return (
     <div className="flex h-full flex-col gap-2 p-2.5">
-      {/* 新对话主按钮（DSH 式：描边低调按钮） */}
+      {/* 新会话主按钮（DSH 式：描边低调按钮） */}
       <button
         type="button"
         onClick={() => void handleNew()}
@@ -142,9 +109,6 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
         </svg>
         新会话
       </button>
-
-      {/* 助手选择区 */}
-      <AssistantPicker />
 
       {/* 会话搜索 */}
       <div className="relative shrink-0">
@@ -173,8 +137,36 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
         />
       </div>
 
-      {/* 会话列表 */}
-      <SessionList query={query} onNavigate={onNavigate} />
+      {/* 分组滚动区：搜索态退化为跨全部会话的扁平列表 */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto pb-1">
+        {searching ? (
+          <SessionList query={query} onNavigate={onNavigate} />
+        ) : (
+          <>
+            <SectionHeading
+              label="工作区"
+              actionLabel="新建工作区"
+              onAction={() => void handleNewWorkspace()}
+            />
+            <WorkspaceGroup
+              projects={workspaces}
+              loaded={projectsLoaded}
+              sessionsByProject={sessionsByProject}
+              expanded={expanded}
+              onToggle={toggleWorkspace}
+              onNavigate={onNavigate}
+            />
+
+            <SectionHeading
+              label="会话"
+              actionLabel="新建会话"
+              onAction={() => void handleNew()}
+              className="mt-4"
+            />
+            <SessionList sessions={defaultSessions} onNavigate={onNavigate} />
+          </>
+        )}
+      </div>
     </div>
   )
 }

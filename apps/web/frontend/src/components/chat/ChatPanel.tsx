@@ -1,10 +1,10 @@
 /**
  * 中间列聊天面板：启动引导（加载项目/会话/助手 → 选中首个未归档会话 /
- * 自动用第一个助手创建）+ 消息列表 + 输入区。左栏会话树 Task 5 接入后
- * 接管选中逻辑。
+ * 按「新对话默认专家」建会话，未选专家则不带 assistant_id）+ 消息列表 +
+ * 输入区。
  */
 import { useEffect } from 'react'
-import { useAssistantsStore } from '@/stores/assistants'
+import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
@@ -37,8 +37,9 @@ export default function ChatPanel() {
         st.setCurrent(first._id)
         return
       }
-      const assistant = useAssistantsStore.getState().assistants[0]
-      if (assistant) await st.create(assistant._id).catch(() => {})
+      // 专家可选：无显式选择时按「不使用专家」建会话（平台默认提示词）
+      const assistant = pickSelectedAssistant(useAssistantsStore.getState())
+      await st.create(assistant?._id ?? null).catch(() => {})
     })()
     return () => {
       cancelled = true

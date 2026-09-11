@@ -88,7 +88,8 @@ export interface Skill {
 export interface Session {
   _id: string
   user_id: string
-  assistant_id: string
+  /** 绑定的专家 id（null = 不使用专家，只走平台默认提示词）。 */
+  assistant_id: string | null
   title: string
   archived: boolean
   message_count: number

@@ -1,14 +1,22 @@
 /**
  * 会话列表 store：CRUD 与当前选中态。
  *
- * 列表按 updated_at 倒序（后端排序）；create 成功后置为当前会话，并带上
- * 当前项目 id（后端按该字段把会话绑定到项目，缺失则回落到活跃项目）；
+ * 列表按 updated_at 倒序（后端排序）；create 成功后置为当前会话。
+ * `create` 缺省不指定 project_id，由后端回落到默认工作区（侧栏「新会话」
+ * 与「会话」组 `+` 都走这条路径）。
  * remove 删除当前会话时清空 currentId（由面板层决定后续引导）。
  */
 import { create } from 'zustand'
 import type { Session } from '@/types'
 import { api } from '@/api/client'
-import { useProjectsStore } from './projects'
+
+/** 新建会话的可选参数。 */
+export interface CreateSessionOptions {
+  /** 会话标题（缺省空串，首轮对话后由后端自动命名）。 */
+  title?: string
+  /** 绑定的工作区 id；缺省不传该字段，由后端回落到默认工作区。 */
+  projectId?: string | null
+}
 
 interface SessionsState {
   /** 当前用户全部会话（updated_at 倒序）。 */
@@ -19,8 +27,13 @@ interface SessionsState {
   loaded: boolean
   /** 拉取会话列表。 */
   load: () => Promise<void>
-  /** 新建会话并置为当前。 */
-  create: (assistantId: string, title?: string) => Promise<Session>
+  /**
+   * 新建会话并置为当前。
+   *
+   * @param assistantId 绑定的专家 id（null = 不使用专家，走平台默认提示词）。
+   * @param options 标题与工作区绑定（见 CreateSessionOptions）。
+   */
+  create: (assistantId: string | null, options?: CreateSessionOptions) => Promise<Session>
   /** 会话改名。 */
   rename: (id: string, title: string) => Promise<void>
   /** 会话归档/取消归档。 */
@@ -45,9 +58,9 @@ export const useSessionsStore = create<SessionsState>((set) => ({
     set({ sessions, loaded: true })
   },
 
-  create: async (assistantId, title = '') => {
-    // 新会话绑定当前项目（无项目时不带该字段，由后端回落到活跃项目）
-    const projectId = useProjectsStore.getState().currentId
+  create: async (assistantId, options = {}) => {
+    const { title = '', projectId = null } = options
+    // 缺省不带 project_id：由后端回落到默认工作区
     const session = await api<Session>('/api/v1/sessions', {
       method: 'POST',
       body: projectId

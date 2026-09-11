@@ -72,7 +72,7 @@ export default function RunInfoPanel() {
           {session.title || '新对话'}
         </div>
         <div className="flex items-center gap-1.5 pt-1 text-xs text-[var(--sa-alias-label-caption)]">
-          <span className="truncate">{assistantName ?? '未关联助手'}</span>
+          <span className="truncate">{assistantName ?? '未使用专家'}</span>
           <span aria-hidden="true">·</span>
           <span>更新于 {formatRelativeTime(session.updated_at)}</span>
         </div>

@@ -4,6 +4,10 @@
  * - 当前模型名按钮 + 下拉：首项"跟随助手（xxx）"恢复助手绑定默认，
  *   其余为管理员配置的 enabled 模型，选择即 PATCH 当前会话的
  *   model_provider_id（后端对话时按 会话级覆盖 > 助手绑定 取模型）；
+ * - **无专家时不能停在"跟随助手"**：专家是可选后，没有助手就没有可回落的
+ *   模型服务，后端 `send_message` 会 422「未指定模型服务」。此时下拉不再提供
+ *   "跟随助手"项，并**自动把第一个 enabled 模型落到会话级 model_provider_id**
+ *   （见下方 effect），显示与实际下发都是这个显式模型；
  * - 无当前会话时隐藏；模型列表空（管理员未配置）时隐藏下拉、显示
  *   "未配置模型"小字；
  * - 会话切换时随 sessions store 的 model_provider_id 自动联动显示。
@@ -23,6 +27,7 @@ export default function ModelPicker() {
   const setModel = useSessionsStore((s) => s.setModel)
   const models = useModelsStore((s) => s.models)
   const modelsLoaded = useModelsStore((s) => s.loaded)
+  const assistantsLoaded = useAssistantsStore((s) => s.loaded)
   const assistant = useAssistantsStore((s) =>
     s.assistants.find((a) => a._id === session?.assistant_id),
   )
@@ -44,15 +49,39 @@ export default function ModelPicker() {
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [open])
 
+  // 无专家（未绑定专家，或会话绑定的专家已不存在）→ 必须显式指定模型
+  const hasAssistantBinding = Boolean(session?.assistant_id)
+  const needsExplicitModel = !hasAssistantBinding || (assistantsLoaded && !assistant)
+  const overrideId = session?.model_provider_id ?? null
+  // 无专家时的有效模型：会话覆盖仍可用则沿用，否则回落第一个 enabled 模型
+  const explicitId = needsExplicitModel
+    ? overrideId && models.some((m) => m._id === overrideId)
+      ? overrideId
+      : (models[0]?._id ?? null)
+    : overrideId
+
+  // 自动下发：无专家且会话还没有可用的会话级模型时，写入第一个 enabled 模型
+  useEffect(() => {
+    if (!needsExplicitModel || !currentId) return
+    if (!modelsLoaded || !explicitId || explicitId === overrideId) return
+    void setModel(currentId, explicitId).catch(() => {
+      // 失败静默：按钮仍显示该模型，用户可手动重选（错误由下拉操作路径提示）
+    })
+  }, [needsExplicitModel, currentId, modelsLoaded, explicitId, overrideId, setModel])
+
   if (!currentId) return null
 
   /** 跟随助手时的助手侧模型名（联查字段：正常名 / "(已停用)" / "(已删除)" / null=未绑定）。 */
   const assistantModel = assistant?.model_name
   const followLabel = `跟随助手（${assistantModel ?? '未绑定模型'}）`
-  const overrideId = session?.model_provider_id ?? null
-  const currentLabel = overrideId
-    ? (models.find((m) => m._id === overrideId)?.name ?? '（已停用或已删除）')
-    : followLabel
+  /** 当前生效的模型 id：无专家走显式模型，有专家走会话覆盖（null = 跟随助手）。 */
+  const effectiveId = needsExplicitModel ? explicitId : overrideId
+  const effectiveModel = models.find((m) => m._id === effectiveId)
+  const currentLabel = needsExplicitModel
+    ? (effectiveModel?.name ?? (modelsLoaded ? '（已停用或已删除）' : '加载中…'))
+    : overrideId
+      ? (effectiveModel?.name ?? '（已停用或已删除）')
+      : followLabel
 
   /** 选中某项：PATCH 会话覆盖字段并收起下拉（422 等失败弹 toast）。 */
   const pick = (id: string | null) => {
@@ -121,21 +150,30 @@ export default function ModelPicker() {
               aria-label="选择会话模型"
               className="absolute bottom-full left-0 z-50 mb-1.5 max-h-64 w-56 overflow-y-auto rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
             >
-              <button
-                role="menuitem"
-                type="button"
-                onClick={() => pick(null)}
-                className={itemClass(!overrideId)}
-              >
-                <span className="truncate">{followLabel}</span>
-              </button>
+              {/* 无专家时说明为何没有"跟随助手"项 */}
+              {needsExplicitModel && models.length > 0 && (
+                <div className="px-2.5 pb-1 pt-0.5 text-[11px] leading-4 text-[var(--sa-alias-label-caption)]">
+                  未使用专家，需指定模型
+                </div>
+              )}
+              {/* 无专家时没有可回落的助手绑定，"跟随助手"项无意义故不渲染 */}
+              {!needsExplicitModel && (
+                <button
+                  role="menuitem"
+                  type="button"
+                  onClick={() => pick(null)}
+                  className={itemClass(!overrideId)}
+                >
+                  <span className="truncate">{followLabel}</span>
+                </button>
+              )}
               {models.map((m) => (
                 <button
                   key={m._id}
                   role="menuitem"
                   type="button"
                   onClick={() => pick(m._id)}
-                  className={itemClass(overrideId === m._id)}
+                  className={itemClass(effectiveId === m._id)}
                 >
                   <span className="truncate">{m.name}</span>
                 </button>
