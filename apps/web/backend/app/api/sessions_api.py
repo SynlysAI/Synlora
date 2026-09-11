@@ -92,17 +92,23 @@ class SessionCreateBody(BaseModel):
 
 
 class SessionUpdateBody(BaseModel):
-    """更新会话请求体（改名/归档/切换模型；model_provider_id 显式传 null 恢复助手默认）。"""
+    """更新会话请求体（改名/归档/切换模型/切换专家）。
+
+    model_provider_id 显式传 null 恢复助手默认；assistant_id 传 None（缺省）
+    表示不切换——切换只影响后续轮次（每轮 chat 重新从会话文档取助手）。
+    """
 
     title: str | None = None
     archived: bool | None = None
     model_provider_id: str | None = None
+    assistant_id: str | None = None
 
 
 class MessageIn(BaseModel):
-    """发消息请求体。"""
+    """发消息请求体（skills 为本轮勾选的技能名；None/空表示用全部可用技能）。"""
 
     text: str
+    skills: list[str] | None = None
 
     @field_validator("text")
     @classmethod
@@ -155,10 +161,16 @@ async def create_session(body: SessionCreateBody, request: Request,
 async def update_session(sid: str, body: SessionUpdateBody,
                          user=Depends(get_current_user),
                          repos=Depends(get_repos)) -> dict:
-    """改名/归档/切换模型（归属校验 404）。
+    """改名/归档/切换模型/切换专家（归属校验 404）。
 
     model_provider_id：传 id 校验后生效；显式传 null 恢复助手默认；
     未提供该字段不动原值（靠 model_fields_set 区分"未提供"与"显式 null"）。
+    assistant_id：传非空 id 校验助手存在后写回（只影响后续轮次，不改历史事件）；
+    缺省/空不动原值。
+
+    Raises:
+        HTTPException: 会话不存在或非本人（404）、助手不存在（404）、
+            model_provider_id 非法（422）。
     """
     doc = await _own_session(sid, user, repos)
     fields: dict = {}
@@ -166,6 +178,10 @@ async def update_session(sid: str, body: SessionUpdateBody,
         fields["title"] = body.title.strip()
     if body.archived is not None:
         fields["archived"] = body.archived
+    if body.assistant_id:
+        if await repos.assistant.get(body.assistant_id) is None:
+            raise HTTPException(404, "助手不存在")
+        fields["assistant_id"] = body.assistant_id
     if "model_provider_id" in body.model_fields_set:
         pid = body.model_provider_id
         if pid:
@@ -210,6 +226,9 @@ async def send_message(sid: str, body: MessageIn, request: Request,
                        repos=Depends(get_repos)) -> EventSourceResponse:
     """发消息并以 SSE 流式返回本轮事件（event=事件类型、data=JSON、id=seq）。
 
+    body.skills 为本轮勾选的技能名，透传给 AgentService.chat 的 requested_skills
+    （None/空 = 用全部可用技能，老前端不带该字段时行为不变）。
+
     Raises:
         HTTPException: 会话/助手不存在（404）、provider 未关联/停用（422）、
             并发超限（429）。
@@ -239,7 +258,8 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     # 这些是用户可见的引导副作用（项目列表、会话绑定都会变），注释勿再声称"零副作用"
     try:
         run_id = await service.chat(sid, user, assistant, cfg, body.text,
-                                    workspace_root=workspace_root)
+                                    workspace_root=workspace_root,
+                                    requested_skills=body.skills)
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
 

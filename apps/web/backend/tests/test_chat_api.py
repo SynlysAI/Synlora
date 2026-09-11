@@ -1154,3 +1154,122 @@ async def test_foreign_project_id_rejected_and_fallback_stays_own(
     # 回落后写回会话文档：后续轮次稳定命中本人项目
     doc = await app.state.store.get("sessions", sid)
     assert doc["project_id"] == my_pid
+
+
+# ---------- 切换专家（PATCH assistant_id） ----------
+
+
+async def test_session_patch_switch_assistant(app, client, admin_headers):
+    """PATCH 切换专家：写回 assistant_id，列表回读即为新专家（只影响后续轮次）。"""
+    sid = await _make_session(client, admin_headers, assistant_id="asst-research")
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"assistant_id": "asst-data"})
+    assert r.status_code == 200, r.text
+    assert r.json()["assistant_id"] == "asst-data"
+
+    r = await client.get("/api/v1/sessions", headers=admin_headers)
+    mine = next(s for s in r.json() if s["_id"] == sid)
+    assert mine["assistant_id"] == "asst-data"
+
+
+async def test_session_patch_switch_assistant_404(app, client, admin_headers):
+    """PATCH 传不存在的 assistant_id → 404，且会话文档未被改（无副作用）。"""
+    sid = await _make_session(client, admin_headers, assistant_id="asst-research")
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"assistant_id": "asst-nope"})
+    assert r.status_code == 404
+
+    doc = await app.state.store.get("sessions", sid)
+    assert doc["assistant_id"] == "asst-research"
+
+
+async def test_session_patch_without_assistant_id_keeps_it(app, client, admin_headers):
+    """不带 assistant_id 的 PATCH（只改 title）不影响 assistant_id。"""
+    sid = await _make_session(client, admin_headers, assistant_id="asst-research")
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"title": "只改名"})
+    assert r.status_code == 200, r.text
+    assert r.json()["title"] == "只改名"
+    assert r.json()["assistant_id"] == "asst-research"
+
+
+async def test_session_patch_switch_assistant_used_next_turn(
+        app, client, admin_headers, monkeypatch):
+    """切换专家后下一轮 chat 用新助手（会话文档是每轮的事实源，不改历史事件）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    sid = await _make_session(client, admin_headers, assistant_id="asst-research")
+
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"assistant_id": "asst-data"})
+    assert r.status_code == 200, r.text
+    await _chat_once(client, admin_headers, sid)
+
+    persona = (await app.state.assistant_repo.get("asst-data"))["system_prompt"]
+    prompt = captured[-1]["config"].system_prompt
+    assert persona in prompt
+
+
+# ---------- 发消息透传本轮技能选择（skills → requested_skills） ----------
+
+
+def _capture_chat_args(monkeypatch) -> list[dict]:
+    """包住 AgentService.chat，记录每轮入参后转交真实实现。
+
+    观察方式：直接 monkeypatch 类方法（sessions_api 经实例调用 → 落到类方法），
+    断言 handler 透传的 requested_skills 实参，而非间接从提示词反推。
+
+    Args:
+        monkeypatch: pytest monkeypatch 夹具。
+
+    Returns:
+        逐轮累积的 kwargs 列表（每轮 append 一项）。
+    """
+    captured: list[dict] = []
+    real_chat = agent_service_mod.AgentService.chat
+
+    async def _wrapper(self, *args, **kwargs):
+        """记录 kwargs 后转交真实 chat。
+
+        Args:
+            self: AgentService 实例。
+            args: chat 位置参数。
+            kwargs: chat 关键字参数（含 requested_skills）。
+
+        Returns:
+            真实 chat 返回的 run_id。
+        """
+        captured.append(kwargs)
+        return await real_chat(self, *args, **kwargs)
+
+    monkeypatch.setattr(agent_service_mod.AgentService, "chat", _wrapper)
+    return captured
+
+
+async def test_message_skills_passthrough(app, client, admin_headers, monkeypatch):
+    """发消息 body 带 skills → requested_skills 原样透传给 AgentService.chat。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+    captured = _capture_chat_args(monkeypatch)
+
+    r = await client.post(f"/api/v1/sessions/{sid}/messages", headers=admin_headers,
+                          json={"text": "选技能", "skills": ["data-analysis"]})
+    assert r.status_code == 200, r.text
+    assert parse_sse(r.text)[-1][0] == "turn/end"
+    assert captured[-1]["requested_skills"] == ["data-analysis"]
+
+
+async def test_message_without_skills_defaults_none(app, client, admin_headers, monkeypatch):
+    """不带 skills 发消息（老前端）→ requested_skills 为 None（向后兼容 = 全部技能）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+    captured = _capture_chat_args(monkeypatch)
+
+    await _chat_once(client, admin_headers, sid, "不选技能")
+    assert captured[-1]["requested_skills"] is None
