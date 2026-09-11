@@ -472,6 +472,15 @@ async def test_concurrent_create_same_name_gets_distinct_dirs(tmp_path, store):
         svc.create_project("u1", "实验一"),
     )
     assert {a["dir_name"], b["dir_name"]} == {"实验一", "实验一-2"}
+
+
+async def test_concurrent_list_seeds_single_default_project(tmp_path, store):
+    """并发首次加载只补种一条默认项目（迁移也在锁内）。"""
+    (tmp_path / "workspaces" / "u1" / "files").mkdir(parents=True)
+    svc = ProjectService(store, tmp_path)
+    await asyncio.gather(svc.list_projects("u1"), svc.list_projects("u1"))
+    projects = await svc.list_projects("u1")
+    assert [p["dir_name"] for p in projects] == ["default"]
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -482,10 +491,11 @@ async def test_concurrent_create_same_name_gets_distinct_dirs(tmp_path, store):
 """项目服务：项目 CRUD 编排、目录树懒加载、旧数据迁移。"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
-from ..db.repos import ProjectRepo
-from . import workspace
+from app.db.repos import ProjectRepo
+from app.services import workspace
 
 
 class ProjectService:
@@ -517,13 +527,23 @@ class ProjectService:
         return self._user_locks.setdefault(user_id, asyncio.Lock())
 
     async def list_projects(self, user_id: str) -> list[dict]:
-        """列出项目（首次访问时执行旧布局迁移并补种默认项目）。"""
-        migrated = workspace.migrate_legacy_layout(self._data_root, user_id)
-        if migrated:
-            await self._repo.create(
-                user_id=user_id, name="默认项目",
-                dir_name=workspace.DEFAULT_PROJECT_DIR,
-            )
+        """列出项目（首次访问时执行旧布局迁移并补种默认项目）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            未归档项目文档列表（updated_at 倒序）。
+        """
+        # 迁移 + 补种也在锁内：并发首次加载（React 双 effect / 两个标签页）
+        # 否则会补种出两条同名 default 项目
+        async with self._lock_for(user_id):
+            migrated = workspace.migrate_legacy_layout(self._data_root, user_id)
+            if migrated:
+                await self._repo.create(
+                    user_id=user_id, name="默认项目",
+                    dir_name=workspace.DEFAULT_PROJECT_DIR,
+                )
         return await self._repo.list_for_user(user_id)
 
     async def create_project(self, user_id: str, name: str) -> dict:
@@ -568,7 +588,7 @@ class ProjectService:
     async def get(self, user_id: str, project_id: str) -> dict | None:
         """取项目（校验归属）。"""
         doc = await self._repo.get(project_id)
-        return doc if doc and doc["user_id"] == user_id else None
+        return doc if doc and doc.get("user_id") == user_id else None
 
     def root_for(self, project: dict) -> Path:
         """项目对应的磁盘根目录。"""
@@ -580,7 +600,10 @@ class ProjectService:
         project = await self.get(user_id, project_id)
         if project is None:
             raise ValueError("项目不存在")
-        root = self.root_for(project)
+        # 必须 resolve：resolve_in_project 内部以 root.resolve() 判边界，返回已解析的绝对路径，
+        # 若此处用未解析的 root 去 relative_to()，在 data_root 为相对路径（settings 默认 ../data）
+        # 或穿过 symlink/junction 时会抛 ValueError
+        root = self.root_for(project).resolve()
         target = workspace.resolve_in_project(root, rel)
         if not target.is_dir():
             raise ValueError("不是目录")
@@ -597,9 +620,11 @@ class ProjectService:
         return out
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
-- [ ] **Step 5: Commit** — `feat(web): 项目服务（迁移/建目录/目录树）`
+- [x] **Step 5: Commit** — `feat(web): 项目服务（迁移/建目录/目录树）`
+
+> **本任务已完成**：`2ac6fb05`（初版）+ `58107ee6`（修复 Critical：`list_dir` 未 resolve 项目根，在默认的相对 `data_root` 下目录非空必抛 `ValueError`；并补齐 8 个分支用例，测试从 8 → 15 个）。全量后端 125 passed / 36 skipped。
 
 ---
 
