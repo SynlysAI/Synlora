@@ -11,7 +11,9 @@ def test_persona_appended_after_platform_sections():
 def test_workspace_placeholder_substituted(tmp_path):
     """工作区段的 {{workspace}} 占位符被实际路径替换。"""
     out = build_system_prompt(persona="", workspace=tmp_path, skills=[])
-    assert str(tmp_path) in out and "{{workspace}}" not in out
+    # 路径统一正斜杠：与 file.list 等工具的 .as_posix() 口径一致
+    assert tmp_path.as_posix() in out and "{{workspace}}" not in out
+    assert "\\" not in out
 
 
 def test_skill_index_rendered_only_when_present():
@@ -37,6 +39,13 @@ def test_no_workspace_section_when_none():
     out = build_system_prompt(persona="", workspace=None, skills=[])
     assert "# 工作区" not in out
     assert "{{workspace}}" not in out
+
+
+def test_skill_section_precedes_workspace_section(tmp_path):
+    """技能(40) 必须排在工作区(70) 之前，不能依赖 append 次序。"""
+    out = build_system_prompt(
+        persona="", workspace=tmp_path, skills=[("a-skill", "用途")])
+    assert out.index("# 技能") < out.index("# 工作区")
 
 
 def test_empty_skill_index_returns_empty_string():

@@ -88,7 +88,7 @@ def build_system_prompt(
     Returns:
         各段按 priority 升序、以空行连接，末尾追加 persona。
     """
-    params = {"workspace": str(workspace) if workspace else ""}
+    params = {"workspace": workspace.as_posix() if workspace is not None else ""}
     sections: list[tuple[int, str]] = [
         (IDENTITY_PRIORITY, SOUL),
         (TASK_PRIORITY, AGENT),
