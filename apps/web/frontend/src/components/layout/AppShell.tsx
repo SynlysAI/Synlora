@@ -232,8 +232,11 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
   const [dark, toggleDark] = useDarkTheme()
   return (
     <div className="flex h-full flex-col">
-      {/* 顶部：Logo + 名称（compact 时带汉堡开抽屉） */}
-      <div className="flex items-center gap-2 px-3 pb-1 pt-3">
+      {/* 顶部：Logo + 名称（compact 时带汉堡开抽屉）。
+          行高与上下间距照抄 DSH `SidebarRoot.module.css` 的 `.logoRow`：
+          height 60px、上下各 8px；字重照它的 `.brandName` 用 600 而非 700——
+          粗体配负字距会显得挤，这里去掉 tracking-tight 并显式给行高 24px。 */}
+      <div className="flex h-[60px] shrink-0 items-center gap-2 px-3">
         {onOpenDrawer && (
           <IconButton label="打开侧栏" onClick={onOpenDrawer}>
             <svg {...iconProps}>
@@ -242,7 +245,7 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
           </IconButton>
         )}
         <LogoMark />
-        <span className="text-[21px] font-bold tracking-tight">Synlora</span>
+        <span className="text-[19px] font-semibold leading-6">Synlora</span>
       </div>
       {/* 中部：新会话/助手/会话列表 */}
       <div className="min-h-0 flex-1">
