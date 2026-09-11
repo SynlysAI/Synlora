@@ -29,6 +29,8 @@ export type ChatItem =
       elapsedMs?: number
       /** 本轮 token 用量（turn/end payload 携带）。 */
       usage?: { prompt_tokens: number; completion_tokens: number }
+      /** 本轮完成时间戳（turn/end ts，秒）。 */
+      finishedTs?: number
     }
   | { kind: 'tool'; call: ToolCallPayload; result?: ToolResultPayload }
 
@@ -234,7 +236,7 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
           if (it.kind === 'user') break
           if (it.kind === 'assistant') {
             items = [...items]
-            items[i] = { ...it, elapsedMs, usage }
+            items[i] = { ...it, elapsedMs, usage, finishedTs: ev.ts }
             break
           }
         }

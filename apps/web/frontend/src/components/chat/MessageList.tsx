@@ -1,14 +1,19 @@
 /**
- * 消息列表：滚动容器（near-bottom 自动跟随 + 回到底部）、条目渲染、
- * turn 头部行（头像 + 助手名，Jiuwen 模式：头像在回答上方）、空态欢迎页。
+ * 消息列表：滚动容器（near-bottom 自动跟随 + 回到底部）、turn 分组渲染、
+ * 空态欢迎页。
  *
- * 排版节奏：新一组对话（上一条是用户消息）加大上间距，并渲染 turn 头部；
- * 组内思考面板/工具卡片/正文保持紧凑缩进对齐。
+ * Jiuwen 展示模式：
+ * - turn 头部行（头像 + 助手名）在整组回答上方
+ * - 本轮的思考/工具行收进"任务用时 X.XXs"折叠 chip（completed-work-chip），
+ *   完成后默认收起，点击展开才看到思考与工具调用，页面精简
+ * - 流式进行中：思考/工具行直接实时展示（各组件自带折叠与扫光）
+ * - 回答正文（assistant）在 chip 之后文档流展示；间距：组内紧（gap-1）、
+ *   turn 之间松（mt-6）
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatItem } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
-import AssistantMessage from './AssistantMessage'
+import AssistantMessage, { formatElapsed } from './AssistantMessage'
 import Avatar from './Avatar'
 import ReasoningPanel from './ReasoningPanel'
 import ToolCallCard from './ToolCallCard'
@@ -24,8 +29,39 @@ const EXAMPLES = [
   { icon: '🗂️', text: '列出我的工作区里有哪些文件' },
 ]
 
+/** turn 分组视图结构：user 起始，work = 思考+工具（收进 chip），answers = 正文。 */
+interface Turn {
+  user: Extract<ChatItem, { kind: 'user' }> | null
+  work: Extract<ChatItem, { kind: 'reasoning' } | { kind: 'tool' }>[]
+  answers: Extract<ChatItem, { kind: 'assistant' }>[]
+}
+
+/** 按 user 边界把平铺 items 切成 turn 组。 */
+function groupTurns(items: ChatItem[]): Turn[] {
+  const turns: Turn[] = []
+  for (const item of items) {
+    const last = turns[turns.length - 1]
+    if (item.kind === 'user') {
+      turns.push({ user: item, work: [], answers: [] })
+    } else if (!last) {
+      // 没有前置 user 的 AI 块（异常防御）：独立成组
+      turns.push({ user: null, work: [], answers: [] })
+      pushTo(turns[turns.length - 1], item)
+    } else {
+      pushTo(last, item)
+    }
+  }
+  return turns
+}
+
+/** 把 AI 块放入对应分区。 */
+function pushTo(turn: Turn, item: ChatItem) {
+  if (item.kind === 'assistant') turn.answers.push(item)
+  else if (item.kind !== 'user') turn.work.push(item)
+}
+
 interface EmptyStateProps {
-  /** 当前助手名（无会话/未关联时回退产品名）。 */
+  /** 当前助手名。 */
   assistantName: string
   /** 助手头像字符。 */
   assistantAvatar: string
@@ -70,17 +106,8 @@ function EmptyState({ assistantName, assistantAvatar, onSend }: EmptyStateProps)
   )
 }
 
-interface TurnHeaderProps {
-  /** 助手头像字符。 */
-  avatar: string
-  /** 助手名。 */
-  name: string
-  /** 本轮仍在进行（spinner）。 */
-  active: boolean
-}
-
 /** turn 头部行：头像 + 名称（+ 进行中 spinner）。 */
-function TurnHeader({ avatar, name, active }: TurnHeaderProps) {
+function TurnHeader({ avatar, name, active }: { avatar: string; name: string; active: boolean }) {
   return (
     <div className="flex items-center gap-2">
       <Avatar char={avatar} />
@@ -100,56 +127,131 @@ function TurnHeader({ avatar, name, active }: TurnHeaderProps) {
   )
 }
 
-interface ChatEntryProps {
-  item: ChatItem
-  /** 是否为新一组对话的开始（渲染 turn 头部 + 大上间距）。 */
-  newGroup: boolean
-  /** 助手头像字符。 */
-  assistantAvatar: string
-  /** 助手名。 */
-  assistantName: string
-  /** 该 turn 是否仍在流式进行（仅最后一个 turn 有效）。 */
-  turnActive: boolean
+/** 时钟图标（Jiuwen WaitingStatusIcon 同款语义）。 */
+function ClockIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="10" cy="10" r="6.5" />
+      <path d="M10 6.5V10l2.4 1.6" />
+    </svg>
+  )
 }
 
-/** 单条聊天条目渲染分发。 */
-function ChatEntry({ item, newGroup, assistantAvatar, assistantName, turnActive }: ChatEntryProps) {
-  const header = newGroup ? (
-    <TurnHeader avatar={assistantAvatar} name={assistantName} active={turnActive} />
-  ) : null
-  const groupCls = newGroup ? 'mt-7' : 'mt-1.5'
+interface WorkChipProps {
+  /** 本轮任务用时。 */
+  elapsedMs: number
+  /** 是否含失败工具（错误色调）。 */
+  failed: boolean
+  /** 展开状态。 */
+  open: boolean
+  /** 点击切换。 */
+  onToggle: () => void
+}
 
-  if (item.kind === 'user') {
-    return (
-      <div className="mt-7">
-        <UserMessage text={item.text} />
-      </div>
-    )
-  }
-  if (item.kind === 'reasoning') {
-    return (
-      <section className={groupCls}>
-        {header}
-        <ReasoningPanel text={item.text} running={false} />
-      </section>
-    )
-  }
-  if (item.kind === 'assistant') {
-    return (
-      <section className={groupCls}>
-        {header}
-        <AssistantMessage
-          content={item.content}
-          elapsedMs={item.elapsedMs}
-          usage={item.usage}
-        />
-      </section>
-    )
-  }
+/** "任务用时 X.XXs" 折叠 chip（照抄 Jiuwen completed-work-chip），包住本轮思考与工具。 */
+function WorkChip({ elapsedMs, failed, open, onToggle }: WorkChipProps) {
   return (
-    <section className={groupCls}>
-      {header}
-      <ToolCallCard call={item.call} result={item.result} />
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className={`group/chip inline-flex max-w-full items-center gap-1.5 border-0 bg-transparent py-0.5 pr-1 text-left ${
+        failed ? 'text-[var(--sa-alias-state-error-primary)]' : 'text-[var(--sa-alias-label-tertiary)]'
+      }`}
+    >
+      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+        <ClockIcon />
+      </span>
+      <span className="min-w-0 text-[12px] font-medium tabular-nums leading-[1.3]">
+        任务用时 {formatElapsed(elapsedMs)}
+      </span>
+      <span
+        aria-hidden="true"
+        className={`flex h-3 w-3 shrink-0 items-center justify-center transition-[transform,opacity] duration-200 ${
+          open ? 'rotate-90 opacity-100' : 'opacity-0 group-hover/chip:opacity-100'
+        }`}
+      >
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" d="m8 6 4 4-4 4" />
+        </svg>
+      </span>
+    </button>
+  )
+}
+
+/** work 区条目（思考面板/工具行）。 */
+function WorkItem({ item }: { item: ChatItem }) {
+  if (item.kind === 'reasoning') {
+    return <ReasoningPanel text={item.text} running={false} />
+  }
+  if (item.kind === 'tool') {
+    return <ToolCallCard call={item.call} result={item.result} />
+  }
+  return null
+}
+
+interface TurnBlockProps {
+  turn: Turn
+  /** 本 turn 是否仍在流式进行（最后一组）。 */
+  active: boolean
+  assistantAvatar: string
+  assistantName: string
+}
+
+/** 单个 turn 渲染：头部 → [chip 折叠的 work 区 | 流式 work 区] → 正文。 */
+function TurnBlock({ turn, active, assistantAvatar, assistantName }: TurnBlockProps) {
+  const [workOpen, setWorkOpen] = useState(false)
+  const lastAnswer = turn.answers[turn.answers.length - 1]
+  const elapsedMs = lastAnswer?.elapsedMs
+  const failed = turn.work.some((w) => w.kind === 'tool' && w.result && !w.result.ok)
+  const done = !active && elapsedMs != null
+  const hasHeader = turn.user != null
+
+  return (
+    <section className="mt-6 first:mt-0">
+      {turn.user && <UserMessage text={turn.user.text} />}
+      <div className="flex flex-col gap-1.5">
+        {hasHeader && (
+          <TurnHeader avatar={assistantAvatar} name={assistantName} active={active} />
+        )}
+        {/* 思考/工具区：完成后收进 chip，流式中直接展示 */}
+        {turn.work.length > 0 && (
+          <>
+            {done ? (
+              <>
+                <WorkChip
+                  elapsedMs={elapsedMs}
+                  failed={failed}
+                  open={workOpen}
+                  onToggle={() => setWorkOpen((v) => !v)}
+                />
+                {workOpen && (
+                  <div className="flex flex-col gap-1 pl-1">
+                    {turn.work.map((w, i) => (
+                      <WorkItem key={i} item={w} />
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex flex-col gap-1 pl-1">
+                {turn.work.map((w, i) => (
+                  <WorkItem key={i} item={w} />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {/* 回答正文（最后一个带完成元信息） */}
+        {turn.answers.map((a, i) => (
+          <AssistantMessage
+            key={i}
+            content={a.content}
+            usage={i === turn.answers.length - 1 ? a.usage : undefined}
+            finishedTs={i === turn.answers.length - 1 ? a.finishedTs : undefined}
+          />
+        ))}
+      </div>
     </section>
   )
 }
@@ -192,14 +294,14 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
   }
 
   const empty = messages.length === 0 && !streamingText && !thinkingText
-  /** 流式块是否开启 turn 头部（messages 已有内容时流式块不带头部，头部由 turn 首个块渲染）。 */
+  const turns = useMemo(() => groupTurns(messages), [messages])
   const lastIsUser = messages.length > 0 && messages[messages.length - 1].kind === 'user'
 
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto px-4 sm:px-6">
         <div
-          className={`mx-auto flex h-full max-w-3xl flex-col gap-4 py-6 ${
+          className={`mx-auto flex h-full max-w-3xl flex-col py-6 ${
             empty ? 'justify-center' : 'justify-start'
           }`}
         >
@@ -211,37 +313,30 @@ export default function MessageList({ assistantName, assistantAvatar }: MessageL
             />
           ) : (
             <>
-              {messages.map((item, i) => (
-                <ChatEntry
+              {turns.map((turn, i) => (
+                <TurnBlock
                   key={i}
-                  item={item}
-                  newGroup={i > 0 && messages[i - 1].kind === 'user'}
+                  turn={turn}
+                  active={streaming && i === turns.length - 1}
                   assistantAvatar={assistantAvatar}
                   assistantName={assistantName}
-                  turnActive={streaming && i === messages.length - 1}
                 />
               ))}
-              {/* 流式思考（turn 头部跟随 lastIsUser 判定） */}
-              {thinkingText && (
-                <section className="mt-1.5">
-                  {lastIsUser && (
-                    <TurnHeader avatar={assistantAvatar} name={assistantName} active />
-                  )}
-                  <ReasoningPanel text={thinkingText} running />
+              {/* 流式区（属于进行中的最后一组）：思考面板 → 正文 */}
+              {streaming && (thinkingText || streamingText || lastIsUser) && (
+                <section className="mt-6">
+                  <div className="flex flex-col gap-1.5">
+                    {lastIsUser && (
+                      <TurnHeader avatar={assistantAvatar} name={assistantName} active />
+                    )}
+                    {thinkingText && (
+                      <div className="pl-1">
+                        <ReasoningPanel text={thinkingText} running />
+                      </div>
+                    )}
+                    {streamingText && <AssistantMessage content={streamingText} streaming />}
+                  </div>
                 </section>
-              )}
-              {/* 流式正文 */}
-              {streamingText && (
-                <section className="mt-1.5">
-                  {lastIsUser && !thinkingText && (
-                    <TurnHeader avatar={assistantAvatar} name={assistantName} active />
-                  )}
-                  <AssistantMessage content={streamingText} streaming />
-                </section>
-              )}
-              {/* 无思考无正文时的等待头部（模型连接中） */}
-              {streaming && !streamingText && !thinkingText && messages.length > 0 && lastIsUser && (
-                <TurnHeader avatar={assistantAvatar} name={assistantName} active />
               )}
             </>
           )}

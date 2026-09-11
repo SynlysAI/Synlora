@@ -127,12 +127,19 @@ const mdComponents: Components = {
 }
 
 /** 秒数格式化（Jiuwen 风格：3.2s / 1m05s）。 */
-function formatElapsed(ms: number): string {
+export function formatElapsed(ms: number): string {
   const s = ms / 1000
-  if (s < 60) return `${s.toFixed(1)}s`
+  if (s < 60) return `${s.toFixed(2)}s`
   const m = Math.floor(s / 60)
   const rest = Math.round(s % 60)
   return `${m}m${String(rest).padStart(2, '0')}s`
+}
+
+/** 完成时间戳格式化（HH:mm:ss，Jiuwen 消息尾部同款）。 */
+function formatClock(tsSeconds: number): string {
+  const d = new Date(tsSeconds * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
 /** token 数千分位。 */
@@ -149,10 +156,12 @@ interface AssistantMessageProps {
   elapsedMs?: number
   /** 本轮 token 用量（turn/end payload）。 */
   usage?: { prompt_tokens: number; completion_tokens: number }
+  /** 本轮完成时间戳（秒，尾部首个展示）。 */
+  finishedTs?: number
 }
 
 /** 助手消息组件（文档流排版 + 尾部操作行）。 */
-export default function AssistantMessage({ content, streaming, elapsedMs, usage }: AssistantMessageProps) {
+export default function AssistantMessage({ content, streaming, usage, finishedTs }: AssistantMessageProps) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     try {
@@ -177,9 +186,12 @@ export default function AssistantMessage({ content, streaming, elapsedMs, usage 
           />
         )}
       </div>
-      {/* 尾部操作行：复制 hover 显现；用时与 token 常驻（弱化灰） */}
+      {/* 尾部操作行（Jiuwen 顺序）：完成时间 → 复制（hover 显现）→ token 用量 */}
       {!streaming && (
         <div className="flex items-center gap-3 pt-0.5 text-[11.5px] text-[var(--sa-alias-label-caption)]">
+          {finishedTs != null && (
+            <span className="tabular-nums">{formatClock(finishedTs)}</span>
+          )}
           <button
             type="button"
             onClick={() => void copy()}
@@ -195,9 +207,8 @@ export default function AssistantMessage({ content, streaming, elapsedMs, usage 
               </svg>
             )}
           </button>
-          {elapsedMs != null && <span>任务用时 {formatElapsed(elapsedMs)}</span>}
           {usage && (
-            <span>
+            <span className="tabular-nums">
               {formatTokens(usage.prompt_tokens)} in / {formatTokens(usage.completion_tokens)} out
             </span>
           )}
