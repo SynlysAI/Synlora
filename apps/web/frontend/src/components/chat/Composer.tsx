@@ -27,6 +27,14 @@ import WorkspacePicker from './WorkspacePicker'
 const MAX_INPUT_HEIGHT = 148
 
 /**
+ * 输入框最小高度（px），照 jiuwen `.chat-input-editor`：
+ * 空态取 `--work-home` 的 88px，有消息取基础值 96px。
+ * （本项目原为单行 24px，输入区过于局促。）
+ */
+const MIN_INPUT_HEIGHT_EMPTY = 88
+const MIN_INPUT_HEIGHT_CHAT = 96
+
+/**
  * 卡片样式：外层灰卡（仅空态，jiuwen `.chat-input-container--work-home`）与
  * 内层白卡 / 有消息时的单层白卡（jiuwen `--work-home .chat-input-body`）。
  * 底色用组件层 token（外层 `--sa-specific-selector` 灰、内层
@@ -139,7 +147,8 @@ export default function Composer({ empty }: ComposerProps) {
         onKeyDown={handleKeyDown}
         placeholder={streaming ? '回复生成中…' : '给 SynlysAgent 发送消息'}
         aria-label="消息输入框"
-        className="max-h-[148px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[15px] leading-[22px] text-[var(--sa-alias-label-primary)] placeholder:text-[var(--sa-alias-label-caption)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+        style={{ minHeight: empty ? MIN_INPUT_HEIGHT_EMPTY : MIN_INPUT_HEIGHT_CHAT }}
+        className="max-h-[148px] w-full resize-none bg-transparent py-0.5 text-[15px] leading-[22px] text-[var(--sa-alias-label-primary)] placeholder:text-[var(--sa-alias-label-caption)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
       />
       {/* 底部功能行：左「+」菜单（含专家 chip），右模型选择器 + 发送/停止 */}
       <div className="flex items-center justify-between gap-2 pt-1.5">
