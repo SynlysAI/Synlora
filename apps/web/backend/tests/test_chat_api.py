@@ -7,6 +7,7 @@
 """
 import asyncio
 import json
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -591,7 +592,9 @@ async def test_run_completes_without_sse_consumer(app, client, admin_headers, mo
     )
     assistant = await app.state.assistant_repo.get("asst-data")
     user = {"sub": "u-admin", "username": "tester-admin", "role": "admin"}
-    run_id = await app.state.agent_service.chat(sid, user, assistant, cfg, "后台跑")
+    run_id = await app.state.agent_service.chat(
+        sid, user, assistant, cfg, "后台跑",
+        workspace_root=await _workspace_root(app, "u-admin"))
 
     types: list[str] = []
     for _ in range(100):
@@ -635,11 +638,14 @@ async def test_chat_init_failure_releases_session_slot(app, client, admin_header
     real_list_events = app.state.event_repo.list_events
     monkeypatch.setattr(app.state.event_repo, "list_events", _boom)
     with pytest.raises(ValueError):
-        await svc.chat(sid, user, assistant, cfg, "会失败")
+        await svc.chat(sid, user, assistant, cfg, "会失败",
+                       workspace_root=await _workspace_root(app, "u-admin"))
     assert not svc._runs  # 注册表无残留
 
     monkeypatch.setattr(app.state.event_repo, "list_events", real_list_events)
-    run_id = await svc.chat(sid, user, assistant, cfg, "重发")  # 不被残留占位卡成 429
+    # 不被残留占位卡成 429
+    run_id = await svc.chat(sid, user, assistant, cfg, "重发",
+                            workspace_root=await _workspace_root(app, "u-admin"))
     run = None
     for _ in range(100):
         run = await app.state.store.get("runs", run_id)
@@ -848,6 +854,20 @@ async def _make_project(client, headers, name: str = "p1") -> str:
     return r.json()["_id"]
 
 
+async def _workspace_root(app, user_id: str) -> Path:
+    """取该用户当前项目的根目录（测试直连 chat 时显式传 workspace_root 用）。
+
+    Args:
+        app: 已初始化 app（取 project_service）。
+        user_id: 用户 sub。
+
+    Returns:
+        项目根目录 Path（files/output/tmp 已就绪）。
+    """
+    project = await app.state.project_service.resolve_active_project(user_id, None)
+    return app.state.project_service.root_for(project)
+
+
 async def test_session_binds_project_and_uses_project_workspace(client, user_headers):
     """建会话带 project_id：落库并原样返回（会话挂到指定项目）。"""
     pid = (await client.post("/api/v1/projects", json={"name": "p1"},
@@ -930,3 +950,76 @@ async def test_agent_workspace_is_project_root(app, client, admin_headers,
     projects = await app.state.project_service.list_projects("u-user")
     assert captured[-1] == app.state.project_service.root_for(projects[0])
     assert captured[-1] != user_dir
+
+
+async def test_concurrent_resolve_seeds_single_default_project(app):
+    """并发首次解析项目只建一个默认项目，且两次解析是同一个项目（C-1 回归）。
+
+    修复前：list_projects 与 create_project 各自加锁、两次加锁之间无原子性，
+    并发首条消息（双击发送 / 双标签页 / 两条会话同时首条）会各自算出一个
+    可用的目录名（默认项目、默认项目-2），磁盘上出现两个目录、库里两条记录。
+    """
+    svc = app.state.project_service
+    a, b = await asyncio.gather(
+        svc.resolve_active_project("u-first", None),
+        svc.resolve_active_project("u-first", None),
+    )
+    assert a["_id"] == b["_id"]  # 不是"各建一条"
+
+    projects = await svc.list_projects("u-first")
+    assert len(projects) == 1
+    assert projects[0]["name"] == "默认项目"        # 显示名仍是中文
+    assert projects[0]["dir_name"] == "default"     # 目录名口径统一（M-2）
+    user_dir = app.state.settings.data_root / "workspaces" / "u-first"
+    assert [p.name for p in user_dir.iterdir()] == ["default"]
+
+
+async def test_foreign_project_id_rejected_and_fallback_stays_own(
+        app, client, admin_headers, user_headers, monkeypatch):
+    """他人/不存在的 project_id：建会话 404；会话被塞他人 pid 时回落本人项目并写回。
+
+    运行时靠回落兜住（不串到他人目录），但数据必须干净：脏 pid 既不落库（I-3），
+    也不让下一轮继续漂移（回落后写回会话，I-2）。
+    """
+    admin_pid = await _make_project(client, admin_headers, "管理员项目")
+    for pid in (admin_pid, "no-such-project"):
+        r = await client.post("/api/v1/sessions", headers=user_headers,
+                              json={"assistant_id": "asst-data", "project_id": pid})
+        assert r.status_code == 404, r.text
+    # 校验失败不产生副作用：该用户没有任何会话落库
+    assert await app.state.store.list("sessions", filters={"user_id": "u-user"}) == []
+
+    # 脏数据路径：直接把他人 pid 塞进会话文档，运行时必须回落到本人项目
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    my_pid = await _make_project(client, user_headers, "我的项目")
+    sid = (await client.post("/api/v1/sessions", headers=user_headers,
+                             json={"assistant_id": "asst-data"})).json()["_id"]
+    await app.state.store.update("sessions", sid, {"project_id": admin_pid})
+
+    captured: list = []
+    real_run_session = agent_service_mod.RunSession
+
+    def _capturing_run_session(*args, **kwargs):
+        """记录 workspace_root 实参后转交真实 RunSession。
+
+        Args:
+            args: RunSession 位置参数。
+            kwargs: RunSession 关键字参数（含 workspace_root）。
+
+        Returns:
+            真实 RunSession 实例。
+        """
+        captured.append(kwargs.get("workspace_root"))
+        return real_run_session(*args, **kwargs)
+
+    monkeypatch.setattr(agent_service_mod, "RunSession", _capturing_run_session)
+    await _chat_once(client, user_headers, sid)
+
+    assert captured[-1] == app.state.project_service.root_for(
+        await app.state.project_service.get("u-user", my_pid))
+    assert "u-admin" not in captured[-1].parts  # 没跑进他人目录
+    # 回落后写回会话文档：后续轮次稳定命中本人项目
+    doc = await app.state.store.get("sessions", sid)
+    assert doc["project_id"] == my_pid

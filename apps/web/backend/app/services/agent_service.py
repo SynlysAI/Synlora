@@ -110,7 +110,7 @@ class AgentService:
 
     async def chat(self, session_id: str, user: dict, assistant: dict,
                    provider_cfg: ModelProviderConfig, text: str,
-                   workspace_root: Path | None = None) -> str:
+                   workspace_root: Path) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         Args:
@@ -119,9 +119,10 @@ class AgentService:
             assistant: 助手文档（system_prompt/tool_whitelist）。
             provider_cfg: 已解密的模型服务配置。
             text: 用户消息文本。
-            workspace_root: 工作区根目录（项目目录，由调用方按会话所属项目解析）；
-                传 None 回落到旧的用户目录 {data_root}/workspaces/{sub}
-                （保留给直接调用 chat 的老调用点/测试的兼容路径）。
+            workspace_root: 工作区根目录（项目目录，由调用方经
+                ProjectService.resolve_active_project + root_for 解析后必传）。
+                必填而非回落用户目录：C6 把文件也项目作用域化后，用户目录下不会
+                再有 files/，静默回落等于把 run 跑在错误目录。
 
         Returns:
             run_id。
@@ -178,11 +179,8 @@ class AgentService:
             if history:
                 log.seed(history)
             backend = OpenAICompatibleBackend(provider_cfg)
-            # 工作区根由调用方（sessions_api）按会话所属项目解析后传入；服务自身
-            # 不再拼路径。None 回落到旧行为（用户目录），兼容直连 chat 的调用点。
-            workspace = workspace_root if workspace_root is not None else (
-                self._settings.data_root / "workspaces" / user["sub"])
-            workspace.mkdir(parents=True, exist_ok=True)
+            # 工作区根由调用方（sessions_api）按会话所属项目解析后传入；服务自身不拼路径
+            workspace_root.mkdir(parents=True, exist_ok=True)
             session = RunSession(
                 config=AgentConfig(
                     system_prompt=assistant["system_prompt"],
@@ -190,7 +188,7 @@ class AgentService:
                 ),
                 registry=_REGISTRY, pipeline=_PIPELINE, backend=backend,
                 event_log=log, user_id=user["sub"], run_id=run_id,
-                workspace_root=workspace,
+                workspace_root=workspace_root,
                 context_extra={"http_allowed_hosts": self._settings.allowed_hosts},
             )
             active.session = session

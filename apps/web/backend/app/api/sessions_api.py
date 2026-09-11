@@ -7,7 +7,6 @@ events?after_seq=N 补齐）；cancel 仅 POST /runs/{run_id}/cancel。
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
@@ -83,30 +82,6 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
     )
 
 
-async def _resolve_workspace_root(request: Request, user: dict, doc: dict) -> Path:
-    """解析会话本轮运行使用的工作区根目录（项目目录）。
-
-    会话绑定的项目优先；老会话没有 project_id、或项目已被删除时回落到该用户的
-    第一个项目；一个项目都没有（全新用户）就建一个「默认项目」。
-
-    Args:
-        request: 当前请求（取 app.state.project_service）。
-        user: 当前用户 payload。
-        doc: 会话文档（读 project_id）。
-
-    Returns:
-        项目根目录 Path（files/output/tmp 已就绪）。
-    """
-    service = request.app.state.project_service
-    project_id = doc.get("project_id")
-    project = await service.get(user["sub"], project_id) if project_id else None
-    if project is None:
-        projects = await service.list_projects(user["sub"])
-        project = projects[0] if projects else await service.create_project(
-            user["sub"], "默认项目")
-    return service.root_for(project)
-
-
 class SessionCreateBody(BaseModel):
     """新建会话请求体。"""
 
@@ -147,15 +122,22 @@ async def list_sessions(user=Depends(get_current_user),
 
 
 @router.post("/sessions", status_code=201)
-async def create_session(body: SessionCreateBody, user=Depends(get_current_user),
+async def create_session(body: SessionCreateBody, request: Request,
+                         user=Depends(get_current_user),
                          repos=Depends(get_repos)) -> dict:
     """新建会话。
 
     Raises:
-        HTTPException: 助手不存在（404）、model_provider_id 非法（422）。
+        HTTPException: 助手不存在（404）、项目不存在或非本人（404）、
+            model_provider_id 非法（422）。
     """
     if await repos.assistant.get(body.assistant_id) is None:
         raise HTTPException(404, "助手不存在")
+    # 绑定项目须属本人且存在：否则会话带着他人的 project_id 落库（运行时虽会回落
+    # 到本人项目、不会串目录，但脏数据会让前端按它渲染出不属于该用户的项目）
+    if body.project_id and await request.app.state.project_service.get(
+            user["sub"], body.project_id) is None:
+        raise HTTPException(404, "项目不存在")
     if body.model_provider_id:
         await _validate_provider(body.model_provider_id, repos)
     return await repos.session.create({
@@ -241,9 +223,20 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     owner = doc.get("title") or assistant.get("name") or sid
     cfg = await _resolve_provider(pid, str(owner), repos)
     service = _agent_service(request)
-    workspace_root = await _resolve_workspace_root(request, user, doc)
+    # 项目解析（回落路径整体在 ProjectService 的 per-user 锁内，见 resolve_active_project）：
+    # 会话绑定的项目优先，失效/未绑定则回落到本人第一个项目，一个都没有就补种默认项目
+    project = await request.app.state.project_service.resolve_active_project(
+        user["sub"], doc.get("project_id"))
+    workspace_root = request.app.state.project_service.root_for(project)
+    # 回落后把选中的项目写回会话文档：list_for_user 按 updated_at 倒序，projects[0]
+    # 会随用户在其他项目里的改动（改名/上传）而漂移；不写回则未绑定会话每一轮可能
+    # 跑进不同目录，上一轮的 output/ 产物看似凭空消失
+    if doc.get("project_id") != project["_id"]:
+        await repos.session.update(sid, {"project_id": project["_id"]})
 
-    # 先 chat（可能 429）：被拒消息零副作用（不计数、不生成标题），无需回滚
+    # 先 chat（可能 429）：被拒消息不计数、不生成标题、不建 run 记录，无需回滚；
+    # 但前面的项目解析可能已补种默认项目 / 迁移旧布局 / 回写 project_id
+    # （良性引导副作用，非用户可见状态；此处注释按事实描述，勿再声称"零副作用"）
     try:
         run_id = await service.chat(sid, user, assistant, cfg, body.text,
                                     workspace_root=workspace_root)

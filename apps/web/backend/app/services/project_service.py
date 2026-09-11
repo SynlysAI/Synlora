@@ -39,6 +39,45 @@ class ProjectService:
         """
         return self._user_locks.setdefault(user_id, asyncio.Lock())
 
+    async def _list_locked(self, user_id: str) -> list[dict]:
+        """锁内列出项目（迁移旧布局 + 按需补种默认项目）。
+
+        调用方必须已持有该用户的锁（asyncio.Lock 不可重入，故不能直接调
+        list_projects）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            未归档项目文档列表（updated_at 倒序）。
+        """
+        migrated = workspace.migrate_legacy_layout(self._data_root, user_id)
+        if migrated:
+            await self._repo.create(
+                user_id=user_id, name="默认项目",
+                dir_name=workspace.DEFAULT_PROJECT_DIR,
+            )
+        return await self._repo.list_for_user(user_id)
+
+    async def _create_locked(self, user_id: str, name: str, base: str) -> dict:
+        """锁内新建项目（调用方必须已持有该用户的锁）。
+
+        Args:
+            user_id: 用户 sub。
+            name: 项目显示名。
+            base: sanitize 后的基础目录名。
+
+        Returns:
+            新建的项目文档。
+        """
+        user_dir = self._data_root / "workspaces" / user_id
+        taken = await self._repo.used_dir_names(user_id)
+        dir_name = workspace.free_dir_name(user_dir, base, taken)
+        project = await self._repo.create(
+            user_id=user_id, name=name.strip(), dir_name=dir_name)
+        workspace.project_root(self._data_root, user_id, dir_name)
+        return project
+
     async def list_projects(self, user_id: str) -> list[dict]:
         """列出项目（首次访问时执行旧布局迁移并补种默认项目）。
 
@@ -51,13 +90,7 @@ class ProjectService:
         # 迁移 + 补种也在锁内：并发首次加载（React 双 effect / 两个标签页）
         # 否则会补种出两条同名 default 项目
         async with self._lock_for(user_id):
-            migrated = workspace.migrate_legacy_layout(self._data_root, user_id)
-            if migrated:
-                await self._repo.create(
-                    user_id=user_id, name="默认项目",
-                    dir_name=workspace.DEFAULT_PROJECT_DIR,
-                )
-        return await self._repo.list_for_user(user_id)
+            return await self._list_locked(user_id)
 
     async def create_project(self, user_id: str, name: str) -> dict:
         """新建项目并创建其目录（目录名重复时自动加后缀，不会因重名失败）。
@@ -75,15 +108,36 @@ class ProjectService:
         base = workspace.sanitize_dir_name(name)
         if not base:
             raise ValueError("项目名不合法")
-        user_dir = self._data_root / "workspaces" / user_id
-        # 锁内完成「算名 → 建目录 → 落库」：并发双击建同名项目时不会算出同一个 dir_name
         async with self._lock_for(user_id):
-            taken = await self._repo.used_dir_names(user_id)
-            dir_name = workspace.free_dir_name(user_dir, base, taken)
-            project = await self._repo.create(
-                user_id=user_id, name=name.strip(), dir_name=dir_name)
-            workspace.project_root(self._data_root, user_id, dir_name)
-            return project
+            return await self._create_locked(user_id, name, base)
+
+    async def resolve_active_project(self, user_id: str, project_id: str | None) -> dict:
+        """解析会话当前应用的项目（并发安全）。
+
+        命中绑定项目则直接用它；否则用该用户的第一个项目；一个都没有则建默认项目。
+        「查列表 → 视情况新建」整体在 per-user 锁内，避免并发首条消息（双击发送 /
+        双标签页 / 两条会话同时首条）各自查空后各建一个默认项目（默认项目、
+        默认项目-2 两条记录 + 两个磁盘目录）。
+
+        Args:
+            user_id: 用户 sub。
+            project_id: 会话绑定的项目 id（可为 None 或已失效）。
+
+        Returns:
+            项目文档。
+        """
+        if project_id:
+            project = await self.get(user_id, project_id)
+            if project is not None:
+                return project
+        # 回落也走 _list_locked：未消费项目列表时旧布局（{uid}/files 等）仍可能未迁移，
+        # 聊天路径得自己补上，否则 python.run 会在新项目目录里找不到已上传的文件
+        async with self._lock_for(user_id):
+            projects = await self._list_locked(user_id)
+            if projects:
+                return projects[0]
+            return await self._create_locked(
+                user_id, name="默认项目", base=workspace.DEFAULT_PROJECT_DIR)
 
     async def delete_project(self, user_id: str, project_id: str) -> bool:
         """删除项目记录与磁盘目录。

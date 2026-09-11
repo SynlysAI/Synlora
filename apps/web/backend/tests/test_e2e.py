@@ -17,6 +17,7 @@ from tests.test_chat_api import (
     FakeBackend,
     _bind_provider_to_asst_data,
     _make_session,
+    _workspace_root,
     parse_sse,
 )
 
@@ -144,7 +145,9 @@ async def test_e2e_disconnect_recovery(app, client, admin_headers, monkeypatch):
     )
     assistant = await app.state.assistant_repo.get("asst-data")
     user = {"sub": "u-admin", "username": "tester-admin", "role": "admin"}
-    await app.state.agent_service.chat(sid, user, assistant, cfg, "第一条（断连）")
+    await app.state.agent_service.chat(
+        sid, user, assistant, cfg, "第一条（断连）",
+        workspace_root=await _workspace_root(app, "u-admin"))
 
     # 2. 轮询 GET events 直到第一轮 turn/end（客户端重连补齐语义）；
     #    回放不含瞬态 llm/delta（seq 2 缺位成洞），全文由 assistant/message 承载
