@@ -10,10 +10,15 @@
  *   各层缓存并重新取已展开的层）。
  * 与 DSH 的差异：文件行不可点击打开（本项目暂无文件查看器），改为展示大小；
  * 切换项目由调用方以 key={projectId} 重挂载整棵树（等价于 DSH 按 tab 分桶）。
+ *
+ * 文件行操作：文件记录只覆盖该项目 files/ 下的上传文件（output/、tmp/ 无记录），
+ * 故仅当条目的 path 能对上一条记录（stored_path）时，hover 才出现下载/删除两个
+ * 图标按钮（样式照抄旧 FilesPanel 的 FileRow）；其余文件行只展示大小。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { TreeEntry } from '@/types'
-import { api } from '@/api/client'
+import type { FileDoc, TreeEntry } from '@/types'
+import { api, getToken } from '@/api/client'
+import { toast } from '@/stores/toasts'
 import { formatBytes } from '@/utils/format'
 
 /** 自然、大小写不敏感的名称排序，使 file2 排在 file10 之前。 */
@@ -46,10 +51,14 @@ interface TreeContext {
   expanded: string[]
   /** 缓存代次：变化时已挂载的层重新请求。 */
   version: number
+  /** 文件记录映射：相对项目根的路径（stored_path）→ 记录，供文件行挂操作。 */
+  records: Map<string, FileDoc>
   /** 确保某层已请求（重复调用无副作用）。 */
   ensure: (path: string) => void
   /** 展开/收起目录。 */
   toggle: (path: string) => void
+  /** 文件被删除后通知调用方刷新目录树与记录映射。 */
+  onFilesChanged: () => void
 }
 
 /** 行的通用样式（DSH `.row`：整行 hover 填充 + 10px 圆角，行间不留缝）。 */
@@ -124,6 +133,123 @@ function FileIcon() {
   )
 }
 
+/** 右侧槽位最小宽度：让 hover 时按钮组替换大小不使文件名左右跳动。 */
+const ACTION_SLOT_CLASS = 'flex min-w-[52px] shrink-0 items-center justify-end'
+
+/**
+ * 文件行：名称 + 大小；能对上文件记录时 hover 显示下载/删除（删除二次确认）。
+ *
+ * 交互与图标照抄旧 FilesPanel 的 FileRow：下载带 Bearer 取 blob 后本地保存，
+ * 删除为「点一次进确认态、再点确认」的两步内联确认（非弹窗）。
+ */
+function FileRow({ entry, record, onChanged }: {
+  entry: TreeEntry
+  record: FileDoc
+  onChanged: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  /** 下载：带 Bearer 取 blob 后本地保存（a[download] 触发）。 */
+  const handleDownload = async () => {
+    setBusy(true)
+    try {
+      const token = getToken()
+      const resp = await fetch(`/api/v1/files/${record._id}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const blob = await resp.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = record.filename
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      toast('error', `下载失败：${(err as Error).message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 删除（二次确认后执行），成功后由调用方刷新目录树与记录映射。 */
+  const handleDelete = async () => {
+    if (!confirming) {
+      setConfirming(true)
+      return
+    }
+    setBusy(true)
+    try {
+      await api(`/api/v1/files/${record._id}`, { method: 'DELETE' })
+      toast('success', `已删除 ${record.filename}`)
+      onChanged()
+    } catch (err) {
+      toast('error', `删除失败：${(err as Error).message}`)
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className={`${STATIC_ROW_CLASS} group`} title={entry.name}>
+      <FileIcon />
+      <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+      {confirming ? (
+        <span className="flex shrink-0 items-center gap-1 text-xs">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleDelete()}
+            className="rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-state-error-primary)] px-1.5 py-0.5 text-white transition-opacity disabled:opacity-50"
+          >
+            确认
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            className="rounded-[var(--sa-radius-sm)] px-1.5 py-0.5 text-[var(--sa-alias-label-tertiary)] transition-colors hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+          >
+            取消
+          </button>
+        </span>
+      ) : (
+        <span className={ACTION_SLOT_CLASS}>
+          {/* 操作组 hover / 键盘聚焦时替换大小（避免 hover 时文件名左右跳动） */}
+          <span className="hidden items-center gap-0.5 group-hover:flex group-focus-within:flex">
+            <button
+              type="button"
+              aria-label={`下载 ${entry.name}`}
+              title="下载"
+              disabled={busy}
+              onClick={() => void handleDownload()}
+              className="flex h-6 w-6 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-tertiary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-accent)] disabled:opacity-50"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8 2.5v8M4.5 7.5 8 11l3.5-3.5M3 13.5h10" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              aria-label={`删除 ${entry.name}`}
+              title="删除"
+              disabled={busy}
+              onClick={() => void handleDelete()}
+              className="flex h-6 w-6 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-tertiary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)] hover:text-[var(--sa-alias-state-error-primary)] disabled:opacity-50"
+            >
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M2.5 4.5h11M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4 4.5l.6 8a1 1 0 0 0 1 .9h4.8a1 1 0 0 0 1-.9l.6-8" />
+              </svg>
+            </button>
+          </span>
+          <span className="shrink-0 text-xs tabular-nums text-[var(--sa-alias-label-caption)] group-hover:hidden group-focus-within:hidden">
+            {formatBytes(entry.size)}
+          </span>
+        </span>
+      )}
+    </div>
+  )
+}
+
 /** 一个条目：目录行（可展开）+ 展开时的子层，或文件行（名称 + 大小）。 */
 function Entry({ entry, tree }: { entry: TreeEntry; tree: TreeContext }): ReactNode {
   // 后端返回的 path 已相对项目根，直接作为下一层的 path 参数与展开键
@@ -150,15 +276,21 @@ function Entry({ entry, tree }: { entry: TreeEntry; tree: TreeContext }): ReactN
       </li>
     )
   }
+  // 上传文件（files/ 下）在文件记录里能对上 path，才提供下载/删除
+  const record = tree.records.get(path)
   return (
     <li className="m-0 p-0">
-      <span className={STATIC_ROW_CLASS} title={entry.name}>
-        <FileIcon />
-        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        <span className="shrink-0 text-xs tabular-nums text-[var(--sa-alias-label-caption)]">
-          {formatBytes(entry.size)}
+      {record ? (
+        <FileRow entry={entry} record={record} onChanged={tree.onFilesChanged} />
+      ) : (
+        <span className={STATIC_ROW_CLASS} title={entry.name}>
+          <FileIcon />
+          <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+          <span className="shrink-0 text-xs tabular-nums text-[var(--sa-alias-label-caption)]">
+            {formatBytes(entry.size)}
+          </span>
         </span>
-      </span>
+      )}
     </li>
   )
 }
@@ -198,10 +330,20 @@ interface FileTreeProps {
   rootName: string
   /** 外部刷新信号（递增即丢弃各层缓存重取，如上传成功）。 */
   refreshToken?: number
+  /** 文件记录映射（相对项目根的 stored_path → 记录），空映射表示均不可操作。 */
+  records?: Map<string, FileDoc>
+  /** 文件删除成功后的回调（调用方刷新目录树与记录映射）。 */
+  onFilesChanged?: () => void
 }
 
 /** 项目目录树组件（右栏工作区下半部）。 */
-export default function FileTree({ projectId, rootName, refreshToken = 0 }: FileTreeProps) {
+export default function FileTree({
+  projectId,
+  rootName,
+  refreshToken = 0,
+  records = new Map<string, FileDoc>(),
+  onFilesChanged = () => {},
+}: FileTreeProps) {
   const [levels, setLevels] = useState<Record<string, LevelState>>({})
   const [expanded, setExpanded] = useState<string[]>([])
   const [version, setVersion] = useState(0)
@@ -251,7 +393,7 @@ export default function FileTree({ projectId, rootName, refreshToken = 0 }: File
     )
   }, [])
 
-  const tree: TreeContext = { levels, expanded, version, ensure, toggle }
+  const tree: TreeContext = { levels, expanded, version, records, ensure, toggle, onFilesChanged }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
