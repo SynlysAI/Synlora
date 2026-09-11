@@ -8,6 +8,11 @@ from pathlib import Path
 from app.db.repos import ProjectRepo
 from app.services import workspace
 
+# 默认项目的显示名（磁盘目录名仍固定为 workspace.DEFAULT_PROJECT_DIR）。
+DEFAULT_PROJECT_NAME = "默认工作区"
+# 早期版本的默认项目名，仅供一次性订正使用。
+LEGACY_DEFAULT_PROJECT_NAME = "默认项目"
+
 
 class ProjectNameTaken(ValueError):
     """项目显示名已被同用户的其它项目占用。
@@ -62,9 +67,16 @@ class ProjectService:
         migrated = workspace.migrate_legacy_layout(self._data_root, user_id)
         if migrated:
             await self._repo.create(
-                user_id=user_id, name="默认项目",
+                user_id=user_id, name=DEFAULT_PROJECT_NAME,
                 dir_name=workspace.DEFAULT_PROJECT_DIR,
             )
+        # 旧默认项目名一次性订正：早期叫「默认项目」，现已统一为「默认工作区」。
+        # 只订正这一个已知旧名（不做强制改名），目录名原样传回即不动磁盘。
+        for doc in await self._repo.list_for_user(user_id):
+            if (doc["dir_name"] == workspace.DEFAULT_PROJECT_DIR
+                    and doc["name"] == LEGACY_DEFAULT_PROJECT_NAME):
+                await self._repo.rename(
+                    doc["_id"], name=DEFAULT_PROJECT_NAME, dir_name=doc["dir_name"])
         return await self._repo.list_for_user(user_id)
 
     async def _create_locked(self, user_id: str, name: str, base: str) -> dict:
@@ -182,7 +194,7 @@ class ProjectService:
             if projects:
                 return projects[0]
             return await self._create_locked(
-                user_id, name="默认项目", base=workspace.DEFAULT_PROJECT_DIR)
+                user_id, name=DEFAULT_PROJECT_NAME, base=workspace.DEFAULT_PROJECT_DIR)
 
     async def delete_project(self, user_id: str, project_id: str) -> bool:
         """删除项目记录与磁盘目录。

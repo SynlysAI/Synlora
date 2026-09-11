@@ -67,14 +67,15 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
 
   /**
    * 新会话：**只进草稿态，不落库**——首次真正发送时才由 chat store 建会话，
-   * 否则点一次就留一条空会话。主按钮与「会话」组 `+` 共走此路径。
+   * 否则点一次就留一条空会话。
    *
-   * 传了 projectId（工作区行的 `+`）则同时把「新会话目标工作区」切过去
-   * （输入框下方的 WorkspacePicker 显示的就是它）；不传则沿用当前选择，
-   * 未选时由后端在真正建会话时回落到默认工作区。
+   * 同时把「新会话目标工作区」（输入框下方 WorkspacePicker 显示的就是它）切准：
+   * - 工作区行「+」传了 projectId → 切到**那个**工作区；
+   * - 顶部「新会话」不传 → 切回**默认工作区**（而不是沿用上次的选择，
+   *   否则从别的会话点新会话，输入框下方还停在上个工作区，容易误建）。
    */
   const handleNew = (projectId?: string) => {
-    if (projectId) setCurrentProject(projectId)
+    setCurrentProject(projectId ?? defaultProject?._id ?? null)
     setCurrentSession(null)
     onNavigate?.()
   }

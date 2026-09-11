@@ -1099,7 +1099,7 @@ async def test_concurrent_resolve_seeds_single_default_project(app):
 
     projects = await svc.list_projects("u-first")
     assert len(projects) == 1
-    assert projects[0]["name"] == "默认项目"        # 显示名仍是中文
+    assert projects[0]["name"] == "默认工作区"      # 显示名统一为「默认工作区」
     assert projects[0]["dir_name"] == "default"     # 目录名口径统一（M-2）
     user_dir = app.state.settings.data_root / "workspaces" / "u-first"
     assert [p.name for p in user_dir.iterdir()] == ["default"]
