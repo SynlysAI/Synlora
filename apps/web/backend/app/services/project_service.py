@@ -92,6 +92,21 @@ class ProjectService:
         async with self._lock_for(user_id):
             return await self._list_locked(user_id)
 
+    async def list_projects_readonly(self, user_id: str) -> list[dict]:
+        """列出项目（**只读**：不迁移旧布局、不补种默认项目、不加锁）。
+
+        与 list_projects 的区别只在副作用：files API 解析历史文件（无 project_id）
+        的归属时要遍历各项目根，这发生在下载/列表这类只读请求里，不该顺手迁移旧布局
+        （os.replace 搬目录）或补种默认项目（写 projects 集合）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            未归档项目文档列表（updated_at 倒序）。
+        """
+        return await self._repo.list_for_user(user_id)
+
     async def create_project(self, user_id: str, name: str) -> dict:
         """新建项目并创建其目录（目录名重复时自动加后缀，不会因重名失败）。
 

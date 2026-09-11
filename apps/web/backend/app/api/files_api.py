@@ -1,14 +1,18 @@
 """文件 API：multipart 上传（逐项校验/配额）、列表、下载与删除，按项目作用域隔离。
 
 文件一律落在**所属项目**的 files/（{data_root}/workspaces/{uid}/{项目目录}/files），
-记录里的 stored_path 始终是「相对项目根」的路径（如 files/a.txt）；下载/删除先按记录
-的 project_id 取项目根，C6 之前没有 project_id 的历史记录回落到**当前活跃项目**——
-旧布局迁移正是把 {uid}/files 搬进活跃项目 default/，故老文件仍能命中。
+记录里的 stored_path 始终是「相对项目根」的路径（如 files/a.txt）。
+
+归属以**磁盘实际位置**为权威（_resolve_file_project）：记录带 project_id 时只认那个
+项目，取不到（项目已删/非本人）即 404，绝不回落到别的项目——files/a.txt 这类同名文件
+在各项目里极常见，回落会把另一个项目的同名文件当成它返回；C6 之前没有 project_id 的
+历史记录则遍历各项目 files/ 找该文件实际躺在谁家，从而不跟「当前活跃项目」
+（projects[0]，由 create/rename 刷新、会漂移）走。
 
 路由两类：
 - 项目作用域 /api/v1/projects/{pid}/files（上传/列表），上传前校验项目归属（404）；
-- legacy /api/v1/files（上传/列表/下载/删除），上传与列表都解析到当前活跃项目，
-  供老前端继续可用；下载/删除路径与行为不变。
+- legacy /api/v1/files（上传/列表/下载/删除），上传与列表仍以当前活跃项目为目标，
+  下载/删除与项目作用域路由同口径（按记录归属解析），供老前端继续可用。
 
 上传为 207 语义的简化实现：任一文件失败不影响已成功的文件，响应统一为
 逐项结果列表 [{ok, file?/error?, code?}] + 顶层 status（ok/partial/failed）。
@@ -16,12 +20,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.deps import Repos, get_current_user, get_repos
 from app.services import workspace
+
+if TYPE_CHECKING:
+    from app.services.project_service import ProjectService
 
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 # 项目作用域路由单独挂 /api/v1/projects（与 projects_api 同前缀，路径不冲突）
@@ -65,28 +73,38 @@ async def _project_or_404(request: Request, user: dict, pid: str) -> dict:
     return project
 
 
-async def _file_root(request: Request, user: dict, doc: dict) -> Path:
-    """解析文件记录所属项目的磁盘根。
+async def _resolve_file_project(service: ProjectService, user_id: str,
+                                record: dict) -> dict | None:
+    """解析文件记录实际所属的项目（磁盘上的实际位置是权威）。
 
-    记录带 project_id 时按它取项目；历史记录没有 project_id（或项目已被删除）时回落
-    当前活跃项目（resolve_active_project 内部会在需要时执行旧布局迁移 + 补种默认项目）。
+    带 project_id 的记录只认那个项目，取不到即 None（调用方按 404 处理）：同名文件
+    在不同项目里很常见，回落到别处会张冠李戴。没有 project_id 的历史记录（C6 之前
+    上传）逐个比对各项目 files/ 下是否存在该文件，命中谁就归谁——按物理位置判定，
+    天然不受「活跃项目 = projects[0]」漂移影响（旧布局迁移正是把 {uid}/files 搬进
+    默认项目，故迁移后仍能命中）。
+
+    只读：走 ProjectService.list_projects_readonly，不触发旧布局迁移/补种默认项目。
 
     Args:
-        request: FastAPI 请求（取 project_service）。
-        user: 当前用户 payload。
-        doc: 文件文档。
+        service: ProjectService 实例。
+        user_id: 用户 sub。
+        record: 文件记录。
 
     Returns:
-        项目根目录（files/output/tmp 已确保存在）。
+        所属项目文档；无法确定（项目已删且磁盘上找不到该文件）返回 None。
     """
-    service = request.app.state.project_service
-    project = None
-    pid = doc.get("project_id")
+    pid = record.get("project_id")
     if pid:
-        project = await service.get(user["sub"], str(pid))
-    if project is None:
-        project = await service.resolve_active_project(user["sub"], None)
-    return service.root_for(project)
+        return await service.get(user_id, str(pid))
+    stored_path = str(record.get("stored_path") or "")
+    for project in await service.list_projects_readonly(user_id):
+        root = service.root_for(project)
+        try:
+            if workspace.resolve_in_project(root, stored_path).is_file():
+                return project
+        except ValueError:
+            continue  # stored_path 越出该项目根（被篡改）→ 该项目不认
+    return None
 
 
 def _safe_file_path(root: Path, stored_path: str) -> Path | None:
@@ -125,37 +143,34 @@ def _file_sort_key(doc: dict) -> tuple:
     return (-float(doc.get("created_at") or 0), str(doc.get("filename", "")))
 
 
-def _belongs_to(doc: dict, project_id: str) -> bool:
-    """文档是否属于该项目（无 project_id 的历史记录视同活跃项目，见 list 端点说明）。
+async def _docs_of_project(service: ProjectService, user_id: str, docs: list[dict],
+                           project_id: str) -> list[dict]:
+    """挑出归属指定项目的文件文档（两个列表端点的共同口径）。
+
+    带 project_id 的直接比对该列（不是该项目就不出现在其列表里，也不去别的项目兜底）；
+    没有 project_id 的历史记录才按磁盘实际位置解析（_resolve_file_project），解析不到
+    归属（项目已删且磁盘上无此文件）的记录在任何列表里都不出现。
 
     Args:
-        doc: 文件文档。
-        project_id: 活跃项目 id。
-
-    Returns:
-        True 表示应出现在该项目/活跃项目的列表里。
-    """
-    return doc.get("project_id") == project_id or not doc.get("project_id")
-
-
-async def _active_id_if_history_exists(request: Request, user: dict, docs: list[dict]) -> str:
-    """存在无 project_id 的历史记录时，返回当前活跃项目 id（否则返回空串）。
-
-    仅在确有历史记录时才解析活跃项目：resolve_active_project 可能要迁移旧布局或
-    补种默认项目，纯只读的列表请求不该在无历史记录时产生这些副作用。
-
-    Args:
-        request: FastAPI 请求（取 project_service）。
-        user: 当前用户 payload。
+        service: ProjectService 实例。
+        user_id: 用户 sub。
         docs: 该用户的全部文件文档。
+        project_id: 目标项目 id。
 
     Returns:
-        活跃项目 id；无历史记录时为空串。
+        归属该项目的文档列表（未排序）。
     """
-    if not any(not d.get("project_id") for d in docs):
-        return ""
-    active = await request.app.state.project_service.resolve_active_project(user["sub"], None)
-    return active["_id"]
+    out: list[dict] = []
+    for doc in docs:
+        pid = doc.get("project_id")
+        if pid:
+            if str(pid) == project_id:
+                out.append(doc)
+            continue
+        owner = await _resolve_file_project(service, user_id, doc)
+        if owner is not None and owner["_id"] == project_id:
+            out.append(doc)
+    return out
 
 
 async def _store_uploads(request: Request, files: list[UploadFile], user: dict,
@@ -248,13 +263,19 @@ async def list_project_files(request: Request, pid: str,
                              repos=Depends(get_repos)) -> list[dict]:
     """列出指定项目的文件（created_at 倒序）。
 
-    在 Python 端按 project_id 过滤：files 集合在 sqlite 端只有 user_id 被提为真实
-    索引列（COLLECTION_INDEXES），project_id 不是可过滤列，而给存量库新增索引列
-    需要 ALTER（CREATE TABLE IF NOT EXISTS 不会补列），会破坏已有部署。
+    在 Python 端按归属过滤（_docs_of_project），不按 project_id 走 sqlite 过滤：files
+    集合在 sqlite 端只有 user_id 被提为真实索引列（COLLECTION_INDEXES），project_id
+    不是可过滤列。给存量库补这一列的代价是：
 
-    无 project_id 的历史记录（C6 之前上传）在**该项目恰为活跃项目**时一并列出：
-    旧布局迁移把它们的文件搬进了活跃项目，下载也回落活跃项目，否则会出现「文件在
-    项目磁盘里、项目列表里却看不到」。
+    - init() 本身不会崩——SQLite 允许在并不存在的列上 CREATE INDEX，建表/建索引语句
+      照常执行通过；
+    - 崩的是新代码的 INSERT：表里没有该列，写带 project_id 的文档直接报
+      "table files has no column named project_id"；
+    - 更危险的是按键 SELECT：SQLite 的 double-quoted string（DQS）兼容行为会把
+      `WHERE "project_id" = ?` 里的 "project_id" 当成字符串字面量而非列名——查询不
+      报错，却**静默返回 0 行**，线上表现为「文件全部凭空消失」且没有任何报错线索。
+
+    所以宁可在 Python 端过滤，把「补列不干净」降级为可接受的性能开销。
 
     Args:
         request: FastAPI 请求。
@@ -263,16 +284,15 @@ async def list_project_files(request: Request, pid: str,
         repos: repo 集中访问对象。
 
     Returns:
-        该项目的文件文档列表。
+        该项目的文件文档列表（含归属该项目的无 project_id 历史记录）。
 
     Raises:
         HTTPException: 404 表示项目不存在或不属于当前用户。
     """
     project = await _project_or_404(request, user, pid)
     docs = await repos.file.list(filters={"user_id": user["sub"]})
-    mine = [d for d in docs if d.get("project_id") == project["_id"]]
-    if await _active_id_if_history_exists(request, user, docs) == project["_id"]:
-        mine += [d for d in docs if not d.get("project_id")]
+    mine = await _docs_of_project(request.app.state.project_service, user["sub"],
+                                  docs, project["_id"])
     return sorted(mine, key=_file_sort_key)
 
 
@@ -308,9 +328,9 @@ async def list_files(request: Request, user=Depends(get_current_user),
     「每项目一个工作区」而改为只列当前活跃项目——前端应改用
     GET /api/v1/projects/{pid}/files 按项目取数。
 
-    无 project_id 的历史记录（C6 之前上传）仍一并列出：旧布局迁移把 {uid}/files
-    搬进了活跃项目，且它们的下载/删除也回落到活跃项目，不列出等于老数据在前端
-    列表里凭空消失（文件却还在磁盘上）。
+    活跃项目的解析保留 resolve_active_project（legacy 上传要有落点，故这里也允许
+    迁移/补种默认项目）；文档归属过滤与项目作用域列表同口径，走 _docs_of_project：
+    无 project_id 的历史记录按磁盘实际位置归属，不再一律挂在活跃项目上。
 
     Args:
         request: FastAPI 请求。
@@ -323,8 +343,9 @@ async def list_files(request: Request, user=Depends(get_current_user),
     project = await request.app.state.project_service.resolve_active_project(
         user["sub"], None)
     docs = await repos.file.list(filters={"user_id": user["sub"]})
-    return sorted((d for d in docs if _belongs_to(d, project["_id"])),
-                  key=_file_sort_key)
+    active_docs = await _docs_of_project(request.app.state.project_service, user["sub"],
+                                         docs, project["_id"])
+    return sorted(active_docs, key=_file_sort_key)
 
 
 @router.get("/{file_id}/download")
@@ -333,12 +354,19 @@ async def download_file(file_id: str, request: Request,
                         repos=Depends(get_repos)) -> FileResponse:
     """下载文件（归属校验 404；stored_path 经项目 files/ 沙箱校验，越界 404）。
 
+    归属按磁盘实际位置解析（_resolve_file_project）：带 project_id 的记录只认该项目，
+    项目已删/非本人 → 404，绝不回落到别的项目取同名文件；无 project_id 的历史记录
+    命中哪个项目就取哪个项目的根。
+
     Raises:
-        HTTPException: 不存在/非本人/路径越界/磁盘文件缺失（统一 404）。
+        HTTPException: 不存在/非本人/归属无法解析/路径越界/磁盘文件缺失（统一 404）。
     """
+    service = request.app.state.project_service
     doc = await _own_file(file_id, user, repos)
-    root = await _file_root(request, user, doc)
-    candidate = _safe_file_path(root, str(doc.get("stored_path", "")))
+    project = await _resolve_file_project(service, user["sub"], doc)
+    if project is None:
+        raise HTTPException(404, "文件不存在")
+    candidate = _safe_file_path(service.root_for(project), str(doc.get("stored_path", "")))
     if candidate is None or not candidate.is_file():
         raise HTTPException(404, "文件不存在")
     return FileResponse(candidate, filename=str(doc.get("filename") or candidate.name))
@@ -348,14 +376,21 @@ async def download_file(file_id: str, request: Request,
 async def delete_file(file_id: str, request: Request,
                       user=Depends(get_current_user),
                       repos=Depends(get_repos)) -> dict:
-    """删除文件：磁盘文件（忽略缺失；越界路径不动磁盘）+ 文档记录。"""
+    """删除文件：磁盘文件（忽略缺失；越界路径不动磁盘）+ 文档记录。
+
+    归属解析不到（项目已删）时**只删记录、不动任何磁盘文件**：绝不能拿这条记录的
+    stored_path 去别的项目里误删同名文件；孤儿记录仍可被删除，否则会永久残留。
+    """
+    service = request.app.state.project_service
     doc = await _own_file(file_id, user, repos)
-    root = await _file_root(request, user, doc)
-    candidate = _safe_file_path(root, str(doc.get("stored_path", "")))
-    if candidate is not None:
-        try:
-            candidate.unlink(missing_ok=True)
-        except OSError:
-            pass  # 磁盘清理失败不阻断记录删除（记录在而文件缺失可被下载 404 兜底）
+    project = await _resolve_file_project(service, user["sub"], doc)
+    if project is not None:
+        candidate = _safe_file_path(service.root_for(project),
+                                    str(doc.get("stored_path", "")))
+        if candidate is not None:
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass  # 磁盘清理失败不阻断记录删除（记录在而文件缺失可被下载 404 兜底）
     await repos.file.delete(file_id)
     return {"ok": True}

@@ -360,8 +360,9 @@ class FileRepo(BaseRepo):
     """用户文件记录（user_id/project_id/filename/stored_path/size/mime）。
 
     Attributes:
-        project_id: 文件所属项目 id（C6 之前的历史记录没有该字段，读取方须按「无
-            project_id 则回落当前活跃项目」处理）。
+        project_id: 文件所属项目 id（C6 之前的历史记录没有该字段；读取方须按磁盘实际
+            位置解析归属——带该字段就只认它，缺失才遍历各项目 files/ 找文件，见
+            files_api._resolve_file_project）。
         stored_path: 相对**项目根**的存储路径（如 files/a.txt），不是相对 files/。
     """
 

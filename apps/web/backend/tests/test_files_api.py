@@ -240,13 +240,13 @@ async def test_stored_path_escape_blocked(app, client, user_headers):
     await app.state.store.update("files", fid, {"stored_path": "../../evil.txt"})
 
     resp = await client.get(f"/api/v1/files/{fid}/download", headers=user_headers)
-    assert resp.status_code in (400, 404)
+    assert resp.status_code == 404
     assert b"pwned" not in resp.content
 
     # 指向工作区内 files/ 之外（output/）同样拒绝
     await app.state.store.update("files", fid, {"stored_path": "../output/x.txt"})
     resp = await client.get(f"/api/v1/files/{fid}/download", headers=user_headers)
-    assert resp.status_code in (400, 404)
+    assert resp.status_code == 404
 
 
 # ---------- 项目作用域上传/列表 ----------
@@ -370,13 +370,14 @@ async def test_legacy_route_upload_list_download_still_work(app, client, user_he
     assert await _download(client, user_headers, listed[0]) == b"old-payload"
 
 
-async def test_legacy_record_without_project_id_falls_back_to_active_project(app, client,
-                                                                            user_headers):
+async def test_legacy_record_without_project_id_resolved_by_disk_location(app, client,
+                                                                          user_headers):
     """历史记录（无 project_id、文件在旧布局 {uid}/files/）迁移后仍可下载并在列表可见。
 
-    这正是线上真实数据形态（C6 之前上传的记录都没有 project_id）：迁移把
-    {uid}/files 搬进活跃项目 default/ 后，按记录里的 project_id 解析必然落空，
-    必须回落到活跃项目。
+    这正是线上真实数据形态（C6 之前上传的记录都没有 project_id）：记录里没有归属，
+    按**磁盘实际位置**解析——迁移把 {uid}/files 搬进 default/ 后，文件只可能命中
+    default 项目，故下载与两个列表口径一致。本用例里 default 是唯一项目
+    （也就等于活跃项目），不足以区分两种口径；漂移场景见 I2 回归用例。
     """
     # 手工铺旧布局数据：磁盘文件在 {uid}/files/，记录缺少 project_id
     user_dir = app.state.settings.data_root / "workspaces" / "u-user"
@@ -419,3 +420,127 @@ async def test_uploaded_file_visible_in_agent_workspace(app, client, user_header
     fid = r.json()["results"][0]["file"]["_id"]
     doc = await app.state.store.get("files", fid)
     assert doc["project_id"] == project["_id"]
+
+
+# ---------- 回归（I1/I2）：归属按磁盘实际位置解析，不随活跃项目漂移 ----------
+
+
+async def test_legacy_record_follows_disk_not_active_project(app, client, user_headers):
+    """I2 回归：无 project_id 的历史记录按磁盘实际位置归属，不随活跃项目漂移。
+
+    复现：default 里有一条无 project_id 的历史文件 → 再建新项目（活跃项目
+    = projects[0] 漂移到新项目）→
+    - 下载仍 200（修复前按活跃项目解析根，磁盘上找不到 → 404）；
+    - 文件只出现在 default 的项目列表里、新项目列表为空（修复前恰好反过来）。
+    """
+    service = app.state.project_service
+    # 1) 铺旧布局历史数据：磁盘在 {uid}/files/old.txt，记录没有 project_id
+    user_dir = app.state.settings.data_root / "workspaces" / "u-user"
+    (user_dir / "files").mkdir(parents=True, exist_ok=True)
+    (user_dir / "files" / "old.txt").write_bytes(b"old-data")
+    await app.state.store.insert("files", {
+        "_id": "fid-old", "user_id": "u-user", "filename": "old.txt",
+        "stored_path": "files/old.txt", "size": len(b"old-data"),
+        "mime": "text/plain", "created_at": 1.0, "updated_at": 1.0,
+    })
+
+    # 2) 触发旧布局迁移 + 补种默认项目，拿到 default（文件随之搬进 default/files/）
+    default = await service.resolve_active_project("u-user", None)
+    assert (service.root_for(default) / "files" / "old.txt").read_bytes() == b"old-data"
+
+    # 3) 新建项目 → 活跃项目漂移（projects[0] 变成新项目）
+    new_id = await _new_project(client, user_headers, "newp")
+    active = await service.resolve_active_project("u-user", None)
+    assert active["_id"] == new_id
+
+    # 4) 历史文件按物理位置仍能下载（修复前解析到新项目 → 404）
+    resp = await client.get("/api/v1/files/fid-old/download", headers=user_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.content == b"old-data"
+
+    # 5) 归属 default 的项目列表；新项目列表里不出现
+    scoped_default = (await client.get(f"/api/v1/projects/{default['_id']}/files",
+                                      headers=user_headers)).json()
+    assert [f["_id"] for f in scoped_default] == ["fid-old"]
+    scoped_new = (await client.get(f"/api/v1/projects/{new_id}/files",
+                                   headers=user_headers)).json()
+    assert scoped_new == []
+
+
+async def test_record_of_deleted_project_404_not_active_project(app, client, user_headers):
+    """I1 回归：记录带 project_id 但项目已删 → 404，绝不从活跃项目里取同名文件。
+
+    活跃项目里故意放一个同名但内容不同的 files/a.txt，断言不返回那一份（修复前会
+    回落到活跃项目，用同一 stored_path 命中同名文件并返回，内容张冠李戴）。
+    """
+    pa = await _new_project(client, user_headers, "pa")
+    assert (await _upload_to(client, user_headers, pa,
+                             ("a.txt", b"from-A"))).status_code == 201
+    fid = (await client.get(f"/api/v1/projects/{pa}/files",
+                            headers=user_headers)).json()[0]["_id"]
+
+    # 删项目：记录保留，项目与磁盘目录一并消失
+    assert (await client.delete(f"/api/v1/projects/{pa}",
+                                headers=user_headers)).status_code == 200
+
+    # 活跃项目换成新项目（pa 已删，pb 即 projects[0]），并在其中放同名
+    # （stored_path 同为 files/a.txt）但内容不同的文件
+    pb = await _new_project(client, user_headers, "pb")
+    assert (await _upload_to(client, user_headers, pb, ("a.txt", b"from-B"))).status_code == 201
+    assert (await app.state.project_service.resolve_active_project(
+        "u-user", None))["_id"] == pb
+
+    resp = await client.get(f"/api/v1/files/{fid}/download", headers=user_headers)
+    assert resp.status_code == 404, resp.text
+    assert b"from-B" not in resp.content
+
+    # 该孤儿记录也不再出现在任何项目的列表里（磁盘上已无此文件）
+    docs = await app.state.store.list("files", filters={"user_id": "u-user"})
+    assert any(d["_id"] == fid for d in docs)  # 记录仍在
+    for project in await app.state.project_service.list_projects("u-user"):
+        listed = (await client.get(f"/api/v1/projects/{project['_id']}/files",
+                                   headers=user_headers)).json()
+        assert fid not in [f["_id"] for f in listed]
+
+
+async def test_orphan_record_deleted_without_touching_other_projects(app, client, user_headers):
+    """归属解析不到（项目已删/磁盘无此文件）的孤儿记录：只删记录，不误删同名文件。"""
+    pa = await _new_project(client, user_headers, "pa")
+    assert (await _upload_to(client, user_headers, pa,
+                             ("a.txt", b"from-A"))).status_code == 201
+    fid = (await client.get(f"/api/v1/projects/{pa}/files",
+                            headers=user_headers)).json()[0]["_id"]
+    assert (await client.delete(f"/api/v1/projects/{pa}",
+                                headers=user_headers)).status_code == 200
+
+    # 活跃项目里的同名文件（归属是另一个项目）不能被这条记录的删除请求波及
+    pb = await _new_project(client, user_headers, "pb")
+    assert (await _upload_to(client, user_headers, pb, ("a.txt", b"from-B"))).status_code == 201
+    pb_root = app.state.project_service.root_for(
+        await app.state.project_service.get("u-user", pb))
+
+    assert (await client.delete(f"/api/v1/files/{fid}",
+                                headers=user_headers)).status_code == 200
+    assert await app.state.store.get("files", fid) is None
+    assert (pb_root / "files" / "a.txt").read_bytes() == b"from-B"
+
+
+async def test_legacy_record_missing_on_disk_hidden_and_404(app, client, user_headers):
+    """无 project_id 且磁盘上任何项目都找不到该文件 → 列表里不出现、下载 404。"""
+    service = app.state.project_service
+    default = await service.resolve_active_project("u-user", None)
+    await app.state.store.insert("files", {
+        "_id": "fid-ghost", "user_id": "u-user", "filename": "ghost.txt",
+        "stored_path": "files/ghost.txt", "size": 1, "mime": "text/plain",
+        "created_at": 1.0, "updated_at": 1.0,
+    })
+
+    assert (await client.get(f"/api/v1/projects/{default['_id']}/files",
+                             headers=user_headers)).json() == []
+    assert (await client.get("/api/v1/files", headers=user_headers)).json() == []
+    assert (await client.get("/api/v1/files/fid-ghost/download",
+                             headers=user_headers)).status_code == 404
+    # 孤儿记录仍可删除（否则永远清不掉）
+    assert (await client.delete("/api/v1/files/fid-ghost",
+                                headers=user_headers)).status_code == 200
+    assert await app.state.store.get("files", "fid-ghost") is None

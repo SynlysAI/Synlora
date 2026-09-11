@@ -33,7 +33,12 @@ def user_root(data_root: Path, user_id: str) -> Path:
 
 
 def workspace_root(data_root: Path, user_id: str) -> Path:
-    """用户工作区根（自动创建 files/output/tmp）。
+    """用户工作区根（自动创建 files/output/tmp）——**旧路径兼容用，新代码勿用**。
+
+    废弃说明：新代码请用 user_root（只算路径不建目录）或项目作用域的
+    project_root(...)/ProjectService.root_for(...)。本函数会在 {uid}/ 下重建
+    files/output/tmp，而旧布局迁移已把这些目录搬进 default/，调用它等于把搬走的旧
+    目录又凭空建出来（见 user_root 的说明）。保留仅为兼容历史文档/脚本里的引用。
 
     Args:
         data_root: 数据根目录。
