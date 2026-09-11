@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
+from app.api.files_api import project_router as project_files_router
 from app.api.files_api import router as files_router
 from app.api.models_api import router as models_router
 from app.api.projects_api import router as projects_router
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(assistants_router)
     app.include_router(sessions_router)
     app.include_router(files_router)
+    app.include_router(project_files_router)
     app.include_router(projects_router)
 
     @app.get("/api/health")

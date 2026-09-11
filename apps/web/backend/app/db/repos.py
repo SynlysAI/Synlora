@@ -357,7 +357,13 @@ class SessionRepo(BaseRepo):
 
 
 class FileRepo(BaseRepo):
-    """用户文件记录（user_id/path/size/mime/sha256）。"""
+    """用户文件记录（user_id/project_id/filename/stored_path/size/mime）。
+
+    Attributes:
+        project_id: 文件所属项目 id（C6 之前的历史记录没有该字段，读取方须按「无
+            project_id 则回落当前活跃项目」处理）。
+        stored_path: 相对**项目根**的存储路径（如 files/a.txt），不是相对 files/。
+    """
 
     collection = "files"
 

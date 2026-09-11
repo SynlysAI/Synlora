@@ -52,7 +52,8 @@ async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     await _bind_provider_to_asst_data(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
 
-    # 1. 上传 CSV：落 {data_root}/workspaces/u-admin/files/data.csv
+    # 1. 上传 CSV：legacy 路由解析到活跃项目（此处尚无项目，按需补种 default），
+    #    落 {data_root}/workspaces/u-admin/default/files/data.csv
     r = await client.post("/api/v1/files", headers=admin_headers,
                           files=[("files", ("data.csv", b"a,b\n1,2\n3,4\n", "text/csv"))])
     assert r.status_code == 201, r.text
@@ -85,8 +86,9 @@ async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     assert "mean_b=3" in tool_result["content"]
 
     # 5. 工作区产物真实存在且内容正确：agent 跑在会话所属项目目录（此处为首个项目
-    #    = 迁移旧布局后补种的 default），python.run 的 cwd=项目 tmp/，故 ../output
-    #    即项目 output/；第 4 步能读出均值也证明上传的 CSV 已在项目 files/ 内
+    #    = 上传时按需补种的 default），python.run 的 cwd=项目 tmp/，故 ../output
+    #    即项目 output/；第 4 步能读出均值即证明上传的 CSV 真在项目 files/ 内
+    #    （上传与 agent 同用项目目录，不再依赖「上传在前、迁移在后」的时序）
     projects = await app.state.project_service.list_projects("u-admin")
     result_txt = app.state.project_service.root_for(projects[0]) / "output" / "result.txt"
     assert result_txt.exists(), f"产物未落盘: {result_txt}"

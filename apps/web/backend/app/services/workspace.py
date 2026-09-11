@@ -15,6 +15,23 @@ DEFAULT_PROJECT_DIR = "default"
 PROJECT_SUBDIRS = ("files", "output", "tmp")
 
 
+def user_root(data_root: Path, user_id: str) -> Path:
+    """用户工作区根（只算路径，不创建任何目录）。
+
+    配额按用户整棵目录树计（含各项目目录），计量时不应在磁盘上留下副作用：
+    workspace_root 会在 {uid}/ 下重建 files/output/tmp，旧布局迁移后这等于把已被
+    搬走的旧目录又凭空建出来。
+
+    Args:
+        data_root: 数据根目录。
+        user_id: 用户 sub。
+
+    Returns:
+        {data_root}/workspaces/{user_id} 路径（可能不存在）。
+    """
+    return data_root / "workspaces" / user_id
+
+
 def workspace_root(data_root: Path, user_id: str) -> Path:
     """用户工作区根（自动创建 files/output/tmp）。
 
@@ -25,7 +42,7 @@ def workspace_root(data_root: Path, user_id: str) -> Path:
     Returns:
         {data_root}/workspaces/{user_id} 路径。
     """
-    root = data_root / "workspaces" / user_id
+    root = user_root(data_root, user_id)
     for sub in PROJECT_SUBDIRS:
         (root / sub).mkdir(parents=True, exist_ok=True)
     return root
