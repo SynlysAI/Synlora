@@ -1672,8 +1672,18 @@ context_extra={
 
 `agent_service` 的构造函数补 `skill_service: SkillService` 依赖（`main.py` 里与 `project_service` 一起注入）。
 
-- [ ] **Step 4: 跑测试确认通过**
-- [ ] **Step 5: Commit** — `feat(web): 装配平台提示词与技能渐进披露`
+- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 5: Commit** — `feat(web): 装配平台提示词与技能渐进披露`
+
+> **本任务已完成**：`cfec301`。最终接口（**后续任务以这段为准**）：
+> - `AgentService.__init__(store, settings, event_repo, skill_service)` —— `main.py` 里把 `skill_service`（含 `seed_builtins()`）的构造**提到 `agent_service` 之前**。
+> - `AgentService.chat(session_id, user, assistant, provider_cfg, text, workspace_root, requested_skills: list[str] | None = None)`。
+> - `tool_names` 用 `list(dict.fromkeys([*assistant["tool_whitelist"], "skill.list", "skill.read"]))` **保序去重**（助手的白名单里可能也列了这两个）。
+> - `context_extra` 增加 `skills`（名→正文）与 `skill_meta`（名→描述），供 harness 的 `skill.list` / `skill.read` 取用。
+> - `build_system_prompt` 已从 **harness 顶层**导出（`packages/synlys-harness/src/synlys_harness/__init__.py`），调用方统一 `from synlys_harness import build_system_prompt`。
+> - **渐进披露是结构性成立的**：`build_system_prompt` 只接收 `(name, description)` 元组，技能正文在类型上就进不了 system prompt。有测试守护（断言正文内容不在 prompt 里）。
+>
+> 后端测试 173 → 177 passed；E2E 仍 2 passed；harness 96 passed。
 
 ---
 
