@@ -6,16 +6,14 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { AssistantTitle } from './AssistantTitle'
 import { ToastHost } from './ToastHost'
 import { ChatPanel } from '@/components/chat'
 import { Rightbar } from '@/components/rightbar'
 import { Sidebar } from '@/components/sidebar'
 import { useAuthStore } from '@/stores/auth'
+import { useSessionsStore } from '@/stores/sessions'
 import { useDarkTheme } from '@/utils/theme'
 
-/** 顶栏高度（px）。 */
-const TOPBAR_HEIGHT = 64
 /** 左栏宽度默认值与拖拽钳制范围（px）。 */
 const LEFT_DEFAULT = 260
 const LEFT_MIN = 200
@@ -107,7 +105,7 @@ interface IconButtonProps {
   children: ReactNode
 }
 
-/** 顶栏图标按钮（ghost 交互 token）。 */
+/** 图标按钮（ghost 交互 token）。 */
 function IconButton({ label, onClick, children }: IconButtonProps) {
   return (
     <button
@@ -134,7 +132,7 @@ const iconProps = {
   strokeLinejoin: 'round',
 } as const
 
-/** 顶栏用户菜单：头像按钮 + 下拉（管理后台入口仅 admin / 退出登录）。 */
+/** 用户菜单（左栏底部）：头像按钮 + 下拉（管理后台入口仅 admin / 退出登录）。 */
 function UserMenu() {
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
@@ -148,19 +146,26 @@ function UserMenu() {
     'hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)]'
 
   return (
-    <div className="relative ml-1">
+    <div className="relative">
       <button
         type="button"
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`用户菜单：${user.username}`}
         onClick={() => setOpen((v) => !v)}
-        className="flex h-8 w-8 items-center justify-center rounded-[var(--sa-radius-full)] border border-[var(--sa-alias-border-l2)] text-[var(--sa-alias-label-secondary)] transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+        className="flex min-w-0 items-center gap-2 rounded-[var(--sa-radius-md)] px-1.5 py-1.5 text-left transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
       >
-        <svg {...iconProps}>
-          <circle cx="8" cy="5.5" r="2.5" />
-          <path d="M2.8 13.5a5.2 5.2 0 0 1 10.4 0" />
-        </svg>
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-interactive-bg-active)] text-[12px] font-medium text-[var(--sa-alias-label-primary)]">
+          {user.username[0]}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium text-[var(--sa-alias-label-primary)]">
+            {user.username}
+          </span>
+          <span className="block text-[11px] text-[var(--sa-alias-label-caption)]">
+            {user.role === 'admin' ? '管理员' : '用户'}
+          </span>
+        </span>
       </button>
       {open && (
         <>
@@ -168,11 +173,8 @@ function UserMenu() {
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
           <div
             role="menu"
-            className="absolute right-0 top-full z-50 mt-1.5 w-44 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
+            className="absolute bottom-full left-0 z-50 mb-1.5 w-44 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
           >
-            <div className="truncate px-2.5 pb-1.5 pt-1 text-xs text-[var(--sa-alias-label-caption)]">
-              {user.username}（{user.role === 'admin' ? '管理员' : '用户'}）
-            </div>
             {user.role === 'admin' && (
               <a role="menuitem" href="#/admin/models" onClick={() => setOpen(false)} className={itemClass}>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -202,7 +204,7 @@ function UserMenu() {
   )
 }
 
-/** Logo 占位标记：黑底圆角方块 + S 弧线。 */
+/** Logo 标记：黑底圆角方块 + S 弧线。 */
 function LogoMark() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
@@ -218,13 +220,93 @@ function LogoMark() {
   )
 }
 
+/** 左栏主体（顶部 Logo / 中部 Sidebar / 底部 主题切换 + 用户）。 */
+function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
+  const [dark, toggleDark] = useDarkTheme()
+  return (
+    <div className="flex h-full flex-col">
+      {/* 顶部：Logo + 名称（compact 时带汉堡开抽屉） */}
+      <div className="flex items-center gap-2 px-3 pb-1 pt-3">
+        {onOpenDrawer && (
+          <IconButton label="打开侧栏" onClick={onOpenDrawer}>
+            <svg {...iconProps}>
+              <path d="M2 3.5h12M2 8h12M2 12.5h12" />
+            </svg>
+          </IconButton>
+        )}
+        <LogoMark />
+        <span className="text-[15px] font-medium tracking-tight">SynlysAgent</span>
+      </div>
+      {/* 中部：新会话/助手/会话列表 */}
+      <div className="min-h-0 flex-1">
+        <Sidebar />
+      </div>
+      {/* 底部：主题切换 + 用户菜单（Jiuwen 式设置区） */}
+      <div className="flex items-center gap-1 border-t border-[var(--sa-alias-border-l1)] p-2">
+        <IconButton label={dark ? '切换浅色主题' : '切换深色主题'} onClick={toggleDark}>
+          {dark ? (
+            <svg {...iconProps}>
+              <circle cx="8" cy="8" r="3.25" />
+              <path d="M8 1.5v1.4M8 13.1v1.4M1.5 8h1.4M13.1 8h1.4M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1" />
+            </svg>
+          ) : (
+            <svg {...iconProps}>
+              <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7Z" />
+            </svg>
+          )}
+        </IconButton>
+        <div className="min-w-0 flex-1">
+          <UserMenu />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** 中间列顶部工具条：左侧会话标题，右侧右栏三态切换（Jiuwen 式）。 */
+function ChatToolbar({
+  rightState,
+  onCycleRight,
+  onOpenDrawer,
+}: {
+  rightState: RightPanelState
+  onCycleRight: () => void
+  onOpenDrawer?: () => void
+}) {
+  const sessions = useSessionsStore((s) => s.sessions)
+  const currentId = useSessionsStore((s) => s.currentId)
+  const title = sessions.find((s) => s._id === currentId)?.title || '新对话'
+
+  return (
+    <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-[var(--sa-alias-border-l1)] px-3">
+      {onOpenDrawer && (
+        <IconButton label="打开侧栏" onClick={onOpenDrawer}>
+          <svg {...iconProps}>
+            <path d="M2 3.5h12M2 8h12M2 12.5h12" />
+          </svg>
+        </IconButton>
+      )}
+      <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-[var(--sa-alias-label-primary)]" title={title}>
+        {title}
+      </span>
+      <IconButton
+        label={`右栏：${rightState === 'hidden' ? '已隐藏' : rightState === 'normal' ? '常态' : '全屏'}（点击切换）`}
+        onClick={onCycleRight}
+      >
+        <svg {...iconProps}>
+          <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
+          <path d="M9.5 2.75v10.5" />
+        </svg>
+      </IconButton>
+    </div>
+  )
+}
+
 /**
- * 应用三栏工作台外壳：顶栏 + 左栏/Chat/右栏 grid。
- * 负责：暗色主题切换、左右栏拖拽调宽、右栏三态、窄视口左栏 overlay。
+ * 应用三列工作台外壳（Jiuwen 式无顶栏）：左栏 / Chat / 右栏 grid 全高。
+ * 负责：左栏拖拽调宽、右栏三态、窄视口左栏 overlay。
  */
 export default function AppShell() {
-  const user = useAuthStore((s) => s.user)
-  const [dark, toggleDark] = useDarkTheme()
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
   const [rightState, setRightState] = useState<RightPanelState>('normal')
@@ -264,122 +346,71 @@ export default function AppShell() {
   const gridTransition = dragging ? 'none' : 'grid-template-columns var(--sa-duration-base) var(--sa-ease-in-out)'
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
-      {/* 顶栏 */}
-      <header
-        className="flex shrink-0 items-center gap-2 border-b border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)] px-3"
-        style={{ height: TOPBAR_HEIGHT }}
-      >
-        {compact && (
-          <IconButton label="打开侧栏" onClick={() => setSidebarOpen(true)}>
-            <svg {...iconProps}>
-              <path d="M2 3.5h12M2 8h12M2 12.5h12" />
-            </svg>
-          </IconButton>
-        )}
-        <div className="flex items-center gap-2 px-1">
-          <LogoMark />
-          <span className="text-[15px] font-medium tracking-tight">SynlysAgent</span>
-        </div>
-        <AssistantTitle />
-        <div className="flex items-center gap-1">
-          <IconButton
-            label={`右栏：${
-              rightState === 'hidden' ? '已隐藏' : rightState === 'normal' ? '常态' : '全屏'
-            }（点击切换）`}
-            onClick={cycleRightState}
-          >
-            <svg {...iconProps}>
-              <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" />
-              <path d="M9.5 2.75v10.5" />
-            </svg>
-          </IconButton>
-          <IconButton label={dark ? '切换浅色主题' : '切换深色主题'} onClick={toggleDark}>
-            {dark ? (
-              <svg {...iconProps}>
-                <circle cx="8" cy="8" r="3.25" />
-                <path d="M8 1.5v1.4M8 13.1v1.4M1.5 8h1.4M13.1 8h1.4M3.4 3.4l1 1M11.6 11.6l1 1M12.6 3.4l-1 1M4.4 11.6l-1 1" />
-              </svg>
-            ) : (
-              <svg {...iconProps}>
-                <path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7Z" />
-              </svg>
-            )}
-          </IconButton>
-          {/* 用户区：用户名 + 用户菜单（管理后台入口 / 退出登录） */}
-          {user && (
-            <span
-              className="hidden max-w-[120px] truncate px-1 text-[13px] text-[var(--sa-alias-label-secondary)] sm:inline"
-              title={`${user.username}（${user.role === 'admin' ? '管理员' : '用户'}）`}
-            >
-              {user.username} / {user.role}
-            </span>
-          )}
-          <UserMenu />
-        </div>
-      </header>
-
-      {/* 主体三栏 */}
-      <div className="relative min-h-0 flex-1">
-        <main
-          className="grid h-full"
-          style={{ gridTemplateColumns, transition: gridTransition }}
-        >
-          {/* 左栏：compact 时不渲染（改走 overlay 抽屉） */}
-          {!compact && (
-            <aside className="relative min-h-0 overflow-hidden border-r border-[var(--sa-alias-border-l1)] bg-[var(--sa-specific-sidebar-fill)]">
-              <div className="h-full" style={{ width: leftWidth }}>
-                <Sidebar />
-              </div>
-              <DragHandle
-                side="left"
-                width={leftWidth}
-                onResize={setLeftWidth}
-                onDraggingChange={setDragging}
-              />
-            </aside>
-          )}
-
-          {/* 中间 Chat */}
-          <section className="relative min-h-0 min-w-0 overflow-hidden">
-            <ChatPanel />
-          </section>
-
-          {/* 右栏：三态由列模板控制宽度 */}
-          <aside className="relative min-h-0 min-w-0 overflow-hidden border-l border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)]">
-            <div
-              className="h-full"
-              style={{ width: rightState === 'fullscreen' ? '100%' : rightWidth }}
-            >
-              <Rightbar />
+    <div className="relative h-dvh overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
+      <main className="grid h-full" style={{ gridTemplateColumns, transition: gridTransition }}>
+        {/* 左栏：compact 时不渲染（改走 overlay 抽屉） */}
+        {!compact && (
+          <aside className="relative min-h-0 overflow-hidden border-r border-[var(--sa-alias-border-l1)] bg-[var(--sa-specific-sidebar-fill)]">
+            <div className="h-full" style={{ width: leftWidth }}>
+              <SidebarFrame />
             </div>
-            {rightState === 'normal' && !compact && (
-              <DragHandle
-                side="right"
-                width={rightWidth}
-                onResize={setRightWidth}
-                onDraggingChange={setDragging}
-              />
-            )}
-          </aside>
-        </main>
-
-        {/* compact 左栏 overlay 抽屉 */}
-        {compact && sidebarOpen && (
-          <>
-            <div
-              className="absolute inset-0 z-30 bg-[var(--sa-alias-bg-mask-1)]"
-              onClick={() => setSidebarOpen(false)}
+            <DragHandle
+              side="left"
+              width={leftWidth}
+              onResize={setLeftWidth}
+              onDraggingChange={setDragging}
             />
-            <aside
-              className="absolute inset-y-0 left-0 z-40 overflow-hidden border-r border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-sidebar-fill)] shadow-2xl"
-              style={{ width: leftWidth }}
-            >
-              <Sidebar onNavigate={() => setSidebarOpen(false)} />
-            </aside>
-          </>
+          </aside>
         )}
-      </div>
+
+        {/* 中间 Chat：顶部工具条（会话标题 + 右栏切换）+ 聊天面板 */}
+        <section className="relative min-h-0 min-w-0 overflow-hidden">
+          <div className="flex h-full flex-col">
+            <ChatToolbar
+              rightState={rightState}
+              onCycleRight={cycleRightState}
+              onOpenDrawer={compact ? () => setSidebarOpen(true) : undefined}
+            />
+            <div className="min-h-0 flex-1">
+              <ChatPanel />
+            </div>
+          </div>
+        </section>
+
+        {/* 右栏：三态由列模板控制宽度 */}
+        <aside className="relative min-h-0 min-w-0 overflow-hidden border-l border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)]">
+          <div
+            className="h-full"
+            style={{ width: rightState === 'fullscreen' ? '100%' : rightWidth }}
+          >
+            <Rightbar />
+          </div>
+          {rightState === 'normal' && !compact && (
+            <DragHandle
+              side="right"
+              width={rightWidth}
+              onResize={setRightWidth}
+              onDraggingChange={setDragging}
+            />
+          )}
+        </aside>
+      </main>
+
+      {/* compact 左栏 overlay 抽屉 */}
+      {compact && sidebarOpen && (
+        <>
+          <div
+            className="absolute inset-0 z-30 bg-[var(--sa-alias-bg-mask-1)]"
+            onClick={() => setSidebarOpen(false)}
+          />
+          <aside
+            className="absolute inset-y-0 left-0 z-40 overflow-hidden border-r border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-sidebar-fill)] shadow-2xl"
+            style={{ width: leftWidth }}
+          >
+            <SidebarFrame onOpenDrawer={() => setSidebarOpen(false)} />
+          </aside>
+        </>
+      )}
 
       {/* 全局 toast */}
       <ToastHost />
