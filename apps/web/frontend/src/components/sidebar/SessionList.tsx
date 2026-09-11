@@ -1,6 +1,7 @@
 /**
  * 会话列表：updated_at 倒序 + 归档折叠分组 + 搜索过滤 + 行内重命名 /
- * 归档切换 / 删除二次确认；当前会话用 nav-item active token 高亮。
+ * 归档切换 / 删除（确认弹窗，与技术区删共用 ConfirmDialog）；当前会话用
+ * nav-item active token 高亮。
  *
  * 两种用法（照 jiuwenswarm `ConversationSidebar` 的 `__group-list` 语义）：
  * - **整体**：不传 `sessions`，用 store 全量（搜索态跨全部会话的扁平列表）；
@@ -10,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Session } from '@/types'
 import { useSessionsStore } from '@/stores/sessions'
+import ConfirmDialog from './ConfirmDialog'
 import { toast } from '@/stores/toasts'
 import { formatRelativeTime } from '@/utils/format'
 
@@ -33,18 +35,20 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
   const archive = useSessionsStore((s) => s.archive)
   const remove = useSessionsStore((s) => s.remove)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  /** 删除确认弹窗（与工作区删共用 ConfirmDialog，照 jiuwen 的一个 DeleteDialog）。 */
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.title)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  // 菜单外点击关闭并重置二次确认态
+  // 菜单外点击关闭
   useEffect(() => {
     if (!menuOpen) return
     const onDocClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false)
-        setConfirming(false)
       }
     }
     document.addEventListener('mousedown', onDocClick)
@@ -66,7 +70,6 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
   /** 归档/取消归档。 */
   const toggleArchive = async () => {
     setMenuOpen(false)
-    setConfirming(false)
     try {
       await archive(session._id, !session.archived)
       toast('success', session.archived ? '已取消归档' : '已归档')
@@ -75,19 +78,19 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
     }
   }
 
-  /** 删除（二次确认后执行）。 */
+  /** 删除（在确认弹窗里执行）。 */
   const handleDelete = async () => {
-    if (!confirming) {
-      setConfirming(true)
-      return
-    }
-    setMenuOpen(false)
-    setConfirming(false)
+    setDeleting(true)
+    setDeleteError(null)
     try {
       await remove(session._id)
+      setConfirmOpen(false)
       toast('success', '会话已删除')
     } catch (err) {
-      toast('error', `删除失败：${(err as Error).message}`)
+      // 失败不关弹窗，便于用户看完原因重试
+      setDeleteError((err as Error).message)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -145,10 +148,7 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
         <button
           type="button"
           aria-label={`会话操作：${session.title || '新对话'}`}
-          onClick={() => {
-            setMenuOpen((v) => !v)
-            setConfirming(false)
-          }}
+          onClick={() => setMenuOpen((v) => !v)}
           className={`absolute right-1 top-1.5 flex h-6 w-6 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-tertiary)] transition-opacity duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-accent)] ${
             menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
           }`}
@@ -187,16 +187,37 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
           </button>
           <button
             type="button"
-            onClick={() => void handleDelete()}
-            className={`w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] transition-colors duration-[var(--sa-duration-fast)] ${
-              confirming
-                ? 'bg-[var(--sa-alias-state-error-primary)] text-white'
-                : 'text-[var(--sa-alias-state-error-primary)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]'
-            }`}
+            onClick={() => {
+              setMenuOpen(false)
+              setDeleteError(null)
+              setConfirmOpen(true)
+            }}
+            className="w-full rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
           >
-            {confirming ? '确认删除？' : '删除'}
+            删除
           </button>
         </div>
+      )}
+
+      {/* 删除确认弹窗（与工作区删共用，照 jiuwen 的 DeleteDialog） */}
+      {confirmOpen && (
+        <ConfirmDialog
+          title="删除会话"
+          description={
+            <>
+              确定要删除「
+              <span className="inline-block max-w-[70%] truncate align-bottom text-[var(--sa-alias-label-primary)]">
+                {session.title || '新对话'}
+              </span>
+              」吗？该会话的消息记录将一并删除，且无法恢复。
+            </>
+          }
+          confirmLabel="删除"
+          busy={deleting}
+          error={deleteError}
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => void handleDelete()}
+        />
       )}
     </div>
   )

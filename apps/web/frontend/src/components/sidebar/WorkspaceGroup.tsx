@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Project, Session } from '@/types'
 import { useProjectsStore } from '@/stores/projects'
 import { toast } from '@/stores/toasts'
+import ConfirmDialog from './ConfirmDialog'
 import SessionList from './SessionList'
 import {
   ArrowRightIcon,
@@ -57,16 +58,18 @@ function WorkspaceRow({
   const rename = useProjectsStore((s) => s.rename)
   const remove = useProjectsStore((s) => s.remove)
   const [menuOpen, setMenuOpen] = useState(false)
-  const [confirming, setConfirming] = useState(false)
+  /** 删除确认弹窗是否打开（照 jiuwen：弹窗确认，不是菜单内二次点击）。 */
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  // 菜单外点击关闭并重置二次确认态
+  // 菜单外点击关闭
   useEffect(() => {
     if (!menuOpen) return
     const onDocClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false)
-        setConfirming(false)
       }
     }
     document.addEventListener('mousedown', onDocClick)
@@ -76,7 +79,6 @@ function WorkspaceRow({
   /** 重命名：弹窗取新名（与新建工作区同做法），后端同步改磁盘目录名。 */
   const handleRename = async () => {
     setMenuOpen(false)
-    setConfirming(false)
     const name = window.prompt('重命名工作区', project.name)?.trim()
     if (!name || name === project.name) return
     try {
@@ -87,19 +89,19 @@ function WorkspaceRow({
     }
   }
 
-  /** 删除（二次确认后执行）；其下会话不删，由 Sidebar 归入默认工作区。 */
+  /** 删除（确认弹窗里执行）；其下会话不删，由 Sidebar 归入默认工作区。 */
   const handleDelete = async () => {
-    if (!confirming) {
-      setConfirming(true)
-      return
-    }
-    setMenuOpen(false)
-    setConfirming(false)
+    setDeleting(true)
+    setDeleteError(null)
     try {
       await remove(project._id)
+      setConfirmOpen(false)
       toast('success', `已删除工作区 ${project.name}`)
     } catch (err) {
-      toast('error', `删除失败：${(err as Error).message}`)
+      // 失败不关弹窗，便于用户看完原因重试
+      setDeleteError((err as Error).message)
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -137,10 +139,7 @@ function WorkspaceRow({
             aria-expanded={menuOpen}
             aria-label={`工作区操作：${project.name}`}
             title="更多操作"
-            onClick={() => {
-              setMenuOpen((v) => !v)
-              setConfirming(false)
-            }}
+            onClick={() => setMenuOpen((v) => !v)}
             className="flex h-6 w-6 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-accent)]"
           >
             <MoreIcon className="h-4 w-4" />
@@ -175,19 +174,40 @@ function WorkspaceRow({
             <button
               type="button"
               role="menuitem"
-              onClick={() => void handleDelete()}
-              className={`flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] transition-colors duration-[var(--sa-duration-fast)] ${
-                confirming
-                  ? 'bg-[var(--sa-alias-state-error-primary)] text-white'
-                  : 'text-[var(--sa-alias-state-error-primary)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]'
-              }`}
+              onClick={() => {
+                setMenuOpen(false)
+                setDeleteError(null)
+                setConfirmOpen(true)
+              }}
+              className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
             >
               <DeleteIcon className="h-3.5 w-3.5 shrink-0" />
-              {confirming ? '确认删除工作区？' : '删除'}
+              删除
             </button>
           </div>
         )}
       </div>
+
+      {/* 删除确认弹窗（照 jiuwen DeleteDialog：遮罩 + 面板 + 取消/危险确认） */}
+      {confirmOpen && (
+        <ConfirmDialog
+          title="删除工作区"
+          description={
+            <>
+              确定要移除「
+              <span className="inline-block max-w-[70%] truncate align-bottom text-[var(--sa-alias-label-primary)]">
+                {project.name}
+              </span>
+              」吗？其下的会话不会被删除，会临时归入默认工作区。
+            </>
+          }
+          confirmLabel="删除"
+          busy={deleting}
+          error={deleteError}
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => void handleDelete()}
+        />
+      )}
 
       {expanded && (
         <SessionList
