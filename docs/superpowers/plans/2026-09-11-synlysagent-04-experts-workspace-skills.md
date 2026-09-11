@@ -775,8 +775,19 @@ workspace_root = request.app.state.project_service.root_for(project)
 
 `agent_service.chat(...)` 增加 `workspace_root` 形参（替换第 177 行自身拼路径的逻辑），保持默认参数以兼容既有调用点。
 
-- [ ] **Step 4: 跑测试确认通过**
-- [ ] **Step 5: Commit** — `feat(web): 会话绑定项目并使用项目工作区目录`
+- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 5: Commit** — `feat(web): 会话绑定项目并使用项目工作区目录`
+
+> **本任务已完成**：`a668d8e`（初版）+ `7f661bf`（审查修复）+ `cfc8d40`（注释）。**后续任务的最终接口以这段为准**：
+> - `ProjectService.resolve_active_project(user_id, project_id) -> dict`：**项目解析统一走它**（命中绑定项目直接用；否则在同一把 per-user 锁内回落首个项目、都没有则建默认项目）。不要在 API 层再写 check-then-create——初版就是这么写，并发会建出两个默认项目。
+> - 内部新增 `_list_locked` / `_create_locked` 两个「调用方须已持锁」的私有方法，`list_projects` / `create_project` 复用它们。
+> - `agent_service.chat(..., workspace_root: Path)` 的 `workspace_root` 是**必填**（原 `None → 用户目录` 回落已删除）。
+> - 会话解析出项目后**回写 `project_id`**（否则 `projects[0]` 随 `updated_at` 漂移，产物会「凭空消失」）。
+> - `create_session` 校验 `project_id` 归属，不命中 **404**。
+> - 自动补种项目统一为 `name="默认项目"` / `dir_name="default"`（`DEFAULT_PROJECT_DIR`）。
+> - 解析仍走 `_list_locked`（含旧布局迁移）——**C6 落地后**可把这段迁移从聊天热路径移出。
+>
+> 测试从 133 → 138 passed。E2E 的产物路径断言改为动态取 `root_for(projects[0])`（行为变更的必然同步，核心断言未放宽）。
 
 ---
 
