@@ -1693,8 +1693,15 @@ context_extra={
 
 - [ ] **Step 1: SkillsAdmin**：列表（名称/描述/标签/builtin 徽标/操作）+ 表单弹窗（name/display_name/description/version/author/tags/allowed_tools/content 多行）+「导入 SKILL.md」按钮（textarea 粘贴 → `POST /skills/import`）+ 导出。
 - [ ] **Step 2: AssistantsAdmin** 的 `TOOL_NAMES` 补上新工具，否则白名单校验 422。
-- [ ] **Step 3: 验证**：playwright 有头模式进 `#/admin/skills`，建一条技能 → 工作台选中 → 发消息 → 后端日志中 system prompt 含技能索引。
-- [ ] **Step 4: Commit** — `feat(frontend): 技能管理页`
+- [x] **Step 3: 验证**：playwright 有头模式进 `#/admin/skills`，建一条技能 → 工作台选中 → 发消息 → 后端日志中 system prompt 含技能索引。
+- [x] **Step 4: Commit** — `feat(frontend): 技能管理页`
+
+> **本任务已完成**：`e17c502`。真机验证（playwright 有头模式，`#/admin/skills`）：两个种子技能正确列出（内置的「删除」置灰）；新建 `ui-smoke-test` → 列表出现且 `apps/web/data/skills/ui-smoke-test/SKILL.md` 落盘（frontmatter + 正文，**无 `tools` 字段**）；两步内联确认删除 → 列表与磁盘同步清掉；控制台 0 error。
+> - **`TOOL_LABELS` 的单一来源在 `components/chat/toolLabels.ts`**（不是 admin 里），`AssistantsAdmin` 的 `TOOL_NAMES = Object.keys(TOOL_LABELS)` 自动跟着变成 8 项。所以**新增工具只改 `toolLabels.ts` 一处**。
+> - 列表态放进 `useAdminStore`（照 `AssistantsAdmin` 的做法），避免 `set-state-in-effect` 警告。
+> - 管理页进不去时记得**整页刷新**——SPA 只在挂载时读 `#/admin/*` 的 hash，改 hash 不会触发路由。
+>
+> 后端测试 177 passed（B6 只动前端）。
 
 ---
 
