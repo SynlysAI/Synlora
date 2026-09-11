@@ -140,7 +140,7 @@ interface AssistantMessageProps {
 export default function AssistantMessage({ content, streaming, avatar }: AssistantMessageProps) {
   return (
     <div className="flex items-start gap-2.5">
-      <Avatar char={avatar ?? '科'} />
+      <Avatar char={avatar?.trim() || '科'} />
       <div className="min-w-0 flex-1 pt-0.5 text-[15px] text-[var(--sa-alias-label-primary)]">
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
           {content}

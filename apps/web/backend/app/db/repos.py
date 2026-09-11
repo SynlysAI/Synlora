@@ -294,6 +294,7 @@ SEED_ASSISTANTS: list[dict] = [
     {
         "_id": "asst-research",
         "name": "科研助手",
+        "avatar": "🧪",
         "description": "文献检索、数据分析、文件处理通用科研助手",
         "system_prompt": (
             "你是 SynlysAgent 科研助手，帮助科研人员完成文献检索、数据分析、"
@@ -308,6 +309,7 @@ SEED_ASSISTANTS: list[dict] = [
     {
         "_id": "asst-data",
         "name": "数据分析助手",
+        "avatar": "📊",
         "description": "优先用 python.run 做统计分析与可视化",
         "system_prompt": (
             "你是数据分析助手。优先使用 python.run 工具对用户上传的数据做统计分析"

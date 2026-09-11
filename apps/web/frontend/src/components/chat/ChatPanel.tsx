@@ -46,10 +46,11 @@ export default function ChatPanel() {
   const session = sessions.find((s) => s._id === currentId)
   const assistant = assistants.find((a) => a._id === session?.assistant_id)
   const assistantName = assistant?.name ?? 'SynlysAgent'
+  const assistantAvatar = assistant?.avatar?.trim() || assistant?.name.slice(0, 1) || '科'
 
   return (
     <div className="flex h-full flex-col">
-      <MessageList assistantName={assistantName} assistantAvatar={assistant?.avatar ?? '科'} />
+      <MessageList assistantName={assistantName} assistantAvatar={assistantAvatar} />
       <Composer />
     </div>
   )
