@@ -14,6 +14,7 @@ import { useSessionsStore } from '@/stores/sessions'
 import ConfirmDialog from './ConfirmDialog'
 import { toast } from '@/stores/toasts'
 import { formatRelativeTime } from '@/utils/format'
+import { MoreIcon } from './icons'
 
 /** 默认显示的最近会话数（超出折叠为"展开其余 N 个会话"，DSH 式）。 */
 const COLLAPSE_AFTER = 8
@@ -154,11 +155,7 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
             menuOpen ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
           }`}
         >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <circle cx="8" cy="3.5" r="1.2" />
-            <circle cx="8" cy="8" r="1.2" />
-            <circle cx="8" cy="12.5" r="1.2" />
-          </svg>
+          <MoreIcon className="h-4 w-4" />
         </button>
       )}
 
