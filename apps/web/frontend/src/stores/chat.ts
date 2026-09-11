@@ -358,7 +358,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
           assistant?._id ?? null,
           { projectId, modelProviderId },
         )
-        await get().loadHistory(session._id)
+        // 新会话必然没有历史事件，直接置绑定态——**不要**走 loadHistory：
+        // 它的 set({messages: ...}) 发生在 await 之后，会把下面刚写进去的
+        // optimistic 用户气泡清成 []，表现为「已在流式、界面却还停在空态」。
+        set((s) => ({
+          sessionId: session._id,
+          messages: [],
+          streamingText: '',
+          thinkingText: '',
+          turnStartTs: null,
+          activeRunId: null,
+          error: null,
+          stats: emptyStats(),
+          lastSeq: -1,
+          epoch: s.epoch + 1,
+        }))
       } catch (err) {
         set({ error: (err as Error).message || '新建会话失败' })
         return
