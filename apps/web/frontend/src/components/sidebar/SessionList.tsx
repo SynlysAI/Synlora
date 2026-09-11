@@ -244,8 +244,11 @@ export default function SessionList({
     }
   }, [source, query])
 
-  // DSH 式折叠：非搜索 / 非嵌套态默认只显示最近 COLLAPSE_AFTER 条
+  // DSH 式折叠：非搜索 / 非嵌套态默认只显示最近 COLLAPSE_AFTER 条。
+  // canCollapse 决定展开后是否还该给出「收起」——若期间会话被删到阈值以内，
+  // 已无被折叠的项，就不该再挂一个收不起东西的按钮。
   const searching = query.trim().length > 0
+  const collapsible = !searching && !indent && active.length > COLLAPSE_AFTER
   const visible = searching || restOpen || indent ? active : active.slice(0, COLLAPSE_AFTER)
   const restCount = active.length - visible.length
 
@@ -275,16 +278,26 @@ export default function SessionList({
         />
       ))}
 
-      {/* 展开其余会话（DSH 式文字链接） */}
-      {restCount > 0 && (
+      {/* 展开其余会话 / 收起（DSH 式文字链接，二态互斥） */}
+      {collapsible && restOpen ? (
         <button
           type="button"
+          aria-expanded
+          onClick={() => setRestOpen(false)}
+          className="px-2.5 py-1.5 text-left text-[12px] text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
+        >
+          收起
+        </button>
+      ) : restCount > 0 ? (
+        <button
+          type="button"
+          aria-expanded={false}
           onClick={() => setRestOpen(true)}
           className="px-2.5 py-1.5 text-left text-[12px] text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
         >
           展开其余 {restCount} 个会话
         </button>
-      )}
+      ) : null}
 
       {/* 归档折叠组 */}
       {archived.length > 0 && (
