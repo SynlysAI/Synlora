@@ -17,7 +17,6 @@
  */
 import { useMemo, useState } from 'react'
 import type { Session } from '@/types'
-import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
@@ -33,11 +32,11 @@ interface SidebarProps {
 /** 左栏组件（AppShell 左侧列 / compact 抽屉）。 */
 export default function Sidebar({ onNavigate }: SidebarProps) {
   const sessions = useSessionsStore((s) => s.sessions)
-  const create = useSessionsStore((s) => s.create)
+  const setCurrentSession = useSessionsStore((s) => s.setCurrent)
   const projects = useProjectsStore((s) => s.projects)
   const projectsLoaded = useProjectsStore((s) => s.loaded)
-  /** 当前选中的工作区（null = 未选 → 新会话由后端回落默认工作区）。 */
-  const currentProjectId = useProjectsStore((s) => s.currentId)
+  /** 切换「新会话目标工作区」（null = 未选 → 建会话时由后端回落默认工作区）。 */
+  const setCurrentProject = useProjectsStore((s) => s.setCurrent)
   const createProject = useProjectsStore((s) => s.create)
   const [query, setQuery] = useState('')
   /** 工作区展开态（纯 UI 状态，不落 store）。 */
@@ -67,23 +66,17 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
   const searching = query.trim().length > 0
 
   /**
-   * 新建会话：用「新对话默认专家」（可能为空 = 不使用专家）建到**当前选中的
-   * 工作区**（输入框工作区行里选的，见 WorkspacePicker）；未选则不传 project_id，
-   * 由后端回落到默认工作区。主按钮与「会话」组 `+` 共走此路径。
+   * 新会话：**只进草稿态，不落库**——首次真正发送时才由 chat store 建会话，
+   * 否则点一次就留一条空会话。主按钮与「会话」组 `+` 共走此路径。
+   *
+   * 传了 projectId（工作区行的 `+`）则同时把「新会话目标工作区」切过去
+   * （输入框下方的 WorkspacePicker 显示的就是它）；不传则沿用当前选择，
+   * 未选时由后端在真正建会话时回落到默认工作区。
    */
-  const handleNew = async (projectId?: string) => {
-    const assistant = pickSelectedAssistant(useAssistantsStore.getState())
-    try {
-      // 指定了工作区（行内「+」）就建到那里；否则跟随输入框行里选中的工作区，
-      // 未选则由后端回落到默认工作区
-      const target = projectId ?? currentProjectId ?? undefined
-      await create(assistant?._id ?? null, { projectId: target })
-      // 从工作区行新建时把它展开，让新会话立刻可见
-      if (projectId) setExpanded((m) => ({ ...m, [projectId]: true }))
-      onNavigate?.()
-    } catch (err) {
-      toast('error', `新建会话失败：${(err as Error).message}`)
-    }
+  const handleNew = (projectId?: string) => {
+    if (projectId) setCurrentProject(projectId)
+    setCurrentSession(null)
+    onNavigate?.()
   }
 
   /** 新建工作区：prompt 取名字（与 WorkspacePicker 同做法），成功后展开它。 */

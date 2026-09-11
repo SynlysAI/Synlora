@@ -8,12 +8,14 @@
  *   模型服务，后端 `send_message` 会 422「未指定模型服务」。此时下拉不再提供
  *   "跟随助手"项，并**自动把第一个 enabled 模型落到会话级 model_provider_id**
  *   （见下方 effect），显示与实际下发都是这个显式模型；
- * - 无当前会话时隐藏；模型列表空（管理员未配置）时隐藏下拉、显示
+ * - **草稿态（会话还没落库）也可用**：懒创建下会话首次发送才建，此时没有会话可
+ *   PATCH，选择先存 sessions store 的 draftModelProviderId，建会话时随请求下发；
+ * - 模型列表空（管理员未配置）时隐藏下拉、显示
  *   "未配置模型"小字；
  * - 会话切换时随 sessions store 的 model_provider_id 自动联动显示。
  */
 import { useEffect, useRef, useState } from 'react'
-import { useAssistantsStore } from '@/stores/assistants'
+import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { useModelsStore } from '@/stores/models'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
@@ -24,10 +26,13 @@ export default function ModelPicker() {
   const session = useSessionsStore((s) =>
     s.sessions.find((x) => x._id === s.currentId),
   )
+  const draftModelId = useSessionsStore((s) => s.draftModelProviderId)
+  const setDraftModel = useSessionsStore((s) => s.setDraftModel)
   const setModel = useSessionsStore((s) => s.setModel)
   const models = useModelsStore((s) => s.models)
   const modelsLoaded = useModelsStore((s) => s.loaded)
   const assistantsLoaded = useAssistantsStore((s) => s.loaded)
+  const defaultAssistant = useAssistantsStore(pickSelectedAssistant)
   const assistant = useAssistantsStore((s) =>
     s.assistants.find((a) => a._id === session?.assistant_id),
   )
@@ -49,30 +54,42 @@ export default function ModelPicker() {
     return () => document.removeEventListener('mousedown', onDocClick)
   }, [open])
 
+  // 草稿态（会话尚未落库）：没有会话可 PATCH，选择先存 store，建会话时下发。
+  // 此时「当前专家」取新对话默认专家——它决定新建会话是否绑定专家。
+  const drafting = !currentId
+  const boundAssistant = drafting ? defaultAssistant : assistant
+  const boundAssistantId = drafting
+    ? (defaultAssistant?._id ?? null)
+    : (session?.assistant_id ?? null)
+
   // 无专家（未绑定专家，或会话绑定的专家已不存在）→ 必须显式指定模型
-  const hasAssistantBinding = Boolean(session?.assistant_id)
-  const needsExplicitModel = !hasAssistantBinding || (assistantsLoaded && !assistant)
-  const overrideId = session?.model_provider_id ?? null
-  // 无专家时的有效模型：会话覆盖仍可用则沿用，否则回落第一个 enabled 模型
+  const hasAssistantBinding = Boolean(boundAssistantId)
+  const needsExplicitModel =
+    !hasAssistantBinding || (!drafting && assistantsLoaded && !assistant)
+  const overrideId = drafting ? draftModelId : (session?.model_provider_id ?? null)
+  // 无专家时的有效模型：已有选择仍可用则沿用，否则回落第一个 enabled 模型
   const explicitId = needsExplicitModel
     ? overrideId && models.some((m) => m._id === overrideId)
       ? overrideId
       : (models[0]?._id ?? null)
     : overrideId
 
-  // 自动下发：无专家且会话还没有可用的会话级模型时，写入第一个 enabled 模型
+  // 自动下发：无专家且还没有可用的模型时——草稿态写进 draft，有会话则 PATCH
   useEffect(() => {
-    if (!needsExplicitModel || !currentId) return
-    if (!modelsLoaded || !explicitId || explicitId === overrideId) return
+    if (!needsExplicitModel || !modelsLoaded || !explicitId || explicitId === overrideId) return
+    if (drafting) {
+      setDraftModel(explicitId)
+      return
+    }
+    if (!currentId) return
     void setModel(currentId, explicitId).catch(() => {
       // 失败静默：按钮仍显示该模型，用户可手动重选（错误由下拉操作路径提示）
     })
-  }, [needsExplicitModel, currentId, modelsLoaded, explicitId, overrideId, setModel])
-
-  if (!currentId) return null
+  }, [needsExplicitModel, drafting, currentId, modelsLoaded, explicitId, overrideId,
+      setModel, setDraftModel])
 
   /** 跟随助手时的助手侧模型名（联查字段：正常名 / "(已停用)" / "(已删除)" / null=未绑定）。 */
-  const assistantModel = assistant?.model_name
+  const assistantModel = boundAssistant?.model_name
   const followLabel = `跟随助手（${assistantModel ?? '未绑定模型'}）`
   /** 当前生效的模型 id：无专家走显式模型，有专家走会话覆盖（null = 跟随助手）。 */
   const effectiveId = needsExplicitModel ? explicitId : overrideId
@@ -83,10 +100,14 @@ export default function ModelPicker() {
       ? (effectiveModel?.name ?? '（已停用或已删除）')
       : followLabel
 
-  /** 选中某项：PATCH 会话覆盖字段并收起下拉（422 等失败弹 toast）。 */
+  /** 选中某项：草稿态写入 draft，有会话则 PATCH 会话覆盖字段。 */
   const pick = (id: string | null) => {
     setOpen(false)
-    void setModel(currentId, id).catch((err) => {
+    if (drafting) {
+      setDraftModel(id)
+      return
+    }
+    void setModel(currentId!, id).catch((err) => {
       toast('error', `切换模型失败：${(err as Error).message}`)
     })
   }

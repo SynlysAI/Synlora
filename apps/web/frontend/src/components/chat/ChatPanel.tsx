@@ -1,10 +1,12 @@
 /**
- * 中间列聊天面板：启动引导（加载项目/会话/助手 → 选中首个未归档会话 /
- * 按「新对话默认专家」建会话，未选专家则不带 assistant_id）+ 消息列表 +
- * 输入区。
+ * 中间列聊天面板：启动引导（加载项目/会话/助手 → 选中首个未归档会话）+
+ * 消息列表 + 输入区。
+ *
+ * 启动引导**不预建会话**：没有历史会话时保持草稿态（`currentId` 为 null），
+ * 首次发送时由 chat store 懒创建——否则每次打开页面/点新会话都会留一条空会话。
  */
 import { useEffect } from 'react'
-import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
+import { useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
@@ -17,10 +19,9 @@ export default function ChatPanel() {
   const currentId = useSessionsStore((s) => s.currentId)
   const assistants = useAssistantsStore((s) => s.assistants)
 
-  // 启动引导：并行加载项目/会话/助手；无当前会话时选首个未归档或自动创建。
-  // 项目必须在此加载并在建会话之前完成：GET /api/v1/projects 首次访问会触发
-  // 后端旧布局迁移并补种「默认项目」，且新会话要带上当前选中的工作区 id
-  // （未选则不传，由后端回落默认工作区）。
+  // 启动引导：并行加载项目/会话/助手（项目必须加载：GET /api/v1/projects 首次访问
+  // 会触发后端旧布局迁移并补种「默认项目」）。有历史会话就选中首个未归档；
+  // 一条都没有则保持草稿态，不预建会话（见文件头）。
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -34,15 +35,7 @@ export default function ChatPanel() {
       const st = useSessionsStore.getState()
       if (st.currentId) return
       const first = st.sessions.find((s) => !s.archived)
-      if (first) {
-        st.setCurrent(first._id)
-        return
-      }
-      // 专家可选：无显式选择时按「不使用专家」建会话（平台默认提示词）
-      const assistant = pickSelectedAssistant(useAssistantsStore.getState())
-      // 工作区：取此刻已加载完的选择（未选 = undefined → 后端回落默认工作区）
-      const projectId = useProjectsStore.getState().currentId ?? undefined
-      await st.create(assistant?._id ?? null, { projectId }).catch(() => {})
+      if (first) st.setCurrent(first._id)
     })()
     return () => {
       cancelled = true

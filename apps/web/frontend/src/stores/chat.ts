@@ -16,6 +16,8 @@ import { create } from 'zustand'
 import type { SessionEvent, ToolCallPayload, ToolResultPayload } from '@/types'
 import { api, ApiError } from '@/api/client'
 import { streamSse } from '@/api/sse'
+import { pickSelectedAssistant, useAssistantsStore } from './assistants'
+import { useProjectsStore } from './projects'
 import { useSessionsStore } from './sessions'
 
 /** 聊天条目视图模型（由会话事件投影）。 */
@@ -303,6 +305,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   epoch: 0,
 
   loadHistory: async (sessionId) => {
+    // 已绑定同一会话则跳过：懒创建路径里 send 已绑过一次，紧接着 ChatPanel 的
+    // currentId effect 还会再调一次，这里挡住那次重复请求（调用点只有「会话切换」，
+    // 不存在「刷新同一会话」的用法）。
+    if (get().sessionId === sessionId) return
     // 切会话：断开旧流（run 由后端执行完落盘，回读即可见）
     activeController?.abort()
     activeController = null
@@ -337,8 +343,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   send: async (text, skills) => {
     const trimmed = text.trim()
-    const { sessionId, streaming, epoch } = get()
-    if (!sessionId || !trimmed || streaming) return
+    if (!trimmed || get().streaming) return
+
+    // 懒创建：点「新会话」只进草稿态（不落库），**首次真正发送**才建会话——
+    // 否则每点一次新会话就留一条空会话。建完立刻绑定，再走原来的 optimistic + SSE 流程。
+    if (!get().sessionId) {
+      try {
+        const assistant = pickSelectedAssistant(useAssistantsStore.getState())
+        const projectId = useProjectsStore.getState().currentId ?? undefined
+        // 草稿态选好的模型随建会话一起下发：无专家时没有可回落的模型服务，
+        // 不带这个字段后端会 422「未指定模型服务」
+        const modelProviderId = useSessionsStore.getState().draftModelProviderId
+        const session = await useSessionsStore.getState().create(
+          assistant?._id ?? null,
+          { projectId, modelProviderId },
+        )
+        await get().loadHistory(session._id)
+      } catch (err) {
+        set({ error: (err as Error).message || '新建会话失败' })
+        return
+      }
+    }
+    const { sessionId, epoch } = get()
+    if (!sessionId) return
 
     const controller = new AbortController()
     activeController = controller

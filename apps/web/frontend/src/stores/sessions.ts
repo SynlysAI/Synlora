@@ -16,13 +16,22 @@ export interface CreateSessionOptions {
   title?: string
   /** 绑定的工作区 id；缺省不传该字段，由后端回落到默认工作区。 */
   projectId?: string | null
+  /** 会话级模型 provider id；缺省不传该字段（= 跟随助手绑定）。 */
+  modelProviderId?: string | null
 }
 
 interface SessionsState {
   /** 当前用户全部会话（updated_at 倒序）。 */
   sessions: Session[]
-  /** 当前选中会话 id（null 未选中）。 */
+  /** 当前选中会话 id（null 未选中 = 草稿态）。 */
   currentId: string | null
+  /**
+   * 草稿态下选定的模型 provider id（懒创建：会话还没落库，选好的模型先存这里，
+   * 首次发送时随 `create` 一起写进会话）。null = 跟随专家绑定。
+   */
+  draftModelProviderId: string | null
+  /** 设置草稿态模型（仅在草稿态有意义）。 */
+  setDraftModel: (providerId: string | null) => void
   /** load() 是否完成（启动引导依据）。 */
   loaded: boolean
   /** 拉取会话列表。 */
@@ -51,6 +60,7 @@ interface SessionsState {
 export const useSessionsStore = create<SessionsState>((set) => ({
   sessions: [],
   currentId: null,
+  draftModelProviderId: null,
   loaded: false,
 
   load: async () => {
@@ -59,18 +69,24 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   },
 
   create: async (assistantId, options = {}) => {
-    const { title = '', projectId = null } = options
-    // 缺省不带 project_id：由后端回落到默认工作区
+    const { title = '', projectId = null, modelProviderId = null } = options
+    // 缺省的字段一律不传：project_id 由后端回落默认工作区，
+    // model_provider_id 不传 = 跟随助手绑定
     const session = await api<Session>('/api/v1/sessions', {
       method: 'POST',
-      body: projectId
-        ? { assistant_id: assistantId, title, project_id: projectId }
-        : { assistant_id: assistantId, title },
+      body: {
+        assistant_id: assistantId,
+        title,
+        ...(projectId ? { project_id: projectId } : {}),
+        ...(modelProviderId ? { model_provider_id: modelProviderId } : {}),
+      },
     })
     // 新会话 updated_at 最新：插到列表头并选中
     set((s) => ({ sessions: [session, ...s.sessions], currentId: session._id }))
     return session
   },
+
+  setDraftModel: (providerId) => set({ draftModelProviderId: providerId }),
 
   rename: async (id, title) => {
     const updated = await api<Session>(`/api/v1/sessions/${id}`, {
@@ -107,5 +123,10 @@ export const useSessionsStore = create<SessionsState>((set) => ({
 
   setCurrent: (id) => set({ currentId: id }),
 
-  resetAll: () => set({ sessions: [], currentId: null, loaded: false }),
+  resetAll: () => set({
+    sessions: [],
+    currentId: null,
+    draftModelProviderId: null,
+    loaded: false,
+  }),
 }))
