@@ -334,6 +334,10 @@ interface FileTreeProps {
   records?: Map<string, FileDoc>
   /** 文件删除成功后的回调（调用方刷新目录树与记录映射）。 */
   onFilesChanged?: () => void
+  /** 点击根行「+」时的回调（调用方打开文件选择）。 */
+  onAddFiles?: () => void
+  /** 往树区域拖入文件时的回调（调用方执行上传）。 */
+  onDropFiles?: (files: File[]) => void
 }
 
 /** 项目目录树组件（右栏工作区下半部）。 */
@@ -343,10 +347,14 @@ export default function FileTree({
   refreshToken = 0,
   records = new Map<string, FileDoc>(),
   onFilesChanged = () => {},
+  onAddFiles,
+  onDropFiles,
 }: FileTreeProps) {
   const [levels, setLevels] = useState<Record<string, LevelState>>({})
   const [expanded, setExpanded] = useState<string[]>([])
   const [version, setVersion] = useState(0)
+  /** 拖拽悬停中（整个树区域是拖放目标，故不另设大块上传区）。 */
+  const [dragActive, setDragActive] = useState(false)
   // 已发起请求的层（防止重复请求；清缓存时一并清空以便重取）
   const requested = useRef(new Set<string>())
 
@@ -397,7 +405,7 @@ export default function FileTree({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* 根行：项目名 + 刷新（DSH header 行） */}
+      {/* 根行：项目名 + 添加文件 + 刷新（DSH header 行；上传改为图标按钮，不再占一整块） */}
       <div className="flex shrink-0 items-center gap-1 border-b border-[var(--sa-alias-border-l3)] pl-3 pr-1.5">
         <span
           className="min-w-0 flex-1 truncate text-xs text-[var(--sa-alias-label-primary)]"
@@ -405,6 +413,29 @@ export default function FileTree({
         >
           {rootName}
         </span>
+        {onAddFiles && (
+          <button
+            type="button"
+            aria-label="添加文件到当前工作区"
+            title="添加文件"
+            onClick={onAddFiles}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)]"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M8 3.25v9.5M3.25 8h9.5" />
+            </svg>
+          </button>
+        )}
         <button
           type="button"
           aria-label="刷新目录树"
@@ -428,8 +459,25 @@ export default function FileTree({
         </button>
       </div>
 
-      {/* 各层：根层常驻，子层随展开挂载 */}
-      <div className="min-h-0 flex-1 overflow-auto px-2 py-2">
+      {/* 各层：根层常驻，子层随展开挂载。
+          整个区域兼作拖放目标（原大块上传区已收成根行的「+」，拖拽能力保留）。 */}
+      <div
+        onDragOver={(e) => {
+          if (!onDropFiles) return
+          e.preventDefault()
+          setDragActive(true)
+        }}
+        onDragLeave={() => setDragActive(false)}
+        onDrop={(e) => {
+          if (!onDropFiles) return
+          e.preventDefault()
+          setDragActive(false)
+          onDropFiles(Array.from(e.dataTransfer.files))
+        }}
+        className={`min-h-0 flex-1 overflow-auto px-2 py-2 transition-colors duration-[var(--sa-duration-base)] ${
+          dragActive ? 'bg-[var(--sa-alias-state-business-tertiary)]' : ''
+        }`}
+      >
         <ul className="m-0 list-none p-0">
           <Level path="" tree={tree} />
         </ul>

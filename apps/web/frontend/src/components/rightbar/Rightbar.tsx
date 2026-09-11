@@ -1,5 +1,5 @@
 /**
- * 右栏工作区：文件（当前项目上传 + 目录树）/ 运行信息 两页标签切换。
+ * 右栏工作区：工作区（当前项目上传 + 目录树）/ 运行信息 两页标签切换。
  */
 import { useState } from 'react'
 import RunInfoPanel from './RunInfoPanel'
@@ -7,7 +7,7 @@ import WorkspacePanel from './WorkspacePanel'
 
 /** 标签页定义。 */
 const TABS = [
-  { key: 'files', label: '文件' },
+  { key: 'files', label: '工作区' },
   { key: 'run', label: '运行信息' },
 ] as const
 
