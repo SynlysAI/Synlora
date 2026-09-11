@@ -72,17 +72,19 @@ def test_remove_project_dir_missing_target_is_true(tmp_path: Path):
     assert workspace.remove_project_dir(tmp_path / "nope") is True
 
 
-def test_remove_project_dir_trash_name_unique_within_same_second(tmp_path: Path, monkeypatch):
+def test_remove_project_dir_trash_names_unique_with_same_timestamp(tmp_path: Path, monkeypatch):
+    """同一时间戳下两次失败改名也必须产生不同 trash 目录。"""
     def boom(*_a, **_k):
         raise OSError("locked")
 
     monkeypatch.setattr(workspace.shutil, "rmtree", boom)
-    for _ in range(2):
+    monkeypatch.setattr(workspace.time, "time", lambda: 1789101841)   # 冻结时间戳
+    for _ in range(3):
         target = tmp_path / "proj"
         target.mkdir(exist_ok=True)
         (target / "a.txt").write_text("x", encoding="utf-8")
         assert workspace.remove_project_dir(target) is False
-    assert len(list(tmp_path.glob("proj.trash-*"))) == 2
+    assert len(list(tmp_path.glob("proj.trash-*"))) == 3
 
 
 def test_migrate_legacy_moves_partial_subdirs(tmp_path: Path):

@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 from pathlib import Path
+from uuid import uuid4
 
 BLOCKED_EXTENSIONS = {".exe", ".bat", ".cmd", ".msi", ".ps1", ".sh", ".com", ".scr"}
 MAX_FILE_BYTES = 50 * 1024 * 1024
@@ -202,7 +203,7 @@ def free_dir_name(user_dir: Path, base: str, taken: set[str]) -> str:
 
 
 def remove_project_dir(target: Path) -> bool:
-    """删除项目目录；失败则改名为 {name}.trash-{纳秒时间戳} 释放目录名并保住数据。
+    """删除项目目录；失败则改名为 {name}.trash-{时间戳}-{uuid 后缀} 释放目录名并保住数据。
 
     Args:
         target: 项目根目录。
@@ -220,8 +221,9 @@ def remove_project_dir(target: Path) -> bool:
         return True
     except OSError:
         pass
-    # 纳秒时间戳：同一秒内多次失败改名也不会撞名（秒级粒度会 FileExistsError）
-    trash = target.with_name(f"{target.name}.trash-{time.time_ns()}")
+    # 时间戳 + uuid 后缀：Windows 上 time.time_ns() 实际粒度约 15ms，
+    # 仅靠时间戳仍可能撞名；uuid 后缀保证唯一（时间戳保留可读性）
+    trash = target.with_name(f"{target.name}.trash-{int(time.time())}-{uuid4().hex[:8]}")
     try:
         target.rename(trash)
     except OSError as exc:
