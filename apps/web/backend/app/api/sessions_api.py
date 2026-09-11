@@ -83,9 +83,13 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
 
 
 class SessionCreateBody(BaseModel):
-    """新建会话请求体。"""
+    """新建会话请求体。
 
-    assistant_id: str
+    assistant_id 可选：缺省/空表示不选专家，agent 只走平台默认提示词且
+    放开全部内置工具（jiuwen 的 "" 卸载专家语义）。
+    """
+
+    assistant_id: str | None = None
     title: str = ""
     model_provider_id: str | None = None
     project_id: str | None = None
@@ -94,8 +98,10 @@ class SessionCreateBody(BaseModel):
 class SessionUpdateBody(BaseModel):
     """更新会话请求体（改名/归档/切换模型/切换专家）。
 
-    model_provider_id 显式传 null 恢复助手默认；assistant_id 传 None（缺省）
-    表示不切换——切换只影响后续轮次（每轮 chat 重新从会话文档取助手）。
+    model_provider_id 显式传 null 恢复助手默认；assistant_id 显式传 ""/null
+    表示卸载专家（无 persona、工具放开全部内置工具）；两者都用 model_fields_set
+    区分"未提供该字段"（不动原值）与"显式传空"（清空）——切换只影响后续轮次
+    （每轮 chat 重新从会话文档取助手）。
     """
 
     title: str | None = None
@@ -131,13 +137,22 @@ async def list_sessions(user=Depends(get_current_user),
 async def create_session(body: SessionCreateBody, request: Request,
                          user=Depends(get_current_user),
                          repos=Depends(get_repos)) -> dict:
-    """新建会话。
+    """新建会话（助手可选；不传 assistant_id 表示不选专家）。
+
+    Args:
+        body: 请求体；assistant_id 非空才校验助手存在。
+        request: 当前请求（取 project_service）。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+
+    Returns:
+        新建的会话文档。
 
     Raises:
         HTTPException: 助手不存在（404）、项目不存在或非本人（404）、
             model_provider_id 非法（422）。
     """
-    if await repos.assistant.get(body.assistant_id) is None:
+    if body.assistant_id and await repos.assistant.get(body.assistant_id) is None:
         raise HTTPException(404, "助手不存在")
     # 绑定项目须属本人且存在：否则会话带着他人的 project_id 落库（运行时虽会回落
     # 到本人项目、不会串目录，但脏数据会让前端按它渲染出不属于该用户的项目）
@@ -163,10 +178,19 @@ async def update_session(sid: str, body: SessionUpdateBody,
                          repos=Depends(get_repos)) -> dict:
     """改名/归档/切换模型/切换专家（归属校验 404）。
 
+    Args:
+        sid: 会话 id。
+        body: 请求体。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+
+    Returns:
+        更新后的会话文档。
+
     model_provider_id：传 id 校验后生效；显式传 null 恢复助手默认；
     未提供该字段不动原值（靠 model_fields_set 区分"未提供"与"显式 null"）。
-    assistant_id：传非空 id 校验助手存在后写回（只影响后续轮次，不改历史事件）；
-    缺省/空不动原值。
+    assistant_id：传非空 id 校验助手存在后写回；显式传 ""/null 卸载专家；
+    未提供该字段不动原值（只影响后续轮次，不改历史事件）。
 
     Raises:
         HTTPException: 会话不存在或非本人（404）、助手不存在（404）、
@@ -178,10 +202,14 @@ async def update_session(sid: str, body: SessionUpdateBody,
         fields["title"] = body.title.strip()
     if body.archived is not None:
         fields["archived"] = body.archived
-    if body.assistant_id:
-        if await repos.assistant.get(body.assistant_id) is None:
-            raise HTTPException(404, "助手不存在")
-        fields["assistant_id"] = body.assistant_id
+    if "assistant_id" in body.model_fields_set:
+        aid = body.assistant_id
+        if aid:
+            if await repos.assistant.get(aid) is None:
+                raise HTTPException(404, "助手不存在")
+            fields["assistant_id"] = aid
+        else:
+            fields["assistant_id"] = None
     if "model_provider_id" in body.model_fields_set:
         pid = body.model_provider_id
         if pid:
@@ -226,20 +254,30 @@ async def send_message(sid: str, body: MessageIn, request: Request,
                        repos=Depends(get_repos)) -> EventSourceResponse:
     """发消息并以 SSE 流式返回本轮事件（event=事件类型、data=JSON、id=seq）。
 
-    body.skills 为本轮勾选的技能名，透传给 AgentService.chat 的 requested_skills
-    （None/空 = 用全部可用技能，老前端不带该字段时行为不变）。
+    Args:
+        sid: 会话 id。
+        body: 消息体；skills 为本轮勾选的技能名，透传给 AgentService.chat 的
+            requested_skills（None/空 = 用全部可用技能，老前端不带该字段时行为不变）。
+        request: 当前请求（取 agent_service / project_service）。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+
+    Returns:
+        SSE 事件流响应。
+
+    会话未绑定专家（或专家已被删）时按 agent 传 None：只走平台默认提示词、
+    放开全部内置工具；模型须由会话级 model_provider_id 提供。
 
     Raises:
-        HTTPException: 会话/助手不存在（404）、provider 未关联/停用（422）、
+        HTTPException: 会话不存在或非本人（404）、provider 未关联/停用（422）、
             并发超限（429）。
     """
     doc = await _own_session(sid, user, repos)
-    assistant = await repos.assistant.get(doc.get("assistant_id", ""))
-    if assistant is None:
-        raise HTTPException(404, "助手不存在")
+    # 助手指针失效（未选专家/专家已删）不报错，交 chat 走无 persona 路径
+    assistant = await repos.assistant.get(doc.get("assistant_id") or "")
     # 模型优先级：会话级覆盖 > 助手绑定（两者皆无 → 422）
-    pid = doc.get("model_provider_id") or assistant.get("model_provider_id")
-    owner = doc.get("title") or assistant.get("name") or sid
+    pid = doc.get("model_provider_id") or (assistant or {}).get("model_provider_id")
+    owner = doc.get("title") or (assistant or {}).get("name") or sid
     cfg = await _resolve_provider(pid, str(owner), repos)
     service = _agent_service(request)
     # 项目解析（回落路径整体在 ProjectService 的 per-user 锁内，见 resolve_active_project）：

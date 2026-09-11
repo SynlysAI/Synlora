@@ -1273,3 +1273,57 @@ async def test_message_without_skills_defaults_none(app, client, admin_headers, 
 
     await _chat_once(client, admin_headers, sid, "不选技能")
     assert captured[-1]["requested_skills"] is None
+
+
+# ---------- 专家可选（不选走平台默认提示词与全部内置工具） ----------
+
+
+async def test_create_session_without_assistant(client, user_headers):
+    """不选专家也能建会话（jiuwen 的 '' 卸载专家语义）。"""
+    r = await client.post("/api/v1/sessions", json={}, headers=user_headers)
+    assert r.status_code == 201
+    assert not r.json().get("assistant_id")
+
+
+async def test_patch_can_clear_assistant(client, user_headers):
+    """PATCH 显式传 assistant_id="" 表示卸载专家；不传该字段则不动。"""
+    sid = (await client.post("/api/v1/sessions",
+                             json={"assistant_id": "asst-research"},
+                             headers=user_headers)).json()["_id"]
+    # 不传该字段 → 保持
+    r1 = await client.patch(f"/api/v1/sessions/{sid}", json={"title": "x"}, headers=user_headers)
+    assert r1.json()["assistant_id"] == "asst-research"
+    # 显式传空 → 清空
+    r2 = await client.patch(f"/api/v1/sessions/{sid}", json={"assistant_id": ""},
+                            headers=user_headers)
+    assert not r2.json().get("assistant_id")
+    # 传非法 id → 404 且不改
+    r3 = await client.patch(f"/api/v1/sessions/{sid}", json={"assistant_id": "nope"},
+                            headers=user_headers)
+    assert r3.status_code == 404
+    assert not (await client.get("/api/v1/sessions", headers=user_headers)).json()[0].get(
+        "assistant_id")
+
+
+async def test_no_assistant_uses_platform_prompt_only(
+        app, client, admin_headers, user_headers, monkeypatch):
+    """无专家时：system prompt 有平台默认段、无 persona；工具是全部内置工具。
+
+    会话不带 assistant_id（也无助手可回落），须由 model_provider_id 显式提供模型；
+    观察方式复用 _capture_run_args：断言 AgentConfig 的实际装配结果。
+    """
+    provider = await _make_provider(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    sid = (await client.post("/api/v1/sessions",
+                             json={"model_provider_id": provider["_id"]},
+                             headers=user_headers)).json()["_id"]
+    await _chat_once(client, user_headers, sid)
+
+    prompt = captured[-1]["config"].system_prompt
+    tools = captured[-1]["config"].tool_names
+    assert "核心原则" in prompt                 # 平台默认段在
+    assert "科研助手" not in prompt              # 没有专家 persona
+    for name in ("file.read", "python.run", "skill.list", "skill.read"):
+        assert name in tools

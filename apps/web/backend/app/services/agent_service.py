@@ -117,19 +117,20 @@ class AgentService:
         """
         return self._runs.get(run_id)
 
-    async def chat(self, session_id: str, user: dict, assistant: dict,
+    async def chat(self, session_id: str, user: dict, assistant: dict | None,
                    provider_cfg: ModelProviderConfig, text: str,
                    workspace_root: Path,
                    requested_skills: list[str] | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
-        装配收口：平台默认段 + 专家 persona + 技能渐进披露（索引进提示词，
-        正文只经 skill.read 工具按需取）。
+        装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
+        提示词，正文只经 skill.read 工具按需取）。
 
         Args:
             session_id: 会话 id。
             user: 当前用户 payload（sub）。
-            assistant: 助手文档（system_prompt/tool_whitelist）。
+            assistant: 助手文档（system_prompt/tool_whitelist）；None 或空 dict
+                表示未选专家——无 persona、工具放开全部内置工具。
             provider_cfg: 已解密的模型服务配置。
             text: 用户消息文本。
             workspace_root: 工作区根目录（项目目录，由调用方经
@@ -206,19 +207,25 @@ class AgentService:
             index = [(s["name"], s["description"]) for s in active_skills]
             bodies = {s["name"]: self._skill_service.read_body(s["name"]) or ""
                       for s in active_skills}
+            persona = str((assistant or {}).get("system_prompt") or "").strip()
+            whitelist = list((assistant or {}).get("tool_whitelist") or [])
             system_prompt = build_system_prompt(
-                persona=assistant["system_prompt"],
+                persona=persona,
                 workspace=workspace_root,
                 skills=index,
             )
-            # 技能工具无条件追加（技能是平台能力）；set 去重防助手白名单已列
-            tool_names = list(dict.fromkeys(
-                [*(assistant.get("tool_whitelist") or []), *SKILL_TOOLS]))
+            # 无专家（或专家没限定工具）时放开全部内置工具；技能工具无条件
+            # 追加（技能是平台能力），set 去重防助手白名单已列
+            tool_names = (
+                list(dict.fromkeys([*whitelist, *SKILL_TOOLS]))
+                if whitelist
+                else list(_REGISTRY.names)
+            )
             session = RunSession(
                 config=AgentConfig(
                     system_prompt=system_prompt,
                     tool_names=tool_names,
-                    max_steps=assistant.get("max_steps", 25),
+                    max_steps=(assistant or {}).get("max_steps", 25),
                 ),
                 registry=_REGISTRY, pipeline=_PIPELINE, backend=backend,
                 event_log=log, user_id=user["sub"], run_id=run_id,
