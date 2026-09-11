@@ -274,8 +274,13 @@ interface ChatState {
   epoch: number
   /** 绑定会话并全量回放历史事件。 */
   loadHistory: (sessionId: string) => Promise<void>
-  /** 发送消息：optimistic 用户气泡 + SSE 流接收。 */
-  send: (text: string) => Promise<void>
+  /**
+   * 发送消息：optimistic 用户气泡 + SSE 流接收。
+   *
+   * @param text 消息文本。
+   * @param skills 本轮勾选的技能名（空/缺省 = 用全部可用技能，后端 requested_skills）。
+   */
+  send: (text: string, skills?: string[]) => Promise<void>
   /** 停止当前运行（POST cancel；失败兜底断开本地流）。 */
   stop: () => Promise<void>
   /** 清除错误提示。 */
@@ -330,7 +335,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  send: async (text) => {
+  send: async (text, skills) => {
     const trimmed = text.trim()
     const { sessionId, streaming, epoch } = get()
     if (!sessionId || !trimmed || streaming) return
@@ -350,7 +355,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await streamSse(
         `/api/v1/sessions/${sessionId}/messages`,
-        { text: trimmed },
+        // 本轮技能非空才带 skills 字段（缺省 = 全部可用技能，后端据此区分）
+        skills && skills.length ? { text: trimmed, skills } : { text: trimmed },
         (m) => {
           if (get().epoch !== epoch) return
           let ev: SessionEvent
