@@ -90,7 +90,11 @@ class ProjectService:
             project_id: 项目 id。
 
         Returns:
-            True 表示记录与目录都已彻底删除；项目不存在返回 False。
+            True 表示记录与目录都已彻底删除；目录删不掉但已改名为 trash 时返回
+            False（记录仍会被删除）；项目不存在返回 False。
+
+        Raises:
+            OSError: 删除与兜底改名均失败（记录会残留，目录名也未释放）。
         """
         project = await self.get(user_id, project_id)
         if project is None:
@@ -110,7 +114,7 @@ class ProjectService:
             项目文档；不存在或不属于该用户返回 None。
         """
         doc = await self._repo.get(project_id)
-        return doc if doc and doc["user_id"] == user_id else None
+        return doc if doc and doc.get("user_id") == user_id else None
 
     def root_for(self, project: dict) -> Path:
         """项目对应的磁盘根目录。
@@ -120,6 +124,9 @@ class ProjectService:
 
         Returns:
             {data_root}/workspaces/{user_id}/{dir_name} 路径（确保 files/output/tmp 存在）。
+
+        Raises:
+            ValueError: dir_name 为空、为 . / .. 或含路径分隔符（workspace.project_root 抛出）。
         """
         return workspace.project_root(
             self._data_root, project["user_id"], project["dir_name"])
@@ -141,7 +148,10 @@ class ProjectService:
         project = await self.get(user_id, project_id)
         if project is None:
             raise ValueError("项目不存在")
-        root = self.root_for(project)
+        # 一处 resolve、两侧同源：resolve_in_project 内部也用 root.resolve() 判边界，
+        # 再拿它做 entry.relative_to(root) 的相对基准。data_root 默认是相对路径
+        # （settings.data_dir = "../data"），未解析时 relative_to 必抛 ValueError。
+        root = self.root_for(project).resolve()
         target = workspace.resolve_in_project(root, rel)
         if not target.is_dir():
             raise ValueError("不是目录")
