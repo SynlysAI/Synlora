@@ -13,6 +13,7 @@ from app.api.files_api import router as files_router
 from app.api.models_api import router as models_router
 from app.api.projects_api import router as projects_router
 from app.api.sessions_api import router as sessions_router
+from app.api.skills_api import router as skills_router
 from app.core.settings import Settings
 from app.db.repos import (
     AssistantRepo,
@@ -26,6 +27,7 @@ from app.db.repos import (
 from app.db.store import create_store
 from app.services.agent_service import AgentService
 from app.services.project_service import ProjectService
+from app.services.skill_service import SkillService
 
 logger = logging.getLogger("synlys.web")
 
@@ -51,6 +53,8 @@ async def lifespan(app: FastAPI):
     app.state.event_repo = EventRepo(store)
     app.state.agent_service = AgentService(store, settings, app.state.event_repo)
     app.state.project_service = ProjectService(store, settings.data_root)
+    app.state.skill_service = SkillService(settings.data_root)
+    app.state.skill_service.seed_builtins()  # 幂等：内置技能是列表能列出它们的前提
     await seed_assistants(store)
     yield
     await store.close()
@@ -68,6 +72,7 @@ def create_app() -> FastAPI:
     app.include_router(files_router)
     app.include_router(project_files_router)
     app.include_router(projects_router)
+    app.include_router(skills_router)
 
     @app.get("/api/health")
     async def health() -> dict:
