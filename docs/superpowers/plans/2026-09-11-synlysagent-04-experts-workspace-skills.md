@@ -156,18 +156,19 @@ def test_remove_dir_renames_to_trash_when_locked(tmp_path: Path, monkeypatch):
     assert list(tmp_path.glob("proj.trash-*"))
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+> **审查后补的 6 个边界用例**（已落地在 `test_workspace_layout.py`，实现见下方 Step 3）：`test_project_root_rejects_illegal_dir_name`、`test_free_dir_name_rejects_empty_base`、`test_remove_project_dir_missing_target_is_true`、`test_remove_project_dir_trash_names_unique_with_same_timestamp`（用 `monkeypatch.setattr(workspace.time, "time", lambda: 1789101841)` 冻结时间戳）、`test_migrate_legacy_moves_partial_subdirs`、`test_migrate_legacy_resumes_after_partial`。
+
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd apps/web/backend && conda run -n synlysagent --no-capture-output python -m pytest tests/test_workspace_layout.py -v`
 Expected: FAIL — `AttributeError: module 'app.services.workspace' has no attribute 'project_root'`
 
 - [ ] **Step 3: 实现**
 
-在 `workspace.py` 追加（保留现有 `workspace_root` 供旧代码过渡，内部改为调用 `project_root`）：
+在 `workspace.py` 追加。（**已完成，以下是最终经过审查修复的实现，以此为准**；现有 `workspace_root` 只把内部子目录元组换成常量 `PROJECT_SUBDIRS`，**不要**让它委托 `project_root`——`migrate_legacy_layout` 依赖旧版 `{uid}/files` 的存在性探测，委托后会自我破坏。）
 
 ```python
-import re
-
+# 文件顶部 import：os / re / shutil / time / pathlib.Path / uuid.uuid4
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_一-鿿-]+")
 DEFAULT_PROJECT_DIR = "default"
 PROJECT_SUBDIRS = ("files", "output", "tmp")
@@ -180,7 +181,8 @@ def sanitize_dir_name(name: str) -> str:
         name: 用户输入的项目名。
 
     Returns:
-        只含字母/数字/下划线/连字符/中文的目录名；全被过滤时返回空串。
+        只含字母/数字/下划线/连字符/中文的目录名；全被过滤时返回空串
+        （调用方须对空串做回退或拒绝）。
     """
     return _SAFE_NAME.sub("_", name.strip()).strip("_")
 
@@ -191,11 +193,16 @@ def project_root(data_root: Path, user_id: str, dir_name: str) -> Path:
     Args:
         data_root: 数据根目录。
         user_id: 用户 sub。
-        dir_name: 已 sanitize 的目录名。
+        dir_name: 项目目录名（须非空且不含路径分隔符）。
 
     Returns:
         {data_root}/workspaces/{user_id}/{dir_name} 路径。
+
+    Raises:
+        ValueError: dir_name 为空、为 . / .. 或含路径分隔符（防止越界写出用户目录）。
     """
+    if not dir_name or dir_name in {".", ".."} or "/" in dir_name or "\\" in dir_name:
+        raise ValueError(f"非法项目目录名: {dir_name!r}")
     root = data_root / "workspaces" / user_id / dir_name
     for sub in PROJECT_SUBDIRS:
         (root / sub).mkdir(parents=True, exist_ok=True)
@@ -203,25 +210,33 @@ def project_root(data_root: Path, user_id: str, dir_name: str) -> Path:
 
 
 def migrate_legacy_layout(data_root: Path, user_id: str) -> bool:
-    """把旧版 {uid}/files|output|tmp 迁移进 {uid}/default/（幂等）。
+    """把旧版 {uid}/files|output|tmp 逐个子目录迁进 {uid}/default/（幂等）。
+
+    逐个子目录独立判断而非整体早退：只有部分子目录存在、或上次迁移中断时，
+    仍能把剩余目录搬过去，不会永久遗弃旧数据。
 
     Args:
         data_root: 数据根目录。
         user_id: 用户 sub。
 
     Returns:
-        True 表示本次执行了迁移，False 表示无需迁移。
+        True 表示本次至少搬动了一个子目录，False 表示无可迁移项。
+
+    Raises:
+        OSError: 底层文件操作失败（可能已部分迁移，下次调用会续迁剩余部分）。
     """
     user_dir = data_root / "workspaces" / user_id
     target = user_dir / DEFAULT_PROJECT_DIR
-    if target.exists() or not (user_dir / "files").is_dir():
-        return False
-    target.mkdir(parents=True, exist_ok=True)
+    moved = False
     for sub in PROJECT_SUBDIRS:
         src = user_dir / sub
-        if src.is_dir():
-            os.replace(src, target / sub)
-    return True
+        dst = target / sub
+        if not src.is_dir() or dst.exists():
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        os.replace(src, dst)
+        moved = True
+    return moved
 
 
 def resolve_in_project(root: Path, rel: str) -> Path:
@@ -248,12 +263,17 @@ def free_dir_name(user_dir: Path, base: str, taken: set[str]) -> str:
 
     Args:
         user_dir: 该用户的工作区目录（{data_root}/workspaces/{user_id}）。
-        base: sanitize 后的基础目录名。
+        base: sanitize 后的基础目录名（须非空）。
         taken: 仍被活跃项目引用的目录名集合。
 
     Returns:
         base 本身，或 base-2 / base-3 …
+
+    Raises:
+        ValueError: base 为空（调用方须先回退占位名或拒绝该请求）。
     """
+    if not base:
+        raise ValueError("base 不能为空（调用方须先回退占位名或拒绝该请求）")
     name = base
     i = 1
     while name in taken or (user_dir / name).exists():
@@ -263,13 +283,16 @@ def free_dir_name(user_dir: Path, base: str, taken: set[str]) -> str:
 
 
 def remove_project_dir(target: Path) -> bool:
-    """删除项目目录；失败则改名为 {name}.trash-{ts} 释放目录名并保住数据。
+    """删除项目目录；失败则改名为 {name}.trash-{时间戳}-{uuid 后缀} 释放目录名并保住数据。
 
     Args:
         target: 项目根目录。
 
     Returns:
         True 表示已彻底删除，False 表示退化为 trash 改名。
+
+    Raises:
+        OSError: 删除与兜底改名均失败（此时目录既未删除、名字也未释放）。
     """
     if not target.exists():
         return True
@@ -277,25 +300,33 @@ def remove_project_dir(target: Path) -> bool:
         shutil.rmtree(target)
         return True
     except OSError:
-        target.rename(target.with_name(f"{target.name}.trash-{int(time.time())}"))
-        return False
+        pass
+    # 时间戳 + uuid 后缀：Windows 上 time_ns() 实际粒度约 15ms，仅靠时间戳仍可能撞名
+    trash = target.with_name(f"{target.name}.trash-{int(time.time())}-{uuid4().hex[:8]}")
+    try:
+        target.rename(trash)
+    except OSError as exc:
+        raise OSError(f"删除项目目录失败且无法改名为 trash：{target}") from exc
+    return False
 ```
 
-（文件头补 `import os` / `import shutil` / `import time`。）
+> **审查修复记录**（初版有 5 处缺陷，已在提交 `308a185` / `b891364` 修掉，补了 6 个边界用例）：① `project_root` 不校验目录名会越界写出用户目录；② `free_dir_name` 空 base 静默返回 `""`/`"-2"`；③ trash 改名用秒级时间戳会撞名抛 `FileExistsError`，反而破坏「名字必被释放」的契约；④ `migrate_legacy_layout` 用 `target.exists()` 整体早退，只有 `output`/`tmp` 或迁移中断时会**永久遗弃旧数据**；⑤ `workspace_root` 硬编码子目录元组。
 
 > **为什么这样设计**：若删除只删记录、留目录，之后重建同名项目会命中 `mkdir(exist_ok=True)` 而**静默继承上一个项目的残留文件**；反之若强删目录，Windows 上文件被占用会让 `rmtree` 抛错、同样留下孤儿目录。`free_dir_name` 保证创建永不因重名失败，`remove_project_dir` 保证删除失败时目录名也能被释放。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cd apps/web/backend && conda run -n synlysagent --no-capture-output python -m pytest tests/test_workspace_layout.py -v`
-Expected: PASS（4 passed）
+Expected: PASS（12 passed）；全量后端 `pytest -q` → 105 passed / 16 skipped
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/backend/app/services/workspace.py apps/web/backend/tests/test_workspace_layout.py
 git commit -m "feat(web): 工作区多项目目录布局与旧数据迁移"
 ```
+
+> **本任务已完成**：`521a017`（初版）+ `308a185` / `b891364`（审查修复）。两轮审查（规格 + 代码质量 + 修复复验）均通过。
 
 ---
 
