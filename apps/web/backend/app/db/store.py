@@ -17,6 +17,7 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "sessions": ["user_id", "assistant_id", "updated_at"],
     "events": ["session_id", "seq"],
     "files": ["user_id"],
+    "projects": ["user_id"],
     "runs": ["session_id", "user_id", "status"],
     "local_users": ["username"],
 }

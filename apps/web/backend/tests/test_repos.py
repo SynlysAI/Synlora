@@ -6,6 +6,7 @@ from synlys_harness import EventType, SessionEvent
 from app.db.repos import (
     AssistantRepo,
     EventRepo,
+    ProjectRepo,
     ProviderRepo,
     RunRepo,
     SessionRepo,
@@ -191,3 +192,18 @@ async def test_seed_assistants_self_heals_missing(store):
     assert await store.get("assistants", "asst-data") is not None
     research = await store.get("assistants", "asst-research")
     assert research["name"] == "已有"  # 已存在条目不被种子覆盖
+
+
+async def test_project_create_and_list(store):
+    repo = ProjectRepo(store)
+    p = await repo.create(user_id="u1", name="我的项目", dir_name="我的项目")
+    assert p["name"] == "我的项目" and p["archived"] is False
+    assert [x["_id"] for x in await repo.list_for_user("u1")] == [p["_id"]]
+
+
+async def test_project_delete_removes_record(store):
+    repo = ProjectRepo(store)
+    p = await repo.create(user_id="u1", name="a", dir_name="a")
+    assert await repo.used_dir_names("u1") == {"a"}
+    assert await repo.delete(p["_id"]) is True
+    assert await repo.list_for_user("u1") == []

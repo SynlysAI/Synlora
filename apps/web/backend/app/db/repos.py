@@ -1,4 +1,4 @@
-"""六个 repository + 种子助手（基于 DocumentStore 的薄封装）。
+"""七个 repository + 种子助手（基于 DocumentStore 的薄封装）。
 
 统一模式：create 自动补 _id/created_at/updated_at；update 自动补 updated_at；
 get/list/delete 直接透传 store。
@@ -194,6 +194,78 @@ class AssistantRepo(BaseRepo):
         if doc.get("builtin"):
             raise ValueError("内置助手不可删除")
         return await self._store.delete(self.collection, doc_id)
+
+
+class ProjectRepo(BaseRepo):
+    """用户项目（目录名唯一性由 ProjectService 的 free_dir_name 保证，此处不校验）。"""
+
+    collection = "projects"
+
+    async def list_for_user(self, user_id: str) -> list[dict]:
+        """列出用户的未归档项目（updated_at 倒序）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            未归档项目文档列表。
+        """
+        docs = await self._store.list(self.collection, filters={"user_id": user_id})
+        return sorted(
+            (d for d in docs if not d.get("archived")),
+            key=lambda d: d.get("updated_at", 0), reverse=True,
+        )
+
+    async def create(self, *, user_id: str, name: str, dir_name: str) -> dict:
+        """新建项目（_id/created_at/updated_at 由 BaseRepo 补齐）。
+
+        Args:
+            user_id: 用户 sub。
+            name: 项目显示名（不要求唯一）。
+            dir_name: 项目目录名（调用方保证可用）。
+
+        Returns:
+            新建的项目文档。
+        """
+        return await super().create({
+            "user_id": user_id, "name": name, "dir_name": dir_name, "archived": False,
+        })
+
+    async def used_dir_names(self, user_id: str) -> set[str]:
+        """该用户仍被占用的目录名（供 free_dir_name 去重）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            目录名集合。
+        """
+        docs = await self._store.list(self.collection, filters={"user_id": user_id})
+        return {d["dir_name"] for d in docs}
+
+    async def delete(self, project_id: str) -> bool:
+        """删除项目记录。
+
+        Args:
+            project_id: 项目 id。
+
+        Returns:
+            True 表示确实删掉了记录。
+        """
+        return await self._store.delete(self.collection, project_id)
+
+    async def rename(self, project_id: str, *, name: str, dir_name: str) -> dict | None:
+        """改名（同步更新目录名，updated_at 由 BaseRepo 刷新）。
+
+        Args:
+            project_id: 项目 id。
+            name: 新显示名。
+            dir_name: 新目录名。
+
+        Returns:
+            更新后的文档；不存在返回 None。
+        """
+        return await super().update(project_id, {"name": name, "dir_name": dir_name})
 
 
 class EventRepo(BaseRepo):
