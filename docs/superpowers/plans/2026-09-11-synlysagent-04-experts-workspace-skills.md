@@ -1430,8 +1430,16 @@ tags:
 
 > **注意**：`name` 必须等于目录名（jiuwen `skill-spec.md` 的硬约束），扫描时以目录名为准。frontmatter **不声明 `tools`**（jiuwen 明确禁止，工具权限由系统分配）。
 
-- [ ] **Step 4: 跑测试确认通过**
-- [ ] **Step 5: Commit** — `feat(web): 技能文件服务（SKILL.md 扫描/解析/写入）`
+- [x] **Step 4: 跑测试确认通过**
+- [x] **Step 5: Commit** — `feat(web): 技能文件服务（SKILL.md 扫描/解析/写入）`
+
+> **本任务已完成**：`be70bd1`（初版）+ `9428851`（安全修复）。要点：
+> - **frontmatter 用 PyYAML 解析**（`pyyaml>=6.0` 已加入 `apps/web/backend/pyproject.toml` 并装进 conda 环境）。**不要改成手写解析器**——`description` 里含全角冒号与引号、`tags` 是列表，手写子集解析器会在这类边界悄悄出错；已有 2 条用例专门锁住这个（`test_frontmatter_handles_quotes_and_fullwidth_colon`、`test_write_skill_roundtrips_unicode_description`）。
+> - **⚠️ 安全**：`SkillService` 的 `name` 参数必须过 `NAME_OK` 正则校验后才可拼路径。初版只有 `write_skill` 校验，`delete_skill` **能删掉 `{data_root}/skills/` 之外的任意目录**、`read_body` **能读到根外的文件内容**（已实测）。现有语义：`write_skill` 非法名抛 `ValueError`；`read_body` 返回 `None`；`delete_skill` 返回 `False`。**以后新增任何收 `name` 的方法都必须先校验**。
+> - 内置种子随包声明在 `packages/synlys-harness/pyproject.toml` 的 `[tool.setuptools.package-data]`（已用 `pip wheel` 解包验证真的打进去了，不是靠 editable 源码树）。
+> - 技能名是 **kebab-case**（`^[a-z0-9]+(-[a-z0-9]+)*$`），且 frontmatter 的 `name` 必须等于目录名；**不解析 `tools` 字段**（jiuwen 明确禁止）。
+>
+> 后端测试 151 → 162 passed。
 
 ---
 
