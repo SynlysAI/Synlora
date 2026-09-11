@@ -35,10 +35,16 @@ from synlys_harness import (
     SessionEvent,
     ToolPipeline,
     ToolRegistry,
+    build_system_prompt,
     register_builtin_tools,
 )
 
+from app.services.skill_service import SkillService
+
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
+
+# 技能工具：无条件追加到助手白名单（技能是平台能力，不依赖助手自行声明）
+SKILL_TOOLS = ("skill.list", "skill.read")
 
 # 瞬态事件：每 token 一条，仅 SSE 推送、不落 JSONL/DB（见模块头注释）
 TRANSIENT = {EventType.LLM_DELTA, EventType.REASONING_DELTA}
@@ -67,17 +73,20 @@ class ActiveRun:
 class AgentService:
     """对话运行编排（单例，挂 app.state.agent_service）。"""
 
-    def __init__(self, store: Any, settings: Any, event_repo: Any) -> None:
+    def __init__(self, store: Any, settings: Any, event_repo: Any,
+                 skill_service: SkillService) -> None:
         """保存依赖。
 
         Args:
             store: DocumentStore（runs 直查直写）。
             settings: 应用配置（数据根/白名单）。
             event_repo: 会话事件 repo（DB 副本写入与回放）。
+            skill_service: 技能服务（磁盘扫描目录 + 按名取正文）。
         """
         self._store = store
         self._settings = settings
         self._event_repo = event_repo
+        self._skill_service = skill_service
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
@@ -110,8 +119,12 @@ class AgentService:
 
     async def chat(self, session_id: str, user: dict, assistant: dict,
                    provider_cfg: ModelProviderConfig, text: str,
-                   workspace_root: Path) -> str:
+                   workspace_root: Path,
+                   requested_skills: list[str] | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
+
+        装配收口：平台默认段 + 专家 persona + 技能渐进披露（索引进提示词，
+        正文只经 skill.read 工具按需取）。
 
         Args:
             session_id: 会话 id。
@@ -123,6 +136,7 @@ class AgentService:
                 ProjectService.resolve_active_project + root_for 解析后必传）。
                 必填而非回落用户目录：C6 把文件也项目作用域化后，用户目录下不会
                 再有 files/，静默回落等于把 run 跑在错误目录。
+            requested_skills: 本会话选中的技能名列表；None 或空列表表示全部可用。
 
         Returns:
             run_id。
@@ -181,15 +195,39 @@ class AgentService:
             backend = OpenAICompatibleBackend(provider_cfg)
             # 工作区根由调用方（sessions_api）按会话所属项目解析后传入；服务自身不拼路径
             workspace_root.mkdir(parents=True, exist_ok=True)
+            # 技能：全局目录（磁盘扫描）+ 本会话选中项（None/空 = 全部可用）；
+            # 索引进提示词，正文只入 context_extra（渐进披露，由 skill.read 按需取）
+            all_skills = self._skill_service.list_skills()
+            if requested_skills:
+                active_skills = [s for s in all_skills
+                                 if s["name"] in set(requested_skills)]
+            else:
+                active_skills = all_skills
+            index = [(s["name"], s["description"]) for s in active_skills]
+            bodies = {s["name"]: self._skill_service.read_body(s["name"]) or ""
+                      for s in active_skills}
+            system_prompt = build_system_prompt(
+                persona=assistant["system_prompt"],
+                workspace=workspace_root,
+                skills=index,
+            )
+            # 技能工具无条件追加（技能是平台能力）；set 去重防助手白名单已列
+            tool_names = list(dict.fromkeys(
+                [*(assistant.get("tool_whitelist") or []), *SKILL_TOOLS]))
             session = RunSession(
                 config=AgentConfig(
-                    system_prompt=assistant["system_prompt"],
-                    tool_names=assistant.get("tool_whitelist") or [],
+                    system_prompt=system_prompt,
+                    tool_names=tool_names,
+                    max_steps=assistant.get("max_steps", 25),
                 ),
                 registry=_REGISTRY, pipeline=_PIPELINE, backend=backend,
                 event_log=log, user_id=user["sub"], run_id=run_id,
                 workspace_root=workspace_root,
-                context_extra={"http_allowed_hosts": self._settings.allowed_hosts},
+                context_extra={
+                    "http_allowed_hosts": self._settings.allowed_hosts,
+                    "skills": bodies,
+                    "skill_meta": {s["name"]: s["description"] for s in active_skills},
+                },
             )
             active.session = session
             t = asyncio.create_task(

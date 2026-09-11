@@ -5,6 +5,7 @@ from .models.backend import (
     LLMBackend, ModelProviderConfig, OpenAICompatibleBackend, ReasoningDelta,
     TextDelta, ToolCallChunk, Usage,
 )
+from .prompts import build_system_prompt
 from .session import derive_messages
 from .tools.builtin import register_builtin_tools
 from .tools.pipeline import ToolPipeline
@@ -15,7 +16,7 @@ from .types import (
 )
 
 __all__ = [
-    "RunSession", "EventLog", "derive_messages",
+    "RunSession", "EventLog", "derive_messages", "build_system_prompt",
     "ToolRegistry", "tool", "ToolPipeline", "register_builtin_tools",
     "LLMBackend", "OpenAICompatibleBackend", "ModelProviderConfig",
     "TextDelta", "ReasoningDelta", "ToolCallChunk", "Usage",

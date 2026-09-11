@@ -51,10 +51,11 @@ async def lifespan(app: FastAPI):
     app.state.run_repo = RunRepo(store)
     app.state.file_repo = FileRepo(store)
     app.state.event_repo = EventRepo(store)
-    app.state.agent_service = AgentService(store, settings, app.state.event_repo)
     app.state.project_service = ProjectService(store, settings.data_root)
     app.state.skill_service = SkillService(settings.data_root)
     app.state.skill_service.seed_builtins()  # 幂等：内置技能是列表能列出它们的前提
+    app.state.agent_service = AgentService(
+        store, settings, app.state.event_repo, app.state.skill_service)
     await seed_assistants(store)
     yield
     await store.close()

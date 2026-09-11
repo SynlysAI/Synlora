@@ -952,6 +952,137 @@ async def test_agent_workspace_is_project_root(app, client, admin_headers,
     assert captured[-1] != user_dir
 
 
+# ---------- 平台提示词装配 / 技能渐进披露 ----------
+
+
+def _capture_run_args(monkeypatch) -> list[dict]:
+    """包住 agent_service.RunSession，记录每次构造的实参（观察实际装配结果）。
+
+    Args:
+        monkeypatch: pytest monkeypatch 夹具。
+
+    Returns:
+        逐轮累积的 kwargs 列表（新一轮对话 append 一项）。
+    """
+    captured: list[dict] = []
+    real_run_session = agent_service_mod.RunSession
+
+    def _wrapper(*args, **kwargs):
+        """记录 kwargs 后转交真实 RunSession。
+
+        Args:
+            args: RunSession 位置参数。
+            kwargs: RunSession 关键字参数（含 config/context_extra/workspace_root）。
+
+        Returns:
+            真实 RunSession 实例。
+        """
+        captured.append(kwargs)
+        return real_run_session(*args, **kwargs)
+
+    monkeypatch.setattr(agent_service_mod, "RunSession", _wrapper)
+    return captured
+
+
+async def test_system_prompt_contains_platform_sections_and_persona(
+        app, client, admin_headers, monkeypatch):
+    """system prompt = 平台默认段（SOUL/AGENT/工作区）+ 末尾追加专家 persona。
+
+    观察方式：包 agent_service 模块内的 RunSession，断言其 config.system_prompt。
+    """
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid)
+
+    prompt = captured[-1]["config"].system_prompt
+    # 平台默认段按 priority 拼入
+    assert "# 灵魂" in prompt and "核心原则" in prompt
+    assert "# 工作方式" in prompt
+    assert "# 工作区" in prompt
+    # {{workspace}} 已替换为工作区绝对路径（as_posix 形式）
+    workspace = captured[-1]["workspace_root"]
+    assert workspace.as_posix() in prompt
+    assert "{{workspace}}" not in prompt
+    # 专家 persona 追加在末尾
+    persona = (await app.state.assistant_repo.get("asst-data"))["system_prompt"]
+    assert persona in prompt
+    assert prompt.rstrip().endswith(persona.strip())
+
+
+async def test_skill_index_injected_and_tools_available(
+        app, client, admin_headers, monkeypatch):
+    """技能索引（名+描述）进提示词、skill.list/skill.read 进工具表与工具上下文。
+
+    同时守护渐进披露契约：技能正文绝不进 system prompt。
+    """
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid)
+
+    config = captured[-1]["config"]
+    prompt = config.system_prompt
+    assert "# 技能" in prompt
+    assert "`data-analysis`" in prompt
+    assert "`pdf-extraction`" in prompt
+    skill = next(s for s in app.state.skill_service.list_skills()
+                 if s["name"] == "data-analysis")
+    assert skill["description"] in prompt
+
+    # 工具表：助手白名单 + 两个技能工具（无条件追加，去重后各一次）
+    assert "skill.list" in config.tool_names
+    assert "skill.read" in config.tool_names
+    assert config.tool_names.count("skill.list") == 1
+    assert config.tool_names.count("skill.read") == 1
+
+    # 工具上下文：skill.read 按名取正文、skill.list 取描述
+    extra = captured[-1]["context_extra"]
+    assert extra["skills"]["data-analysis"] == skill["content"]
+    assert extra["skill_meta"]["data-analysis"] == skill["description"]
+
+    # 渐进披露：正文字符串不得出现在 system prompt 里（只有 skill.read 能取到）
+    assert "## 决策规则" not in prompt
+    assert skill["content"] not in prompt
+
+
+async def test_requested_skills_filter_index(app, client, admin_headers, monkeypatch):
+    """chat(requested_skills=...) 只装配选中技能（索引与工具上下文同步收窄）。"""
+    provider = await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    sid = await _make_session(client, admin_headers)
+
+    decrypted = await app.state.provider_repo.get_decrypted(provider["_id"])
+    cfg = ModelProviderConfig(
+        name=decrypted["name"], base_url=decrypted["base_url"],
+        api_key=decrypted["api_key"], model_id=decrypted["model_id"],
+    )
+    assistant = await app.state.assistant_repo.get("asst-data")
+    user = {"sub": "u-admin", "username": "tester-admin", "role": "admin"}
+    run_id = await app.state.agent_service.chat(
+        sid, user, assistant, cfg, "选中技能",
+        workspace_root=await _workspace_root(app, "u-admin"),
+        requested_skills=["data-analysis"])
+
+    prompt = captured[-1]["config"].system_prompt
+    assert "`data-analysis`" in prompt
+    assert "`pdf-extraction`" not in prompt
+    assert list(captured[-1]["context_extra"]["skills"]) == ["data-analysis"]
+
+    for _ in range(100):
+        run = await app.state.store.get("runs", run_id)
+        if run and run["status"] != "running":
+            break
+        await asyncio.sleep(0.05)
+    assert run is not None and run["status"] == "completed"
+
+
 async def test_concurrent_resolve_seeds_single_default_project(app):
     """并发首次解析项目只建一个默认项目，且两次解析是同一个项目（C-1 回归）。
 
