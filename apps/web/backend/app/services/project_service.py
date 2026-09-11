@@ -179,9 +179,49 @@ class ProjectService:
             logger.warning("项目目录未能删除，已改名为 trash：%s", project["dir_name"])
         return True
 
+    async def rename_project(self, user_id: str, project_id: str, name: str) -> dict:
+        """重命名项目：显示名与磁盘目录名同步改。
+
+        目录名按新名字重新 sanitize；与其它项目冲突时自动加后缀（重命名不会因重名失败）。
+        **物理目录改名刻意放在记录更新之前**：改名失败（目录被占用等）就整体抛错、
+        记录保持原样，避免出现「显示名已改、磁盘还是旧目录名」的不一致状态。
+
+        Args:
+            user_id: 用户 sub。
+            project_id: 项目 id。
+            name: 新显示名。
+
+        Returns:
+            更新后的项目文档。
+
+        Raises:
+            ValueError: 新名字全被过滤为空，或项目不存在。
+            OSError: 磁盘目录改名失败（目录被占用等）。
+        """
+        base = workspace.sanitize_dir_name(name)
+        if not base:
+            raise ValueError("项目名不合法")
+        project = await self.get(user_id, project_id)
+        if project is None:
+            raise ValueError("项目不存在")
+        user_dir = self._data_root / "workspaces" / user_id
+        old_dir = project["dir_name"]
+        async with self._lock_for(user_id):
+            if base == old_dir:
+                new_dir = old_dir
+            else:
+                taken = await self._repo.used_dir_names(user_id)
+                taken.discard(old_dir)  # 自己不算占用，否则会被判成冲突而加后缀
+                new_dir = workspace.free_dir_name(user_dir, base, taken)
+            if new_dir != old_dir:
+                src = user_dir / old_dir
+                if src.is_dir():
+                    src.rename(user_dir / new_dir)
+            return await self._repo.rename(
+                project_id, name=name.strip(), dir_name=new_dir)
+
     async def get(self, user_id: str, project_id: str) -> dict | None:
         """取项目（校验归属）。
-
         Args:
             user_id: 用户 sub。
             project_id: 项目 id。

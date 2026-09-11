@@ -51,6 +51,35 @@ async def create_project(request: Request, body: ProjectCreateBody,
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.patch("/{pid}")
+async def rename_project(request: Request, pid: str, body: ProjectCreateBody,
+                         user=Depends(get_current_user)):
+    """重命名项目（显示名与磁盘目录名同步改）。
+
+    Args:
+        request: FastAPI 请求。
+        pid: 项目 id。
+        body: 请求体（新项目名）。
+        user: 当前登录用户。
+
+    Returns:
+        更新后的项目文档。
+
+    Raises:
+        HTTPException: 404 项目不存在；422 项目名不合法；
+            409 磁盘目录改名失败（被占用等，此时记录未变）。
+    """
+    service = request.app.state.project_service
+    if await service.get(user["sub"], pid) is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    try:
+        return await service.rename_project(user["sub"], pid, body.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"目录改名失败：{exc}") from exc
+
+
 @router.delete("/{pid}")
 async def delete_project(request: Request, pid: str, user=Depends(get_current_user)):
     """删除项目（记录 + 磁盘目录）。

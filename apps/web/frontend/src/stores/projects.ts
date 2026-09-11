@@ -27,6 +27,10 @@ interface ProjectsState {
   load: () => Promise<void>
   /** 新建项目并切为当前（重名后端自动加目录后缀，不失败）。 */
   create: (name: string) => Promise<Project>
+  /** 重命名项目（后端同步改磁盘目录名；重名自动加后缀）。 */
+  rename: (id: string, name: string) => Promise<Project>
+  /** 删除项目（记录 + 磁盘目录；其下会话由 Sidebar 归入默认工作区，不级联删除）。 */
+  remove: (id: string) => Promise<void>
   /** 切换当前项目。 */
   setCurrent: (id: string | null) => void
   /** 清空全部状态（切换账号时调用，防止上一账号的项目被新账号引用）。 */
@@ -54,6 +58,26 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
     // 新项目置于列表尾并选中（后端按创建序返回，插入位置与之保持一致）
     set((s) => ({ projects: [...s.projects, project], currentId: project._id }))
     return project
+  },
+
+  rename: async (id, name) => {
+    const project = await api<Project>(`/api/v1/projects/${id}`, {
+      method: 'PATCH',
+      body: { name },
+    })
+    set((s) => ({
+      projects: s.projects.map((p) => (p._id === id ? project : p)),
+    }))
+    return project
+  },
+
+  remove: async (id) => {
+    await api(`/api/v1/projects/${id}`, { method: 'DELETE' })
+    set((s) => ({
+      projects: s.projects.filter((p) => p._id !== id),
+      // 删掉的正是当前选中 → 回到「未选」，消费侧回落默认工作区
+      currentId: s.currentId === id ? null : s.currentId,
+    }))
   },
 
   setCurrent: (id) => set({ currentId: id }),

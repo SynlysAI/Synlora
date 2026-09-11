@@ -64,3 +64,47 @@ async def test_list_projects_without_token_401(client):
     """未带认证头访问项目列表应 401。"""
     r = await client.get("/api/v1/projects")
     assert r.status_code == 401
+
+
+async def test_rename_project_moves_dir(client, user_headers):
+    """重命名：显示名与磁盘目录名同步改，旧目录不再存在。"""
+    pid = (await client.post("/api/v1/projects", json={"name": "旧名"},
+                             headers=user_headers)).json()["_id"]
+    r = await client.patch(f"/api/v1/projects/{pid}", json={"name": "新名"},
+                           headers=user_headers)
+    assert r.status_code == 200
+    assert r.json()["name"] == "新名" and r.json()["dir_name"] == "新名"
+
+    listing = (await client.get("/api/v1/projects", headers=user_headers)).json()
+    assert [p["name"] for p in listing] == ["新名"]
+    # 目录树仍可用（root_for 走的是新目录名）
+    tree = await client.get(f"/api/v1/projects/{pid}/tree", headers=user_headers)
+    assert tree.status_code == 200
+
+
+async def test_rename_same_name_is_noop(client, user_headers):
+    """改成同名：不加后缀、不报错。"""
+    pid = (await client.post("/api/v1/projects", json={"name": "同名"},
+                             headers=user_headers)).json()["_id"]
+    r = await client.patch(f"/api/v1/projects/{pid}", json={"name": "同名"},
+                           headers=user_headers)
+    assert r.status_code == 200 and r.json()["dir_name"] == "同名"
+
+
+async def test_rename_onto_existing_name_gets_suffix(client, user_headers):
+    """改成已被占用的名字：自动加后缀，不失败、不覆盖别人。"""
+    await client.post("/api/v1/projects", json={"name": "被占"}, headers=user_headers)
+    pid = (await client.post("/api/v1/projects", json={"name": "另一个"},
+                             headers=user_headers)).json()["_id"]
+    r = await client.patch(f"/api/v1/projects/{pid}", json={"name": "被占"},
+                           headers=user_headers)
+    assert r.status_code == 200 and r.json()["dir_name"] == "被占-2"
+
+
+async def test_rename_missing_404_and_bad_name_422(client, user_headers):
+    assert (await client.patch("/api/v1/projects/nope", json={"name": "x"},
+                               headers=user_headers)).status_code == 404
+    pid = (await client.post("/api/v1/projects", json={"name": "p"},
+                             headers=user_headers)).json()["_id"]
+    assert (await client.patch(f"/api/v1/projects/{pid}", json={"name": "   "},
+                               headers=user_headers)).status_code == 422
