@@ -1,6 +1,6 @@
 /**
  * 工具调用展示（逐结构照抄 Jiuwen tool-tree-item）：
- * - 单行：分类图标 + 可读动作描述（执行中=扫光，失败=暗红）+ hover 浮现的展开箭头
+ * - 单行：分类图标 + 可读动作描述（执行中=旋转 loader + 扫光，失败=暗红）+ hover 浮现的展开箭头
  * - 点击行内展开详情卡（浅卡片底，分块：参数 / 结果），grid rows 平滑下拉
  * - 与思考面板、正文同列对齐；默认收起，仅用户点击展开
  */
@@ -49,6 +49,18 @@ function CategoryIcon({ category }: { category: Category }) {
           <path d="M13.4 4.6a2.7 2.7 0 0 0-3.3 3.4l-5 5a1.3 1.3 0 1 0 1.9 1.9l5-5a2.7 2.7 0 0 0 3.4-3.3l-2 2-1.9-.1-.1-1.9 2-2z" />
         </svg>
       )}
+    </span>
+  )
+}
+
+/** 执行中图标（Jiuwen turn-elapsed__spinner 同款：旋转 loader，替代静态分类图标）。 */
+function RunningIcon() {
+  return (
+    <span className="flex h-[14px] w-[14px] shrink-0 items-center justify-center text-[var(--sa-alias-label-tertiary)]" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" className="h-[13px] w-[13px] animate-spin">
+        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+        <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      </svg>
     </span>
   )
 }
@@ -106,7 +118,7 @@ export default function ToolCallCard({ call, result }: ToolCallCardProps) {
         aria-expanded={open}
         className="-mx-2 flex w-[calc(100%+16px)] items-center gap-2 rounded-[7px] border-0 bg-transparent px-2 py-1 text-left transition-colors duration-150 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
       >
-        <CategoryIcon category={categorize(name)} />
+        {running ? <RunningIcon /> : <CategoryIcon category={categorize(name)} />}
         <span
           className={`min-w-0 flex-1 truncate text-[12px] font-medium leading-[1.3] ${
             running
