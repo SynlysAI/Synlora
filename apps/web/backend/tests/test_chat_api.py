@@ -10,7 +10,9 @@ import json
 from typing import ClassVar
 
 import pytest
-from synlys_harness import ModelProviderConfig, TextDelta, ToolCallChunk, Usage
+from synlys_harness import (
+    ModelProviderConfig, ReasoningDelta, TextDelta, ToolCallChunk, Usage,
+)
 
 PROVIDER_BODY = {
     "name": "chat-mock",
@@ -207,19 +209,19 @@ async def test_full_tool_chain(app, client, admin_headers, monkeypatch):
     assert "42" in tool_result["content"]
     assert events[-2][1]["payload"]["content"] == "答案是 42"
 
-    # JSONL 回放源：行数与事件数一致
+    # JSONL 回放源：瞬态 llm/delta 不落盘，行数 = 结构事件数（7 - 1）
     jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
     assert jsonl.exists()
     lines = jsonl.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == len(events) == 7
+    assert len(lines) == len(events) - 1 == 6
     assert json.loads(lines[0])["type"] == "turn/start"
 
-    # DB 副本等量返回，after_seq 增量过滤正确
+    # DB 副本：不含瞬态 delta（seq 4 缺位成洞），after_seq 增量过滤正确
     r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
     assert r.status_code == 200
     replayed = r.json()
-    assert [e["seq"] for e in replayed] == list(range(7))
-    assert [e["type"] for e in replayed] == types
+    assert [e["seq"] for e in replayed] == [0, 1, 2, 3, 5, 6]
+    assert [e["type"] for e in replayed] == [t for t in types if t != "llm/delta"]
     r = await client.get(f"/api/v1/sessions/{sid}/events?after_seq=5",
                          headers=admin_headers)
     assert [e["seq"] for e in r.json()] == [6]
@@ -251,6 +253,81 @@ async def test_plain_text_chat(app, client, admin_headers, monkeypatch):
     assert events[-2][1]["payload"]["content"] == "你好，我是助手"
 
 
+# ---------- 瞬态事件不落盘（流式性能：每 token 一次 fsync 拖慢流式） ----------
+
+
+async def test_transient_deltas_streamed_but_not_persisted(
+        app, client, admin_headers, monkeypatch):
+    """瞬态 delta：SSE 全量收到 llm/delta，DB/JSONL 只落结构事件（seq 有洞）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[
+        TextDelta(text="你"), TextDelta(text="好"), TextDelta(text="呀"), Usage(),
+    ]]
+    sid = await _make_session(client, admin_headers)
+
+    resp = await client.post(f"/api/v1/sessions/{sid}/messages",
+                             headers=admin_headers, json={"text": "你好"})
+    assert resp.status_code == 200, resp.text
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    # SSE 不过滤：3 个 llm/delta 全部推送
+    assert types == ["turn/start", "user/message",
+                     "llm/delta", "llm/delta", "llm/delta",
+                     "assistant/message", "turn/end"]
+
+    # DB 回放：不含 llm/delta 但含 assistant/message；delta 占号不落盘 → seq 有洞
+    r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
+    replayed = r.json()
+    assert [e["type"] for e in replayed] == [
+        "turn/start", "user/message", "assistant/message", "turn/end",
+    ]
+    assert [e["seq"] for e in replayed] == [0, 1, 5, 6]  # seq 2/3/4 被 3 个 delta 占用
+
+    # JSONL 行数 = 结构事件数（4），同样不含瞬态
+    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    lines = jsonl.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 4
+    assert all(json.loads(line)["type"] != "llm/delta" for line in lines)
+
+
+async def test_reasoning_streamed_and_replayed(app, client, admin_headers, monkeypatch):
+    """思考链路：SSE 收 reasoning/delta 与 assistant/reasoning 定稿；回放含定稿不含瞬态。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[
+        ReasoningDelta(text="先想"), ReasoningDelta(text="一想"),
+        TextDelta(text="答"), Usage(prompt_tokens=7, completion_tokens=4),
+    ]]
+    sid = await _make_session(client, admin_headers)
+
+    resp = await client.post(f"/api/v1/sessions/{sid}/messages",
+                             headers=admin_headers, json={"text": "想想再答"})
+    assert resp.status_code == 200, resp.text
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    assert types == [
+        "turn/start", "user/message",
+        "reasoning/delta", "reasoning/delta", "llm/delta",
+        "assistant/reasoning", "assistant/message", "turn/end",
+    ]
+    idx = types.index("assistant/reasoning")
+    assert events[idx][1]["payload"]["content"] == "先想一想"
+    # turn/end payload 透传 usage
+    assert events[-1][1]["payload"]["usage"] == {
+        "prompt_tokens": 7, "completion_tokens": 4,
+    }
+
+    # 回放：定稿 assistant/reasoning 在场、瞬态 reasoning/delta 不落盘
+    r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
+    replayed = r.json()
+    assert [e["type"] for e in replayed] == [
+        "turn/start", "user/message", "assistant/reasoning",
+        "assistant/message", "turn/end",
+    ]
+    assert [e["seq"] for e in replayed] == [0, 1, 5, 6, 7]  # seq 2/3/4 被瞬态占用
+
+
 # ---------- 多轮会话：事件 seq 连续 + 对话记忆 ----------
 
 
@@ -271,18 +348,19 @@ async def test_multi_turn_events_persist_and_context(app, client, admin_headers,
                            headers=admin_headers, json={"text": "第二问"})
     assert r2.status_code == 200, r2.text
 
-    # DB 副本：两轮全部 10 个事件，seq 从 0 连续无重复（碰撞会被静默吞掉 → 缺失即红）
+    # DB 副本：两轮 8 条结构事件（每轮 1 个 llm/delta 瞬态不落盘），seq 有洞且无重复
+    # （碰撞写入会被静默吞掉 → 重复即红；洞位是瞬态占号的预期产物）
     r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
     replayed = r.json()
-    assert [e["seq"] for e in replayed] == list(range(10))
+    assert [e["seq"] for e in replayed] == [0, 1, 3, 4, 5, 6, 8, 9]
     user_texts = [e["payload"]["text"] for e in replayed
                   if e["type"] == "user/message"]
     assert user_texts == ["第一问", "第二问"]
 
-    # JSONL 回放源同样 seq 连续无重复
+    # JSONL 回放源同样只落结构事件（seq 与 DB 一致）
     jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
     lines = jsonl.read_text(encoding="utf-8").splitlines()
-    assert [json.loads(line)["seq"] for line in lines] == list(range(10))
+    assert [json.loads(line)["seq"] for line in lines] == [0, 1, 3, 4, 5, 6, 8, 9]
 
     # 第二轮 LLM 收到第一轮的 user/assistant 消息（对话记忆存在）
     msgs = FakeBackend.received[-1]
@@ -325,10 +403,10 @@ async def test_same_session_concurrent_rejected(app, client, admin_headers, monk
     winner_text = next(p["payload"]["text"] for t, p in ok_events
                        if t == "user/message")
 
-    # 胜者完整落盘：GET events 的 seq 连续无重复，仅一条 user/message
+    # 胜者完整落盘：GET events 的 seq 有洞（瞬态 delta 占号）无重复，仅一条 user/message
     r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
     replayed = r.json()
-    assert [e["seq"] for e in replayed] == list(range(5))
+    assert [e["seq"] for e in replayed] == [0, 1, 3, 4]
     user_texts = [e["payload"]["text"] for e in replayed
                   if e["type"] == "user/message"]
     assert user_texts == [winner_text]

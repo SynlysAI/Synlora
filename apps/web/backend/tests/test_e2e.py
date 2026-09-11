@@ -5,8 +5,8 @@ E2E-1 数据分析闭环（设计文档 §9 场景 2 后端侧）：上传 CSV �
 → 均值写入 output/result.txt → SSE 事件完整 + 产物真实落盘 + 计数正确。
 
 E2E-2 断连恢复：消息不经 SSE 消费（等价客户端断连）→ _drive 后台独立完成
-→ 轮询 GET events 补齐第一轮 → 第二轮正常收流 → 两轮 seq 全程连续且
-after_seq 增量恰好返回第二轮。
+→ 轮询 GET events 补齐第一轮 → 第二轮正常收流 → 两轮 seq 全程无重复
+（瞬态 delta 不落盘留有洞位）且 after_seq 增量恰好返回第二轮。
 """
 import asyncio
 
@@ -89,10 +89,10 @@ async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     assert result_txt.exists(), f"产物未落盘: {result_txt}"
     assert result_txt.read_text(encoding="utf-8") == "mean_a=2\nmean_b=3\n"
 
-    # 6. 回放事件完整（seq 连续、turn/end 收尾）+ 首条消息计数为 1
+    # 6. 回放事件完整（不含瞬态 llm/delta，seq 4 缺位成洞、turn/end 收尾）+ 首条消息计数为 1
     r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
     replayed = r.json()
-    assert [e["seq"] for e in replayed] == list(range(7))
+    assert [e["seq"] for e in replayed] == [0, 1, 2, 3, 5, 6]
     assert replayed[-1]["type"] == "turn/end"
     r = await client.get("/api/v1/sessions", headers=admin_headers)
     mine = next(s for s in r.json() if s["_id"] == sid)
@@ -144,13 +144,14 @@ async def test_e2e_disconnect_recovery(app, client, admin_headers, monkeypatch):
     user = {"sub": "u-admin", "username": "tester-admin", "role": "admin"}
     await app.state.agent_service.chat(sid, user, assistant, cfg, "第一条（断连）")
 
-    # 2. 轮询 GET events 直到第一轮 turn/end（客户端重连补齐语义）
+    # 2. 轮询 GET events 直到第一轮 turn/end（客户端重连补齐语义）；
+    #    回放不含瞬态 llm/delta（seq 2 缺位成洞），全文由 assistant/message 承载
     first = await _poll_events_until_turn_end(client, admin_headers, sid)
     assert [e["type"] for e in first] == [
-        "turn/start", "user/message", "llm/delta", "assistant/message", "turn/end",
+        "turn/start", "user/message", "assistant/message", "turn/end",
     ]
     first_last_seq = first[-1]["seq"]
-    assert first_last_seq == 4  # 第一轮 5 个事件 seq 0..4
+    assert first_last_seq == 4  # 第一轮 5 个事件占号 seq 0..4（其中 seq 2 为瞬态）
 
     # 3. 第二条消息正常走 HTTP + SSE
     resp = await client.post(f"/api/v1/sessions/{sid}/messages",
@@ -158,19 +159,19 @@ async def test_e2e_disconnect_recovery(app, client, admin_headers, monkeypatch):
     assert resp.status_code == 200, resp.text
     assert parse_sse(resp.text)[-1][0] == "turn/end"
 
-    # 4. 两轮齐全：seq 0..9 全程连续、两条 user 消息按序在场
+    # 4. 两轮齐全：seq 全程无重复（每轮一个瞬态洞位）、两条 user 消息按序在场
     r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)
     replayed = r.json()
-    assert [e["seq"] for e in replayed] == list(range(10))
+    assert [e["seq"] for e in replayed] == [0, 1, 3, 4, 5, 6, 8, 9]
     user_texts = [e["payload"]["text"] for e in replayed
                   if e["type"] == "user/message"]
     assert user_texts == ["第一条（断连）", "第二条（重连）"]
 
-    # 5. after_seq=第一轮最后 seq → 增量恰好返回第二轮（seq 5..9）
+    # 5. after_seq=第一轮最后 seq → 增量恰好返回第二轮（seq 5..9 去掉瞬态洞 7）
     r = await client.get(f"/api/v1/sessions/{sid}/events?after_seq={first_last_seq}",
                          headers=admin_headers)
     tail = r.json()
-    assert [e["seq"] for e in tail] == list(range(5, 10))
+    assert [e["seq"] for e in tail] == [5, 6, 8, 9]
     assert tail[0]["type"] == "turn/start"
     assert tail[-1]["type"] == "turn/end"
     tail_user = [e["payload"]["text"] for e in tail if e["type"] == "user/message"]

@@ -3,6 +3,11 @@
 事件事实源：DB 事件为查询/回放事实源（GET events、seed 历史均读 DB），
 JSONL 为审计副本（当前无人消费，漂移可接受）。
 
+瞬态事件不落盘（流式性能）：llm/delta、reasoning/delta 每 token 一条，
+逐条落 JSONL/DB 等于每 token 一次 fsync，拖慢流式；故两类 delta 仅推
+SSE，不写 JSONL/DB（seq 仍由 EventLog 分配，持久层出现 seq 洞，回放由
+assistant/message、assistant/reasoning 等结构事件承载全文）。
+
 遵守 Plan 2 harness 接入契约：
 - sink 不得抛异常（宿主 sink 全包 try/except，持久化失败不杀对话）；
 - SSE 推送只 put 内存队列，绝不等待消费者（慢客户端不拖 LLM 流）；
@@ -23,6 +28,7 @@ from typing import Any
 from synlys_harness import (
     AgentConfig,
     EventLog,
+    EventType,
     ModelProviderConfig,
     OpenAICompatibleBackend,
     RunSession,
@@ -33,6 +39,9 @@ from synlys_harness import (
 )
 
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
+
+# 瞬态事件：每 token 一条，仅 SSE 推送、不落 JSONL/DB（见模块头注释）
+TRANSIENT = {EventType.LLM_DELTA, EventType.REASONING_DELTA}
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -134,7 +143,9 @@ class AgentService:
             self._runs[run_id] = active
 
             async def jsonl_sink(event: SessionEvent) -> None:
-                """事件追加 JSONL（审计副本；契约：不得抛异常）。"""
+                """事件追加 JSONL（审计副本；瞬态不落盘；契约：不得抛异常）。"""
+                if event.type in TRANSIENT:
+                    return
                 try:
                     with self._jsonl_path(session_id).open("a", encoding="utf-8") as f:
                         f.write(event.model_dump_json() + "\n")
@@ -142,20 +153,23 @@ class AgentService:
                     pass
 
             async def db_sink(event: SessionEvent) -> None:
-                """事件写 DB 副本 + SSE 队列只 put（契约：不得抛异常、不等待消费者）。"""
-                try:
-                    await self._event_repo.append(session_id, event)
-                except Exception:
-                    pass
+                """事件写 DB 副本（瞬态不写）+ SSE 队列只 put 不过滤（契约：不得抛异常、不等待消费者）。"""
+                if event.type not in TRANSIENT:
+                    try:
+                        await self._event_repo.append(session_id, event)
+                    except Exception:
+                        pass
                 try:
                     active.queue.put_nowait(event)
                 except Exception:
                     pass
 
             log = EventLog(sinks=[jsonl_sink, db_sink])
-            # 会话级 seq 连续性依赖 seed 恢复：用 DB 历史事件预填充本轮日志，
-            # 使 seq 跨轮续号（DB _id=f"{sid}:{seq}" 不碰撞）、derive_messages
-            # 能投影出前几轮消息（LLM 对话记忆）；首轮会话历史为空跳过。
+            # 会话级 seq 续号依赖 seed 恢复：用 DB 历史事件预填充本轮日志，
+            # 使 seq 跨轮续号（DB _id=f"{sid}:{seq}" 不碰撞，append 取
+            # last.seq+1 不撞洞）、derive_messages 能投影出前几轮消息
+            # （LLM 对话记忆）；历史因瞬态过滤带 seq 洞，seed 容忍严格递增；
+            # 首轮会话历史为空跳过。
             history = await self._event_repo.list_events(session_id)
             if history:
                 log.seed(history)
