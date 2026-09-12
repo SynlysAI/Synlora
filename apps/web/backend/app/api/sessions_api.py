@@ -79,6 +79,7 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
         base_url=str(decrypted.get("base_url", "")),
         api_key=str(decrypted.get("api_key", "")),
         model_id=str(decrypted.get("model_id", "")),
+        multimodal=bool(decrypted.get("multimodal")),
     )
 
 
@@ -332,3 +333,53 @@ async def cancel_run(run_id: str, request: Request,
         raise HTTPException(404, "运行不存在")
     ok = await _agent_service(request).cancel(run_id)
     return {"ok": ok}
+
+
+class SteerIn(BaseModel):
+    """运行中插话请求体（steering：不打断当前步骤，下一步生效）。"""
+
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def _strip_non_empty(cls, v: str) -> str:
+        """去首尾空白且拒绝空白串。"""
+        if not v.strip():
+            raise ValueError("text 不能为空")
+        return v.strip()
+
+
+@router.post("/runs/{run_id}/steer")
+async def steer_run(run_id: str, body: SteerIn, request: Request,
+                    user=Depends(get_current_user),
+                    repos=Depends(get_repos)) -> dict:
+    """运行中插话（下一个 step 边界注入为 user 消息并经事件流可见）。
+
+    Raises:
+        HTTPException: run 不存在或非本人（404）、run 已结束（409）。
+    """
+    run = await repos.run.get(run_id)
+    if run is None or run.get("user_id") != user["sub"]:
+        raise HTTPException(404, "运行不存在")
+    ok = await _agent_service(request).steer(run_id, body.text)
+    if not ok:
+        raise HTTPException(409, "运行已结束，无法插话")
+    return {"ok": True}
+
+
+@router.post("/runs/{run_id}/answer")
+async def answer_run(run_id: str, body: SteerIn, request: Request,
+                     user=Depends(get_current_user),
+                     repos=Depends(get_repos)) -> dict:
+    """回答运行中 ask_user 提出的问题（resolve 等待中的 future，工具随即返回）。
+
+    Raises:
+        HTTPException: run 不存在或非本人（404）、当前无待回答问题（409）。
+    """
+    run = await repos.run.get(run_id)
+    if run is None or run.get("user_id") != user["sub"]:
+        raise HTTPException(404, "运行不存在")
+    ok = await _agent_service(request).answer(run_id, body.text)
+    if not ok:
+        raise HTTPException(409, "当前没有等待回答的问题")
+    return {"ok": True}

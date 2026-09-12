@@ -13,9 +13,10 @@ type Category = 'file' | 'search' | 'code' | 'system' | 'other'
 /** 工具名 → 分类。 */
 function categorize(name: string): Category {
   if (name.startsWith('file.')) return 'file'
-  if (name === 'knowledge.search') return 'search'
+  if (name === 'knowledge.search' || name === 'knowledge.list' || name === 'web.search') return 'search'
+  if (name === 'file.read_image' || name === 'ask_user' || name === 'file.send') return 'file'
   if (name === 'python.run') return 'code'
-  if (name === 'http.request') return 'system'
+  if (name === 'http.request' || name === 'web.fetch') return 'system'
   return 'other'
 }
 
@@ -82,8 +83,22 @@ function describe(name: string, args: Record<string, unknown>): string {
       return `列出 ${brief(args.path || '.')} 目录`
     case 'python.run':
       return `执行 Python 代码`
-    case 'knowledge.search':
-      return `检索「${brief(args.query, 18)}」`
+    case 'file.read_image':
+      return `查看图片 ${brief(args.path, 24)}`
+    case 'ask_user':
+      return `提问：${brief(args.query, 20)}`
+    case 'file.send':
+      return `发送文件 ${brief(args.path, 24)}`
+    case 'web.search':
+      return `联网搜索「${brief(args.query, 18)}」`
+    case 'web.fetch':
+      return `读取网页 ${brief(args.url, 30)}`
+    case 'knowledge.list':
+      return `查看可用知识库`
+    case 'knowledge.search': {
+      const kbs = Array.isArray(args.knowledge_base_ids) ? args.knowledge_base_ids.length : 0
+      return kbs ? `检索「${brief(args.query, 18)}」（${kbs} 个库）` : `检索「${brief(args.query, 18)}」`
+    }
     case 'http.request':
       return `请求 ${brief(args.url, 28)}`
     default:

@@ -35,6 +35,22 @@ export type ChatItem =
       finishedTs?: number
     }
   | { kind: 'tool'; call: ToolCallPayload; result?: ToolResultPayload }
+  | {
+      /** ask_user 问题卡（ask/user 事件；answer 由配对的 tool/result 回填）。 */
+      kind: 'ask_user'
+      callId: string
+      query: string
+      options: { label: string; description?: string }[]
+      answer?: string
+    }
+  | {
+      /** file.send 交付卡（file/send 事件；fileId 走既有下载端点）。 */
+      kind: 'file_send'
+      fileId: string
+      filename: string
+      size: number
+      note?: string
+    }
 
 /** reducer 工作状态：条目列表 + 流式正文/思考累积 + 本轮起始时间。 */
 export interface ChatProjection {
@@ -199,6 +215,25 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
         thinkingText: '',
       }
     }
+    case 'ask/user': {
+      const item: ChatItem = {
+        kind: 'ask_user',
+        callId: String(payload.tool_call_id ?? ''),
+        query: String(payload.query ?? ''),
+        options: (payload.options as { label: string; description?: string }[] | undefined) ?? [],
+      }
+      return { ...state, items: [...state.items, item] }
+    }
+    case 'file/send': {
+      const item: ChatItem = {
+        kind: 'file_send',
+        fileId: String(payload.file_id ?? ''),
+        filename: String(payload.filename ?? ''),
+        size: Number(payload.size ?? 0),
+        note: payload.note ? String(payload.note) : undefined,
+      }
+      return { ...state, items: [...state.items, item] }
+    }
     case 'tool/result': {
       // 由后往前配对最近的同 id 未配对 tool 条目
       const result = payload as unknown as ToolResultPayload
@@ -206,6 +241,20 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
         (it) =>
           it.kind === 'tool' && it.call.tool_call.id === result.tool_call_id && !it.result,
       )
+      // ask_user 的回答同时回填问题卡（callId 配对）
+      if (String(payload.name ?? '') === 'ask_user') {
+        const askIdx = state.items.findLastIndex(
+          (it) => it.kind === 'ask_user' && it.callId === result.tool_call_id && !it.answer,
+        )
+        if (askIdx !== -1) {
+          const items = [...state.items]
+          const ask = items[askIdx]
+          if (ask.kind === 'ask_user') {
+            items[askIdx] = { ...ask, answer: String(result.content ?? '') }
+          }
+          state = { ...state, items }
+        }
+      }
       if (idx === -1) return state
       const target = state.items[idx]
       if (target.kind !== 'tool') return state
@@ -289,6 +338,10 @@ interface ChatState {
   send: (text: string, skills?: string[]) => Promise<void>
   /** 停止当前运行（POST cancel；失败兜底断开本地流）。 */
   stop: () => Promise<void>
+  /** 运行中插话（steering：不打断当前步骤，下一个 step 边界注入）。 */
+  steer: (text: string) => Promise<void>
+  /** 回答运行中 ask_user 的问题（POST answer；卡片随后由 tool/result 回填答案）。 */
+  answerAsk: (text: string) => Promise<void>
   /** 清除错误提示。 */
   clearError: () => void
   /** 解绑会话并重置全部状态。 */
@@ -412,7 +465,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           set((s) => {
             const stats = reduceStats(s.stats, ev)
-            if (ev.type === 'user/message')
+            // 普通用户消息已被 optimistic 气泡渲染，跳过投影避免重复；
+            // steering 插话没有 optimistic，走投影正常上屏
+            if (ev.type === 'user/message' && !ev.payload?.steering)
               return { lastSeq: Math.max(s.lastSeq, ev.seq), stats }
             const next = reduceEvent(
               { items: s.messages, streamingText: s.streamingText, thinkingText: s.thinkingText, turnStartTs: s.turnStartTs },
@@ -484,7 +539,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  answerAsk: async (text) => {
+    const trimmed = text.trim()
+    const { streaming, activeRunId, epoch } = get()
+    if (!trimmed || !streaming || !activeRunId) return
+    try {
+      await api(`/api/v1/runs/${activeRunId}/answer`, {
+        method: 'POST',
+        body: { text: trimmed },
+      })
+      // 不本地回填：tool/result 事件很快到达并统一回填（实时与回放同口径）
+    } catch (err) {
+      if (get().epoch !== epoch) return
+      set({
+        error:
+          err instanceof ApiError && err.status === 409
+            ? '没有等待回答的问题（或本轮已结束）'
+            : (err as Error).message || '提交回答失败',
+      })
+    }
+  },
+
   clearError: () => set({ error: null }),
+
+  steer: async (text) => {
+    const trimmed = text.trim()
+    const { streaming, activeRunId, epoch } = get()
+    if (!trimmed || !streaming || !activeRunId) return
+    try {
+      // 插话不乐观上屏：SSE 会很快推回带 steering 标记的 user/message 事件
+      await api(`/api/v1/runs/${activeRunId}/steer`, {
+        method: 'POST',
+        body: { text: trimmed },
+      })
+    } catch (err) {
+      if (get().epoch !== epoch) return
+      set({
+        error:
+          err instanceof ApiError && err.status === 409
+            ? '本轮回复已结束，插话未送达，请直接发送新消息'
+            : (err as Error).message || '插话失败',
+      })
+    }
+  },
 
   reset: () => {
     activeController?.abort()

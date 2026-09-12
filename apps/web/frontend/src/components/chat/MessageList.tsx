@@ -13,7 +13,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatItem } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
+import AskUserCard from './AskUserCard'
 import AssistantMessage, { formatElapsed } from './AssistantMessage'
+import FileSendCard from './FileSendCard'
 import BrandMark from '@/components/layout/BrandMark'
 import BrandWordmark from '@/components/layout/BrandWordmark'
 import ReasoningPanel from './ReasoningPanel'
@@ -152,13 +154,19 @@ function WorkChip({ elapsedMs, failed, open, onToggle }: WorkChipProps) {
   )
 }
 
-/** process 区条目（思考面板/工具行/中间解说）。 */
+/** process 区条目（思考面板/工具行/中间解说/问答回路卡片）。 */
 function WorkItem({ item }: { item: ChatItem }) {
   if (item.kind === 'reasoning') {
     return <ReasoningPanel text={item.text} running={false} />
   }
   if (item.kind === 'tool') {
     return <ToolCallCard call={item.call} result={item.result} />
+  }
+  if (item.kind === 'ask_user') {
+    return <AskUserCard callId={item.callId} query={item.query} options={item.options} answer={item.answer} />
+  }
+  if (item.kind === 'file_send') {
+    return <FileSendCard fileId={item.fileId} filename={item.filename} size={item.size} note={item.note} />
   }
   // 中间解说：正文照常渲染，但不带尾部时间/复制/用量（那属于最终回答）
   if (item.kind === 'assistant') {
@@ -220,12 +228,14 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
             )}
           </>
         )}
-        {/* 最终回答（本轮唯一带尾部时间/复制/用量的正文） */}
+        {/* 最终回答（本轮唯一带尾部时间/复制/用量的正文）。流式进行中它可能
+            只是刚定稿的中间解说（后面还有工具/回答），meta 等轮次落定再出现 */}
         {answer && (
           <AssistantMessage
             content={answer.content}
             usage={answer.usage}
             finishedTs={answer.finishedTs}
+            hideMeta={active}
           />
         )}
       </div>

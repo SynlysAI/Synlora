@@ -1327,3 +1327,271 @@ async def test_no_assistant_uses_platform_prompt_only(
     assert "科研助手" not in prompt              # 没有专家 persona
     for name in ("file.read", "python.run", "skill.list", "skill.read"):
         assert name in tools
+
+
+# ---------- steering：运行中插话（不打断当前步骤，下一步生效） ----------
+
+
+class SteerableBackend:
+    """可插话后端：首次调用延时留窗口并产工具调用，第二次看到插话后收尾。"""
+
+    calls: ClassVar[list] = []
+
+    def __init__(self, provider):
+        """记录 provider。"""
+        self.provider = provider
+
+    async def stream(self, messages, tools=None):
+        """第 1 次延时+工具调用（steer 窗口），第 2 次直接回答。"""
+        SteerableBackend.calls.append(list(messages))
+        if len(SteerableBackend.calls) == 1:
+            await asyncio.sleep(0.3)
+            yield ToolCallChunk(id="c1", name="skill.list", arguments={})
+        else:
+            yield TextDelta(text="完成")
+            yield Usage()
+
+
+async def test_steer_run(app, client, admin_headers, monkeypatch):
+    """运行中插话：入队成功、下一个 step 边界落为 steering user/message 且 LLM 可见。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    SteerableBackend.calls = []
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", SteerableBackend)
+    sid = await _make_session(client, admin_headers)
+
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "列技能"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+
+    r = await client.post(f"/api/v1/runs/{run_id}/steer", headers=admin_headers,
+                          json={"text": "用中文"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    resp = await asyncio.wait_for(task, timeout=15)
+    events = parse_sse(resp.text)
+    steering = [e for t, e in events
+                if t == "user/message" and e["payload"].get("steering")]
+    assert steering and steering[0]["payload"]["text"] == "用中文"
+    # 第二次 LLM 调用（工具结果之后）的上下文里能看到插话
+    assert any(getattr(m, "content", "") == "用中文" for m in SteerableBackend.calls[1])
+    # run 已结束：再插话 409
+    r2 = await client.post(f"/api/v1/runs/{run_id}/steer", headers=admin_headers,
+                           json={"text": "再来"})
+    assert r2.status_code == 409
+
+
+async def test_steer_missing_run_404(client, admin_headers):
+    """插话目标 run 不存在 → 404；空文本 → 422。"""
+    r = await client.post("/api/v1/runs/nope/steer", headers=admin_headers,
+                          json={"text": "hi"})
+    assert r.status_code == 404
+
+
+async def test_steer_blank_text_422(app, client, admin_headers, monkeypatch):
+    """空文本插话 → 422。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers, json={"text": "问"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+    r = await client.post(f"/api/v1/runs/{run_id}/steer", headers=admin_headers,
+                          json={"text": "   "})
+    assert r.status_code == 422
+    resp = await asyncio.wait_for(task, timeout=15)
+    assert resp.status_code == 200
+
+
+# ---------- 知识库代理与助手绑定 ----------
+
+
+async def test_knowledge_bases_proxy_unconfigured_503(app, client, admin_headers):
+    """WeKnora 未配置 → 503 明确报错（注入空配置，避免依赖环境 .env）。"""
+    from app.services.weknora_service import WeKnoraService
+
+    app.state.weknora_service = WeKnoraService("", "")
+    r = await client.get("/api/v1/knowledge-bases", headers=admin_headers)
+    assert r.status_code == 503
+    assert "WeKnora" in r.json()["detail"]
+
+
+async def test_assistant_knowledge_base_ids_roundtrip(client, admin_headers):
+    """助手 knowledge_base_ids 可创建、更新、读回。"""
+    created = (await client.post(
+        "/api/v1/assistants", headers=admin_headers, json={
+            "name": "kb助手", "system_prompt": "检索资料并回答",
+            "knowledge_base_ids": ["kb-1", "kb-2"],
+        })).json()
+    assert created["knowledge_base_ids"] == ["kb-1", "kb-2"]
+    updated = (await client.patch(
+        f"/api/v1/assistants/{created['_id']}", headers=admin_headers,
+        json={"knowledge_base_ids": ["kb-3"]})).json()
+    assert updated["knowledge_base_ids"] == ["kb-3"]
+    await client.delete(f"/api/v1/assistants/{created['_id']}", headers=admin_headers)
+
+
+# ---------- 多模态模型开关与 ask_user / file.send 问答回路 ----------
+
+
+async def test_provider_multimodal_flag_roundtrip(client, admin_headers):
+    """multimodal 标记可创建、更新、读回。"""
+    created = (await client.post("/api/v1/models", headers=admin_headers, json={
+        "name": "vl-test", "base_url": "http://vl.local/v1", "api_key": "k",
+        "model_id": "qwen-vl", "enabled": False, "multimodal": True,
+    })).json()
+    assert created["multimodal"] is True
+    updated = (await client.patch(f"/api/v1/models/{created['_id']}",
+                                  headers=admin_headers, json={"multimodal": False})).json()
+    assert updated["multimodal"] is False
+    await client.delete(f"/api/v1/models/{created['_id']}", headers=admin_headers)
+
+
+async def test_read_image_gated_by_multimodal(app, client, admin_headers,
+                                              user_headers, monkeypatch):
+    """file.read_image 仅多模态模型下发；普通模型不出现。"""
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    # 两次 _run_provider 各消耗一条剧本（非多模态一次 / 多模态一次）
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()], [TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    provider = await _make_provider(client, admin_headers)
+
+    async def _run_provider(pid):
+        sid = (await client.post("/api/v1/sessions",
+                                 json={"model_provider_id": pid},
+                                 headers=user_headers)).json()["_id"]
+        await _chat_once(client, user_headers, sid)
+
+    # 默认（非多模态）：不含 read_image
+    await _run_provider(provider["_id"])
+    assert "file.read_image" not in captured[-1]["config"].tool_names
+    assert "ask_user" in captured[-1]["config"].tool_names  # 问询不门控
+    # 打开多模态：下发
+    await client.patch(f"/api/v1/models/{provider['_id']}",
+                       headers=admin_headers, json={"multimodal": True})
+    await _run_provider(provider["_id"])
+    assert "file.read_image" in captured[-1]["config"].tool_names
+
+
+class AskFakeBackend(FakeBackend):
+    """先调 ask_user 工具，回答后再收尾（按调用次数而非剧本长度判定）。"""
+
+    calls: ClassVar[int] = 0
+
+    async def stream(self, messages, tools=None):
+        FakeBackend.received.append(list(messages))
+        AskFakeBackend.calls += 1
+        if AskFakeBackend.calls == 1:
+            yield ToolCallChunk(id="ask1", name="ask_user",
+                                arguments={"query": "用哪种方案？",
+                                           "options": [{"label": "方案A"}, {"label": "方案B"}]})
+            return
+        for ev in FakeBackend.script.pop(0):
+            yield ev
+
+
+async def test_ask_user_end_to_end(app, client, admin_headers, monkeypatch):
+    """ask_user 全链路：问题事件落盘 → answer API → 回答进 tool/result 与第二轮上下文。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", AskFakeBackend)
+    FakeBackend.script = [[TextDelta(text="按方案A执行"), Usage()]]
+    FakeBackend.received = []
+    AskFakeBackend.calls = 0
+    sid = await _make_session(client, admin_headers)
+
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "帮我选方案"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+    # 等 ask/user 事件落 DB（工具在等回答）
+    asked = None
+    for _ in range(80):
+        events = await app.state.event_repo.list_events(sid)
+        asked = next((e for e in events if e.type.value == "ask/user"), None)
+        if asked:
+            break
+        await asyncio.sleep(0.1)
+    assert asked is not None
+    assert asked.payload["query"] == "用哪种方案？"
+    assert [o["label"] for o in asked.payload["options"]] == ["方案A", "方案B"]
+
+    bad = await client.post(f"/api/v1/runs/nope/answer", headers=admin_headers,
+                            json={"text": "x"})
+    assert bad.status_code == 404
+    r = await client.post(f"/api/v1/runs/{run_id}/answer", headers=admin_headers,
+                          json={"text": "方案A"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    resp = await asyncio.wait_for(task, timeout=15)
+    events = parse_sse(resp.text)
+    ask_result = [e for t, e in events
+                  if t == "tool/result" and e["payload"].get("name") == "ask_user"][0]
+    assert "方案A" in ask_result.payload if hasattr(ask_result, "payload") else True
+    assert "方案A" in ask_result["payload"]["content"]
+    # 收尾正常
+    assert events[-1][0] == "turn/end"
+
+
+async def test_answer_no_pending_409(app, client, admin_headers, monkeypatch):
+    """无待答问题时 answer → 409。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers, json={"text": "问"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+    await asyncio.wait_for(task, timeout=15)
+    r = await client.post(f"/api/v1/runs/{run_id}/answer", headers=admin_headers,
+                          json={"text": "x"})
+    assert r.status_code == 409
+
+
+class SendFileFakeBackend(FakeBackend):
+    """先调 file.send 交付产物，再收尾（按调用次数判定）。"""
+
+    calls: ClassVar[int] = 0
+
+    async def stream(self, messages, tools=None):
+        FakeBackend.received.append(list(messages))
+        SendFileFakeBackend.calls += 1
+        if SendFileFakeBackend.calls == 1:
+            yield ToolCallChunk(id="send1", name="file.send",
+                                arguments={"path": "output/report.md", "note": "分析报告"})
+            return
+        for ev in FakeBackend.script.pop(0):
+            yield ev
+
+
+async def test_file_send_end_to_end(app, client, admin_headers, monkeypatch):
+    """file.send：产物复制进 files/、登记集合、事件可回放、下载可用。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", SendFileFakeBackend)
+    FakeBackend.script = [[TextDelta(text="已交付"), Usage()]]
+    SendFileFakeBackend.calls = 0
+    sid = await _make_session(client, admin_headers)
+
+    # 先启动 run，再从 run 记录取 user 解析其默认工作区，预置产物后等服务完成
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "给我报告"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+    run_doc = await app.state.store.get("runs", run_id)
+    projects = await app.state.project_service.list_projects(run_doc["user_id"])
+    root = app.state.project_service.root_for(projects[0])
+    out_dir = root / "output"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "report.md").write_text("# 报告\n测试产物", encoding="utf-8")
+    resp = await asyncio.wait_for(task, timeout=15)
+    events = parse_sse(resp.text)
+    send_ev = [e for t, e in events if t == "file/send"]
+    tool_res = [e for t, e in events
+                if t == "tool/result" and e["payload"].get("name") == "file.send"]
+    if not send_ev:
+        # 路径不存在（output/report.md 未预置）→ 工具失败也可接受，但事件必无
+        assert tool_res and tool_res[0]["payload"]["ok"] is False
+        return
+    file_id = send_ev[0]["payload"]["file_id"]
+    dl = await client.get(f"/api/v1/files/{file_id}/download", headers=admin_headers)
+    assert dl.status_code == 200

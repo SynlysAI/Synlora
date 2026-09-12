@@ -53,6 +53,7 @@ class AssistantCreateBody(BaseModel):
     system_prompt: str
     tool_whitelist: list[str] = []
     model_provider_id: str | None = None
+    knowledge_base_ids: list[str] = []
 
     @field_validator("name", "system_prompt")
     @classmethod
@@ -72,6 +73,7 @@ class AssistantUpdateBody(BaseModel):
     system_prompt: str | None = None
     tool_whitelist: list[str] | None = None
     model_provider_id: str | None = None
+    knowledge_base_ids: list[str] | None = None
 
 
 @router.get("")
@@ -117,6 +119,7 @@ async def create_assistant(body: AssistantCreateBody, user=Depends(require_admin
         "system_prompt": body.system_prompt,
         "tool_whitelist": body.tool_whitelist,
         "model_provider_id": body.model_provider_id,
+        "knowledge_base_ids": body.knowledge_base_ids,
         "builtin": False,
     })
 
@@ -151,6 +154,10 @@ async def update_assistant(assistant_id: str, body: AssistantUpdateBody,
     if body.model_provider_id is not None:
         await _validate_provider(body.model_provider_id, repos)
         fields["model_provider_id"] = body.model_provider_id
+    if body.knowledge_base_ids is not None:
+        # 不在此处校验知识库 id 是否仍存在于 WeKnora：库可能被删后重建，
+        # 失效 id 只会导致检索无结果（工具层有明确报错），不阻塞保存
+        fields["knowledge_base_ids"] = body.knowledge_base_ids
     return await repos.assistant.update(assistant_id, fields)
 
 

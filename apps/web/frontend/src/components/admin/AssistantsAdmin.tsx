@@ -17,6 +17,14 @@ import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonC
 /** 全部合法工具名（与后端 ToolRegistry 注册项一一对应，标签见 toolLabels.ts）。 */
 const TOOL_NAMES = Object.keys(TOOL_LABELS)
 
+/** 知识库选项（后端代理 WeKnora 列表；doc_count 取不到时为 null）。 */
+interface KnowledgeBase {
+  id: string
+  name: string
+  description: string
+  doc_count: number | null
+}
+
 /** 新建/编辑共用表单值（modelProviderId 空串 = 不关联模型）。 */
 interface AssistantForm {
   name: string
@@ -25,6 +33,7 @@ interface AssistantForm {
   systemPrompt: string
   modelProviderId: string
   toolWhitelist: string[]
+  knowledgeBaseIds: string[]
 }
 
 /** 空表单初始值。 */
@@ -35,6 +44,7 @@ const EMPTY_FORM: AssistantForm = {
   systemPrompt: '',
   modelProviderId: '',
   toolWhitelist: [],
+  knowledgeBaseIds: [],
 }
 
 /** 助手头像：avatar 字段（emoji/字符）缺省取名称首字符（与左栏一致）。 */
@@ -74,11 +84,29 @@ function AssistantFormModal({
             systemPrompt: editing.system_prompt,
             modelProviderId: editing.model_provider_id ?? '',
             toolWhitelist: editing.tool_whitelist,
+            knowledgeBaseIds: editing.knowledge_base_ids ?? [],
           }
         : EMPTY_FORM,
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  /** 知识库选项（打开表单时拉一次；失败不阻塞编辑，仅提示）。 */
+  const [kbs, setKbs] = useState<KnowledgeBase[] | null>(null)
+  const [kbError, setKbError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    api<KnowledgeBase[]>('/api/v1/knowledge-bases')
+      .then((list) => {
+        if (!cancelled) setKbs(list)
+      })
+      .catch((err) => {
+        if (!cancelled) setKbError(errorText(err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   /** 工具勾选切换。 */
   const toggleTool = (tool: string, checked: boolean) => {
@@ -87,6 +115,16 @@ function AssistantFormModal({
       toolWhitelist: checked
         ? [...f.toolWhitelist, tool]
         : f.toolWhitelist.filter((t) => t !== tool),
+    }))
+  }
+
+  /** 知识库勾选切换。 */
+  const toggleKb = (id: string, checked: boolean) => {
+    setForm((f) => ({
+      ...f,
+      knowledgeBaseIds: checked
+        ? [...f.knowledgeBaseIds, id]
+        : f.knowledgeBaseIds.filter((k) => k !== id),
     }))
   }
 
@@ -103,6 +141,7 @@ function AssistantFormModal({
       system_prompt: form.systemPrompt,
       tool_whitelist: TOOL_NAMES.filter((t) => form.toolWhitelist.includes(t)),
       model_provider_id: form.modelProviderId || null,
+      knowledge_base_ids: form.knowledgeBaseIds,
     }
     try {
       if (editing) {
@@ -225,6 +264,45 @@ function AssistantFormModal({
               </label>
             ))}
           </div>
+        </div>
+
+        {/* 知识库绑定（WeKnora）：knowledge.search 工具的检索范围 */}
+        <div className={labelClass}>
+          <div className="flex items-center justify-between">
+            <span>知识库（knowledge.search 检索范围）</span>
+            {form.knowledgeBaseIds.length > 0 && (
+              <span className="text-xs text-[var(--sa-alias-label-tertiary)]">
+                已选 {form.knowledgeBaseIds.length}
+              </span>
+            )}
+          </div>
+          {kbError ? (
+            <p className="text-xs text-[var(--sa-alias-state-warn-label)]">
+              知识库服务不可用：{kbError}（暂不能改绑定，已有绑定保持不变）
+            </p>
+          ) : kbs === null ? (
+            <p className="text-xs text-[var(--sa-alias-label-caption)]">加载知识库列表…</p>
+          ) : kbs.length === 0 ? (
+            <p className="text-xs text-[var(--sa-alias-label-caption)]">
+              暂无知识库（在 WeKnora 平台创建后再来绑定）
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-1.5 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] p-2.5 sm:grid-cols-3">
+              {kbs.map((kb) => (
+                <label key={kb.id} className="flex items-center gap-2 text-[13px] text-[var(--sa-alias-label-primary)]">
+                  <input
+                    type="checkbox"
+                    checked={form.knowledgeBaseIds.includes(kb.id)}
+                    onChange={(e) => toggleKb(kb.id, e.target.checked)}
+                    className="h-4 w-4 shrink-0 accent-[var(--sa-alias-button-primary-fill)]"
+                  />
+                  <span className="truncate" title={kb.description || kb.name}>
+                    {kb.name}（{kb.doc_count ?? '?'} 篇文档）
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
         </div>
 
         {error && <FormError>{error}</FormError>}

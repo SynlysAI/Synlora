@@ -31,6 +31,7 @@ def _public(doc: dict) -> dict:
         "base_url": doc.get("base_url", ""),
         "model_id": doc.get("model_id", ""),
         "enabled": bool(doc.get("enabled")),
+        "multimodal": bool(doc.get("multimodal")),
         "has_key": bool(doc.get("api_key_enc")),
     }
 
@@ -60,6 +61,7 @@ class ProviderCreateBody(BaseModel):
     api_key: str = ""
     model_id: str
     enabled: bool = True
+    multimodal: bool = False
 
     @field_validator("name", "base_url", "model_id")
     @classmethod
@@ -78,6 +80,7 @@ class ProviderUpdateBody(BaseModel):
     api_key: str | None = None
     model_id: str | None = None
     enabled: bool | None = None
+    multimodal: bool | None = None
 
 
 @router.get("")
@@ -107,6 +110,7 @@ async def create_provider(body: ProviderCreateBody, user=Depends(require_admin),
         "api_key": body.api_key,
         "model_id": body.model_id,
         "enabled": body.enabled,
+        "multimodal": body.multimodal,
     })
     return _public(doc)
 
@@ -136,6 +140,8 @@ async def update_provider(provider_id: str, body: ProviderUpdateBody,
             raise HTTPException(422, "model_id 不能为空")
     if body.enabled is not None:
         fields["enabled"] = body.enabled
+    if body.multimodal is not None:
+        fields["multimodal"] = body.multimodal
     if fields.get("name") and fields["name"] != doc.get("name"):
         if await repos.provider.list(filters={"name": fields["name"]}):
             raise HTTPException(409, f"同名模型服务已存在: {fields['name']}")

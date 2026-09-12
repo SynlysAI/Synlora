@@ -20,6 +20,10 @@ class Settings(BaseSettings):
         http_allowed_hosts: http.request 工具白名单（逗号分隔）。
         fernet_key: provider api_key 加密 key。
         user_quota_bytes: 每用户工作区配额。
+        weknora_base_url: WeKnora 知识库服务地址（含 /api/v1，空 = 未接入）。
+        weknora_api_key: WeKnora API Key（X-API-Key 头）。
+        assistant_web_search_endpoint: SearXNG 搜索服务地址（空 = 未启用联网搜索）。
+        assistant_web_search_api_key: SearXNG API Key（实例配了才需要，默认空）。
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -37,6 +41,10 @@ class Settings(BaseSettings):
     http_allowed_hosts: str = ""
     fernet_key: str = ""
     user_quota_bytes: int = 1_073_741_824
+    weknora_base_url: str = ""
+    weknora_api_key: str = ""
+    assistant_web_search_endpoint: str = ""
+    assistant_web_search_api_key: str = ""
 
     @property
     def data_root(self) -> Path:

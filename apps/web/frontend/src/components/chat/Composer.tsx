@@ -1,7 +1,8 @@
 /**
  * 底部输入区：卡片内「已选技能 chips + 多行自适应输入 + 底部功能行」。
  * Enter 发送 / Shift+Enter 换行（IME 组合中的 Enter 不发送）；streaming 时
- * 输入禁用且发送变停止按钮；错误提示条（含 429 话术）。
+ * 输入保持可用——发送转为 steering 插话（下一步生效），停止键保留；
+ * 错误提示条（含 429 话术）。
  *
  * 卡片两态照抄 jiuwen `ChatPanel/InputArea.tsx` 2703-2728 行与
  * `ChatPanel.css` 125-170 行（`showWorkContextRow = 空会话`，见 800 行）：
@@ -63,6 +64,7 @@ export default function Composer({ empty }: ComposerProps) {
   const streaming = useChatStore((s) => s.streaming)
   const error = useChatStore((s) => s.error)
   const send = useChatStore((s) => s.send)
+  const steer = useChatStore((s) => s.steer)
   const stop = useChatStore((s) => s.stop)
   const clearError = useChatStore((s) => s.clearError)
   const [value, setValue] = useState('')
@@ -85,10 +87,15 @@ export default function Composer({ empty }: ComposerProps) {
     el.style.overflowY = el.scrollHeight > MAX_INPUT_HEIGHT ? 'auto' : 'hidden'
   }, [value])
 
-  /** 发送当前输入（空串/流式中忽略）；技能随本轮请求带上后清空（一次性）。 */
+  /** 发送当前输入；流式中转为 steering 插话（不打断当前步骤，下一步生效）。 */
   const submit = () => {
     const text = value.trim()
-    if (!text || streaming) return
+    if (!text) return
+    if (streaming) {
+      setValue('')
+      void steer(text)
+      return
+    }
     setValue('')
     void send(text, skills)
     setSkills([])
@@ -142,19 +149,42 @@ export default function Composer({ empty }: ComposerProps) {
         ref={ref}
         rows={1}
         value={value}
-        disabled={streaming}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder={streaming ? '回复生成中…' : '给 Synlora 发送消息'}
+        placeholder={streaming ? '回复生成中，可插话补充要求（Enter 发送，下一步生效）…' : '给 Synlora 发送消息'}
         aria-label="消息输入框"
         style={{ minHeight: empty ? MIN_INPUT_HEIGHT_EMPTY : MIN_INPUT_HEIGHT_CHAT }}
-        className="max-h-[148px] w-full resize-none bg-transparent py-0.5 text-[15px] leading-[22px] text-[var(--sa-alias-label-primary)] placeholder:text-[var(--sa-alias-label-caption)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
+        className="max-h-[148px] w-full resize-none bg-transparent py-0.5 text-[15px] leading-[22px] text-[var(--sa-alias-label-primary)] placeholder:text-[var(--sa-alias-label-caption)] outline-none"
       />
       {/* 底部功能行：左「+」菜单（含专家 chip），右模型选择器 + 发送/停止 */}
       <div className="flex items-center justify-between gap-2 pt-1.5">
         <AttachMenu selectedSkills={skills} onToggleSkill={toggleSkill} />
         <div className="flex shrink-0 items-center gap-1.5">
           <ModelPicker />
+          {/* 流式中有输入时：先出插话发送键（steering），停止键保留 */}
+          {streaming && !!value.trim() && (
+            <button
+              type="button"
+              aria-label="插话"
+              title="插话（不打断当前步骤，下一步生效）"
+              onClick={submit}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-static-blue-500)] text-white transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-static-blue-600)]"
+            >
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M8 13V3M3.8 7.2 8 3l4.2 4.2" />
+              </svg>
+            </button>
+          )}
           {/* 发送 / 停止按钮（DSH：accent 蓝圆形） */}
           {streaming ? (
             <button

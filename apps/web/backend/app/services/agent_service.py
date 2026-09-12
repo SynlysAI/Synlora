@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -29,12 +30,14 @@ from synlys_harness import (
     AgentConfig,
     EventLog,
     EventType,
+    ExtensionHooks,
     ModelProviderConfig,
     OpenAICompatibleBackend,
     RunSession,
     SessionEvent,
     ToolPipeline,
     ToolRegistry,
+    ToolResult,
     build_system_prompt,
     register_builtin_tools,
 )
@@ -43,8 +46,9 @@ from app.services.skill_service import SkillService
 
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
 
-# 技能工具：无条件追加到助手白名单（技能是平台能力，不依赖助手自行声明）
-SKILL_TOOLS = ("skill.list", "skill.read")
+# 技能与平台交互工具：无条件追加到助手白名单（平台能力，不依赖助手自行声明；
+# ask_user=问答回路、file.send=产物交付是宿主注入的交互通道，任何助手都可用）
+SKILL_TOOLS = ("skill.list", "skill.read", "ask_user", "file.send")
 
 # 瞬态事件：每 token 一条，仅 SSE 推送、不落 JSONL/DB（见模块头注释）
 TRANSIENT = {EventType.LLM_DELTA, EventType.REASONING_DELTA}
@@ -68,13 +72,15 @@ class ActiveRun:
         self.queue: asyncio.Queue = asyncio.Queue()
         self.done = asyncio.Event()
         self.session: RunSession | None = None
+        # ask_user 等待中的回答 future（None = 当前无待回答问题）
+        self.ask_future: asyncio.Future | None = None
 
 
 class AgentService:
     """对话运行编排（单例，挂 app.state.agent_service）。"""
 
     def __init__(self, store: Any, settings: Any, event_repo: Any,
-                 skill_service: SkillService) -> None:
+                 skill_service: SkillService, file_repo: Any = None) -> None:
         """保存依赖。
 
         Args:
@@ -82,11 +88,13 @@ class AgentService:
             settings: 应用配置（数据根/白名单）。
             event_repo: 会话事件 repo（DB 副本写入与回放）。
             skill_service: 技能服务（磁盘扫描目录 + 按名取正文）。
+            file_repo: 文件 repo（file.send 登记产物供下载；None 时该工具报不支持）。
         """
         self._store = store
         self._settings = settings
         self._event_repo = event_repo
         self._skill_service = skill_service
+        self._file_repo = file_repo
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
@@ -185,6 +193,23 @@ class AgentService:
                     pass
 
             log = EventLog(sinks=[jsonl_sink, db_sink])
+
+            # 扩展钩子挂载（可观测性：turn 生命周期 + 工具事件审计日志）
+            async def _on_session_start(_session: RunSession) -> None:
+                _LOGGER.info("turn 开始 run_id=%s session=%s", run_id, session_id)
+
+            async def _on_session_end(_session: RunSession) -> None:
+                _LOGGER.info("turn 结束 run_id=%s session=%s", run_id, session_id)
+
+            async def _on_tool_event(ev: SessionEvent) -> None:
+                _LOGGER.info("工具事件 %s name=%s run_id=%s",
+                             ev.type.value, (ev.payload or {}).get("name", ""), run_id)
+
+            hooks = ExtensionHooks(
+                on_session_start=_on_session_start,
+                on_session_end=_on_session_end,
+                on_tool_event=_on_tool_event,
+            )
             # 会话级 seq 续号依赖 seed 恢复：用 DB 历史事件预填充本轮日志，
             # 使 seq 跨轮续号（DB _id=f"{sid}:{seq}" 不碰撞，append 取
             # last.seq+1 不撞洞）、derive_messages 能投影出前几轮消息
@@ -221,6 +246,27 @@ class AgentService:
                 if whitelist
                 else list(_REGISTRY.names)
             )
+            # 图片阅读双重门控：模型多模态 +（助手未限白名单或白名单显式包含）
+            if provider_cfg.multimodal and (not whitelist or "file.read_image" in whitelist):
+                tool_names = list(dict.fromkeys([*tool_names, "file.read_image"]))
+            else:
+                tool_names = [t for t in tool_names if t != "file.read_image"]
+
+            # ask_user：发 ask/user 事件（落盘+SSE）并等待前端回答 future
+            async def ask_handler(payload: dict) -> str:
+                future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+                active.ask_future = future
+                try:
+                    await log.append(EventType.ASK_USER, payload)
+                    return await future
+                finally:
+                    active.ask_future = None
+
+            # file.send：复制产物进项目 files/ 沙箱 → 登记 files 集合 → 发事件
+            async def send_file_handler(payload: dict) -> ToolResult:
+                return await self._deliver_file(active, log, workspace_root,
+                                                user["sub"], payload)
+
             session = RunSession(
                 config=AgentConfig(
                     system_prompt=system_prompt,
@@ -229,11 +275,24 @@ class AgentService:
                 ),
                 registry=_REGISTRY, pipeline=_PIPELINE, backend=backend,
                 event_log=log, user_id=user["sub"], run_id=run_id,
+                hooks=hooks,
                 workspace_root=workspace_root,
                 context_extra={
                     "http_allowed_hosts": self._settings.allowed_hosts,
                     "skills": bodies,
                     "skill_meta": {s["name"]: s["description"] for s in active_skills},
+                    # WeKnora 知识检索：连接配置 + 助手绑定的知识库范围（None/空 =
+                    # 未绑定，knowledge.search 工具会给出明确报错）
+                    "weknora_base_url": self._settings.weknora_base_url,
+                    "weknora_api_key": self._settings.weknora_api_key,
+                    "knowledge_base_ids": list(
+                        (assistant or {}).get("knowledge_base_ids") or []),
+                    # 联网搜索（SearXNG）：地址空 = 未启用，web.search 工具报明确错误
+                    "web_search_endpoint": self._settings.assistant_web_search_endpoint,
+                    "web_search_api_key": self._settings.assistant_web_search_api_key,
+                    # 用户交互工具的宿主回调（ask_user / file.send）
+                    "ask_user_handler": ask_handler,
+                    "send_file_handler": send_file_handler,
                 },
             )
             active.session = session
@@ -310,6 +369,101 @@ class AgentService:
             active.session.cancel()
             return True
         return False
+
+    async def steer(self, run_id: str, text: str) -> bool:
+        """运行中插话（harness steering：下一个 step 边界注入为 user 消息）。
+
+        插话经 session.steer 入队后由 loop 落成带 steering 标记的
+        user/message 事件，随事件流持久化——所以队列本身无需单独持久化。
+
+        Args:
+            run_id: 运行 id。
+            text: 插话文本（非空由 API 层校验）。
+
+        Returns:
+            是否找到仍在内存注册表中的运行并完成入队。
+        """
+        active = self._runs.get(run_id)
+        if active and active.session is not None:
+            active.session.steer(text)
+            return True
+        return False
+
+    async def answer(self, run_id: str, text: str) -> bool:
+        """回答运行中 ask_user 的待答问题（resolve future，工具随即返回）。
+
+        Args:
+            run_id: 运行 id。
+            text: 用户回答文本。
+
+        Returns:
+            是否找到等待中的问题并完成投递。
+        """
+        active = self._runs.get(run_id)
+        if active and active.ask_future is not None and not active.ask_future.done():
+            active.ask_future.set_result(text)
+            return True
+        return False
+
+    async def _deliver_file(self, active: "ActiveRun", log: EventLog,
+                            workspace_root: Path, user_id: str,
+                            payload: dict) -> ToolResult:
+        """file.send 宿主侧：产物复制进项目 files/ → 登记 files 集合 → 发 file/send 事件。
+
+        复制而非登记原路径：下载端点的 stored_path 安全校验要求文件落在
+        files/ 沙箱内（与上传同一约束），登记任意路径会被 404 拒绝。
+
+        Args:
+            active: 所属运行（未用，签名对称保留）。
+            log: 本轮事件日志（事件落盘 + SSE）。
+            workspace_root: 工作区根。
+            user_id: 用户 sub。
+            payload: 工具入参（path/note/tool_call_id）。
+
+        Returns:
+            工具结果（成功 content 为给 LLM 的确认文本）。
+        """
+        del active  # 未用
+        rel = str(payload.get("path", "")).strip()
+        try:
+            src = (workspace_root / rel).resolve()
+            if workspace_root.resolve() not in src.parents:
+                return ToolResult(ok=False, content="路径越界", error="path_escape")
+        except OSError:
+            return ToolResult(ok=False, content=f"路径非法: {rel}", error="path_escape")
+        if not src.is_file():
+            return ToolResult(ok=False, content=f"文件不存在: {rel}", error="not_found")
+        if self._file_repo is None:
+            return ToolResult(ok=False, content="文件交付未配置（缺 file repo）", error="no_handler")
+        files_dir = workspace_root / "files"
+        files_dir.mkdir(parents=True, exist_ok=True)
+        target = files_dir / src.name
+        stem, suffix = target.stem, target.suffix
+        n = 1
+        while target.exists():
+            target = files_dir / f"{stem}-{n}{suffix}"
+            n += 1
+        try:
+            shutil.copy2(src, target)
+        except OSError as exc:
+            return ToolResult(ok=False, content=f"复制失败: {exc}", error="io_error")
+        size = target.stat().st_size
+        doc = await self._file_repo.create({
+            "user_id": user_id,
+            "filename": target.name,
+            "stored_path": target.relative_to(workspace_root).as_posix(),
+            "size": size,
+            "mime": "application/octet-stream",
+        })
+        await log.append(EventType.FILE_SEND, {
+            "tool_call_id": payload.get("tool_call_id", ""),
+            "file_id": doc["_id"],
+            "filename": target.name,
+            "size": size,
+            "path": rel,
+            "note": payload.get("note", ""),
+        })
+        return ToolResult(ok=True, content=f"已把文件 {target.name}（{size // 1024}KB）发送给用户")
 
     async def events_after(self, session_id: str, after_seq: int = -1) -> list[SessionEvent]:
         """取 seq 大于 after_seq 的会话事件（SSE 断连重连增量补齐用）。
