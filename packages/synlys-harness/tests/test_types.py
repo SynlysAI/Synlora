@@ -26,10 +26,11 @@ def test_session_event_seq_enforced():
 
 
 def test_event_type_members():
-    """事件类型枚举覆盖设计文档全部 V1 事件（含思考流两类）。"""
+    """事件类型枚举覆盖设计文档全部 V1 事件（含思考流/压缩/问答回路）。"""
     members = {e.value for e in EventType}
     assert members == {
         "turn/start", "user/message", "llm/delta", "reasoning/delta",
         "assistant/reasoning", "assistant/message",
-        "tool/call", "tool/result", "turn/end", "turn/aborted", "error",
+        "tool/call", "tool/result", "ask/user", "file/send", "session/compaction",
+        "turn/end", "turn/aborted", "error",
     }

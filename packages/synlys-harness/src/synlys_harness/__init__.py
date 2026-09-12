@@ -1,5 +1,6 @@
 """SynlysAgent 核心 Agent 运行时。"""
 from .agent import RunSession
+from .compaction import Compactor
 from .events import EventLog
 from .models.backend import (
     LLMBackend, ModelProviderConfig, OpenAICompatibleBackend, ReasoningDelta,
@@ -16,7 +17,7 @@ from .types import (
 )
 
 __all__ = [
-    "RunSession", "EventLog", "derive_messages", "build_system_prompt",
+    "RunSession", "EventLog", "Compactor", "derive_messages", "build_system_prompt",
     "ToolRegistry", "tool", "ToolPipeline", "register_builtin_tools",
     "LLMBackend", "OpenAICompatibleBackend", "ModelProviderConfig",
     "TextDelta", "ReasoningDelta", "ToolCallChunk", "Usage",

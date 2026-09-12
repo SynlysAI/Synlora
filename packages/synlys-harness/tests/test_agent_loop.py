@@ -336,3 +336,43 @@ async def test_multi_tool_calls_single_step():
     by_id = {r.payload["tool_call_id"]: r.payload["content"] for r in results}
     assert by_id == {"c1": "3", "c2": "7"}
     assert calls[0].payload["content"] is None
+
+
+async def test_read_image_injected_as_transient_user_message(tmp_path):
+    """file.read_image：图片经瞬态 user 消息注入下一次 LLM 调用，不落事件流。"""
+    # 工作区放一张真图（1x1 png）
+    import base64
+
+    (tmp_path / "pic.png").write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="))
+
+    @tool(name="read_img", description="读图", parameters={
+        "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]})
+    async def read_img(ctx, args):
+        """读图。"""
+        # 直接复用内置实现逻辑：读文件转 base64 放 data.images
+        raw = (tmp_path / args["path"]).read_bytes()
+        return ToolResult(ok=True, content="（已附图片）",
+                          data={"images": [{"mime": "image/png",
+                                            "base64": base64.b64encode(raw).decode()}]})
+
+    reg = ToolRegistry()
+    reg.register(read_img)
+    log = EventLog()
+    backend = FakeBackend([
+        [ToolCallChunk(id="c1", name="read_img", arguments={"path": "pic.png"})],
+        [TextDelta(text="看到一张 1x1 的图"), Usage()],
+    ])
+    session = RunSession(
+        config=AgentConfig(system_prompt="p", tool_names=["read_img"]),
+        registry=reg, pipeline=ToolPipeline(registry=reg), backend=backend,
+        event_log=log, user_id="u", run_id="r", workspace_root=tmp_path,
+    )
+    events = [e async for e in session.run("看看图")]
+    # 第二次 LLM 调用收到带 images 的 user 消息（在末尾）
+    second = backend.calls[1]
+    img_msg = [m for m in second if m.images]
+    assert img_msg and img_msg[0].images[0]["mime"] == "image/png"
+    assert second[-1].role.value == "user"
+    # 图片本体不落事件流（瞬态语义）
+    assert all("base64" not in (e.payload.get("content") or "") for e in events)

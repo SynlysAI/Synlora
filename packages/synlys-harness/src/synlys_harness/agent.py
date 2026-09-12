@@ -6,6 +6,7 @@ import contextlib
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from .compaction import Compactor
 from .events import EventLog
 from .models.backend import LLMBackend, ReasoningDelta, TextDelta, ToolCallChunk, Usage
 from .session import derive_messages
@@ -67,6 +68,15 @@ class RunSession:
         self._steering: asyncio.Queue[str] = asyncio.Queue()
         self._last_usage: Usage | None = None
         self._llm_failed = False
+        # 本轮待注入的图片附件（pi 式瞬态：file.read_image 结果，下一次 LLM 调用
+        # 即消费并清空，不落事件流）
+        self._pending_images: list[dict[str, str]] = []
+        # 上下文压缩器（threshold=0 时 apply 直接原样返回，零开销）
+        self._compactor = Compactor(
+            backend, event_log,
+            threshold_tokens=config.compaction_threshold_tokens,
+            keep_chars=config.compaction_keep_chars,
+        )
 
     @property
     def last_usage(self) -> Usage | None:
@@ -152,9 +162,22 @@ class RunSession:
                         EventType.USER_MESSAGE, {"text": steer_text, "steering": True},
                     )
 
+                # 历史按需压缩（超阈值时早期历史摘要为一条消息，见 compaction.py）
+                history = await self._compactor.apply(
+                    derive_messages(self._log.events, include_system=False),
+                    self._last_usage.prompt_tokens if self._last_usage else None,
+                )
+                # 图片附件（瞬态）：上一步工具收集的图片作为末尾 user 消息注入，
+                # 本轮调用后即清空——回放/后续轮次不含图片本体
+                if self._pending_images:
+                    history = history + [Message(
+                        role=Role.USER, content="（工具返回的图片，供本次视觉分析）",
+                        images=self._pending_images,
+                    )]
+                    self._pending_images = []
                 messages = (
                     [Message(role=Role.SYSTEM, content=self._config.system_prompt)]
-                    + derive_messages(self._log.events, include_system=False)
+                    + history
                 )
                 if self._hooks and self._hooks.before_llm_call:
                     messages = await self._hooks.before_llm_call(messages)
@@ -235,10 +258,15 @@ class RunSession:
                             error="invalid_tool_arguments",
                         )
                     else:
+                        # 把本次调用的 id 递给工具（ask_user 的 ask/user 事件要带
+                        # tool_call_id 供前端配对回答）
+                        ctx.extra["tool_call_id"] = tc.id
                         result = await self._pipeline.run(
                             tc.name, ctx, tc.arguments,
                             allowed=self._config.tool_names,
                         )
+                        # 图片附件上浮（瞬态注入，见 messages 组装处）
+                        self._pending_images.extend(result.data.get("images") or [])
                     yield await self._emit(EventType.TOOL_RESULT, {
                         "tool_call_id": tc.id,
                         "name": tc.name,

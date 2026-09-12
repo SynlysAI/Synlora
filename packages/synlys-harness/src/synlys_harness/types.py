@@ -32,6 +32,9 @@ class EventType(str, enum.Enum):
     ASSISTANT_MESSAGE = "assistant/message"
     TOOL_CALL = "tool/call"
     TOOL_RESULT = "tool/result"
+    ASK_USER = "ask/user"  # 工具向用户提问（落盘，前端渲染问题卡；回答经 tool/result 回流）
+    FILE_SEND = "file/send"  # 工具向用户交付文件（落盘，前端渲染文件卡可下载）
+    SESSION_COMPACTION = "session/compaction"  # 历史压缩标记（summary + until_seq，落盘供回放/续用）
     TURN_END = "turn/end"
     TURN_ABORTED = "turn/aborted"
     ERROR = "error"
@@ -53,6 +56,9 @@ class Message(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None
+    # 多模态图片附件（pi 式瞬态附件：只在下一次 LLM 调用时注入，不落事件流；
+    # 元素形如 {"mime": "image/png", "base64": "..."}）
+    images: list[dict[str, str]] = Field(default_factory=list)
 
 
 class SessionEvent(BaseModel):
@@ -128,3 +134,8 @@ class AgentConfig(BaseModel):
     tool_names: list[str] = Field(default_factory=list)
     max_steps: int = 25
     model_id: str = ""
+    # 上下文自动压缩（参考 pi compaction）：上次 LLM 调用的 prompt_tokens 超过
+    # 阈值时，把早期历史 LLM 摘要为一条压缩消息、保留近期原文；0 = 关闭
+    compaction_threshold_tokens: int = 24000
+    # 压缩时保留的近期历史字符预算（约一半阈值对应量，防止压缩后立刻再触发）
+    compaction_keep_chars: int = 24000
