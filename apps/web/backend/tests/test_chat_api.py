@@ -1384,6 +1384,63 @@ async def test_steer_run(app, client, admin_headers, monkeypatch):
     assert r2.status_code == 409
 
 
+class FinalAnswerSteerableBackend:
+    """第 1 次延时流式输出纯文本最终回答（留 steer 窗口、无下一个 step），第 2 次按剧本回答。"""
+
+    calls: ClassVar[list] = []
+
+    def __init__(self, provider):
+        """记录 provider。"""
+        self.provider = provider
+
+    async def stream(self, messages, tools=None):
+        """第 1 幕延时收尾（插话无处消费），第 2 幕消费剧本。"""
+        FinalAnswerSteerableBackend.calls.append(list(messages))
+        if len(FinalAnswerSteerableBackend.calls) == 1:
+            for _ in range(10):
+                await asyncio.sleep(0.05)
+                yield TextDelta(text="第一轮回答")
+            yield Usage()
+        else:
+            yield TextDelta(text="第二轮回答")
+            yield Usage()
+
+
+async def test_steer_after_final_answer_queues_next_turn(app, client, admin_headers,
+                                                          monkeypatch):
+    """收尾窗口插话兜底：第一轮结束后残留插话自动转为下一轮正式输入续跑。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    FinalAnswerSteerableBackend.calls = []
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend",
+                        FinalAnswerSteerableBackend)
+    sid = await _make_session(client, admin_headers)
+
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "第一问"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+    # 等 0.2s 进入收尾流中段（0.5s 流）：step 0 的 drain 已过、本轮无下一个
+    # step——插话只能留队列，由收尾兜底转为下一轮（提前入队会被本轮 drain
+    # 消费，测的就不是收尾窗口了）
+    await asyncio.sleep(0.2)
+    r = await client.post(f"/api/v1/runs/{run_id}/steer", headers=admin_headers,
+                          json={"text": "追问一句"})
+    assert r.status_code == 200
+
+    resp = await asyncio.wait_for(task, timeout=15)
+    events = parse_sse(resp.text)
+    types = [t for t, _ in events]
+    # 两个完整 turn；插话作为第二轮的正式 user/message（不带 steering 标记）
+    assert types.count("turn/end") == 2
+    user_msgs = [e for t, e in events if t == "user/message"]
+    assert user_msgs[-1]["payload"]["text"] == "追问一句"
+    assert "steering" not in user_msgs[-1]["payload"]
+    # 第二轮 LLM 调用（续跑）的上下文里能看到插话
+    assert any(getattr(m, "content", "") == "追问一句" and getattr(m, "role", None) is not None
+               and m.role.value == "user"
+               for m in FinalAnswerSteerableBackend.calls[1])
+
+
 async def test_steer_missing_run_404(client, admin_headers):
     """插话目标 run 不存在 → 404；空文本 → 422。"""
     r = await client.post("/api/v1/runs/nope/steer", headers=admin_headers,

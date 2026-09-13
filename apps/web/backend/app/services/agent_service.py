@@ -354,10 +354,19 @@ class AgentService:
             pass  # run 记录失败不阻断对话流（并发限制会暂时失效，属存储故障降级）
         final_status = "completed"
         try:
-            stream = session.run(text, attachments=attachments)
-            async with contextlib.aclosing(stream):
-                async for _event in stream:
-                    pass  # 事件已由 sinks 持久化并入队
+            pending_text, pending_attachments = text, attachments
+            while True:
+                stream = session.run(pending_text, attachments=pending_attachments)
+                async with contextlib.aclosing(stream):
+                    async for _event in stream:
+                        pass  # 事件已由 sinks 持久化并入队
+                # 插话兜底：turn 正常结束但队列残留插话（模型收尾窗口入队、
+                # 无下一个 step 可消费）→ 转为下一轮用户输入自动续跑，防静默
+                # 丢失；取消/LLM 失败路径 take_queued_turn 内部已丢弃返回 None
+                pending_text = session.take_queued_turn()
+                pending_attachments = None
+                if pending_text is None:
+                    break
         except Exception:
             final_status = "failed"
         # harness 取消旗标（未暴露公共 API，接入契约确认可读）：用户显式 cancel 优先于异常归类

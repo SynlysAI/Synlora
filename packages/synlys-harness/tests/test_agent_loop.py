@@ -157,6 +157,53 @@ async def test_steering_injected_next_step(tmp_path):
     assert steering_msgs
 
 
+async def test_take_queued_turn_after_final_answer():
+    """收尾窗口插话不被本轮消费：take_queued_turn 取出供宿主续跑下一轮。"""
+
+    class SlowFinalBackend(FakeBackend):
+        """每轮都延时流式输出纯文本最终回答（无下一个 step 可消费插话）。"""
+
+        async def stream(self, messages, tools=None):
+            self.calls.append(messages)
+            for _ in range(10):
+                await asyncio.sleep(0.005)
+                yield TextDelta(text="最终回答")
+            yield Usage(prompt_tokens=1, completion_tokens=1)
+
+    backend = SlowFinalBackend([])
+    session = _session(backend)
+    task = asyncio.create_task(_collect(session, "第一问"))
+    await asyncio.sleep(0.02)
+    session.steer("收尾后来的一句")  # 本轮已无下一个 step，插话留队列
+    events = await task
+    assert EventType.TURN_END in [e.type for e in events]
+    assert session.take_queued_turn() == "收尾后来的一句"
+    # 宿主续跑：插话作为下一轮正式输入，LLM 可见
+    await _collect(session, "收尾后来的一句")
+    assert any(m.role.value == "user" and m.content == "收尾后来的一句"
+               for m in backend.calls[1])
+    assert session.take_queued_turn() is None
+
+
+async def test_take_queued_turn_empty():
+    """无残留插话时 take_queued_turn 返回 None。"""
+    backend = FakeBackend([[TextDelta(text="ok")]])
+    session = _session(backend)
+    await _collect(session, "hi")
+    assert session.take_queued_turn() is None
+
+
+async def test_take_queued_turn_discarded_on_cancel():
+    """取消路径的残留插话直接丢弃（不续跑）。"""
+    backend = FakeBackend([[TextDelta(text="ok")]])
+    session = _session(backend)
+    await _collect(session, "hi")
+    session.steer("迟到的插话")
+    session.cancel()
+    assert session.take_queued_turn() is None
+    assert session.take_queued_turn() is None  # 队列已清空
+
+
 async def test_extension_hooks_invoked():
     """四钩子中 before_llm_call 可改写消息、on_session_start/end 被调用。"""
     seen = {}
