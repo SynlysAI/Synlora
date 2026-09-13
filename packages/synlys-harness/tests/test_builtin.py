@@ -704,6 +704,40 @@ async def test_ask_user_tool(tmp_path):
     assert [o["label"] for o in captured["options"]] == ["方案A", "方案B"]  # 脏数据被滤掉
 
 
+async def test_ask_user_multi_questions(tmp_path):
+    """ask_user 多题模式：questions 规范化透传；query/questions 二选一校验。"""
+    pipe = _setup()
+    captured = {}
+
+    async def handler(payload):
+        captured.update(payload)
+        return "1. 题：答"
+
+    ctx = _ctx(tmp_path, extra={"ask_user_handler": handler, "tool_call_id": "c10"})
+    r = await pipe.run("ask_user", ctx, {
+        "questions": [
+            {"question": "用哪个数据集？", "header": "数据", "multi_select": True,
+             "options": [{"label": "A", "bad": 1}, {"label": "B"}]},
+            {"question": "输出什么格式？", "options": []},
+            {"bad": 1},  # 无 question 的脏项被滤掉
+        ],
+    })
+    assert r.ok
+    qs = captured["questions"]
+    assert [q["question"] for q in qs] == ["用哪个数据集？", "输出什么格式？"]
+    assert qs[0]["header"] == "数据" and qs[0]["multi_select"] is True
+    assert [o["label"] for o in qs[0]["options"]] == ["A", "B"]
+    assert qs[1]["options"] == []
+    assert "query" in captured and captured["query"] == ""
+
+    # 既无 query 也无 questions：invalid_arguments
+    bad = await pipe.run("ask_user", ctx, {})
+    assert not bad.ok and bad.error == "invalid_arguments"
+    # questions 全是脏项：invalid_arguments
+    bad2 = await pipe.run("ask_user", ctx, {"questions": [{"bad": 1}]})
+    assert not bad2.ok and bad2.error == "invalid_arguments"
+
+
 async def test_file_send_tool(tmp_path):
     """file.send：无 handler 报错（登记逻辑在后端服务层测）。"""
     pipe = _setup()

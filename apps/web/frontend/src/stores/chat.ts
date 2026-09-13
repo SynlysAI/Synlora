@@ -41,6 +41,13 @@ export type ChatItem =
       callId: string
       query: string
       options: { label: string; description?: string }[]
+      /** 多问题模式（payload.questions，与 query 二选一）：逐题作答一次提交。 */
+      questions?: {
+        question: string
+        header?: string
+        options: { label: string; description?: string }[]
+        multiSelect?: boolean
+      }[]
       /** 管线强制审批卡（payload.kind=approval）：允许/拒绝按钮提交固定文案。 */
       approval?: { tool: string; argsPreview?: string }
       answer?: string
@@ -222,6 +229,18 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
     }
     case 'ask/user': {
       const isApproval = payload.kind === 'approval'
+      const rawQuestions = Array.isArray(payload.questions)
+        ? (payload.questions as Record<string, unknown>[])
+        : undefined
+      const questions = rawQuestions
+        ?.filter((q) => String(q.question ?? '').trim())
+        .map((q) => ({
+          question: String(q.question ?? ''),
+          header: q.header ? String(q.header) : undefined,
+          options:
+            (q.options as { label: string; description?: string }[] | undefined) ?? [],
+          multiSelect: q.multi_select === true,
+        }))
       const item: ChatItem = {
         kind: 'ask_user',
         callId: String(payload.tool_call_id ?? ''),
@@ -229,6 +248,7 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
         options: isApproval
           ? []
           : (payload.options as { label: string; description?: string }[] | undefined) ?? [],
+        questions: !isApproval && questions?.length ? questions : undefined,
         approval: isApproval
           ? {
               tool: String(payload.tool ?? ''),
@@ -479,6 +499,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
 
     try {
+      // 本流内首条非 steering 用户消息已被 optimistic 气泡渲染（跳过投影防
+      // 重复）；后续同类消息 = 插话兜底续跑轮的输入，须投影上屏并开启新 turn
+      // 分组（否则与回放视图不一致：上一轮回答会被折进任务用时区）
+      let ownUserMsgSeen = false
       await streamSse(
         `/api/v1/sessions/${sessionId}/messages`,
         // 技能/附件非空才带对应字段（缺省语义由后端区分：skills = 全部可用）
@@ -500,9 +524,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set((s) => {
             const stats = reduceStats(s.stats, ev)
             // 普通用户消息已被 optimistic 气泡渲染，跳过投影避免重复；
-            // steering 插话没有 optimistic，走投影正常上屏
-            if (ev.type === 'user/message' && !ev.payload?.steering)
-              return { lastSeq: Math.max(s.lastSeq, ev.seq), stats }
+            // steering 插话与续跑轮输入没有 optimistic，走投影正常上屏
+            if (ev.type === 'user/message' && !ev.payload?.steering) {
+              if (!ownUserMsgSeen) {
+                ownUserMsgSeen = true
+                return { lastSeq: Math.max(s.lastSeq, ev.seq), stats }
+              }
+            }
             const next = reduceEvent(
               { items: s.messages, streamingText: s.streamingText, thinkingText: s.thinkingText, turnStartTs: s.turnStartTs },
               ev,

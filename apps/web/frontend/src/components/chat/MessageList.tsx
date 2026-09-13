@@ -47,6 +47,8 @@ interface RawTurn {
 interface Turn {
   user: Extract<ChatItem, { kind: 'user' }> | null
   process: ChatItem[]
+  /** file.send 产物交付卡：摘出折叠区常驻回答下方（产物要下载，收进下拉看不见）。 */
+  deliveries: Extract<ChatItem, { kind: 'file_send' }>[]
   answer: Extract<ChatItem, { kind: 'assistant' }> | null
 }
 
@@ -60,10 +62,19 @@ function groupTurns(items: ChatItem[]): Turn[] {
     else last.items.push(item)
   }
   return raw.map(({ user, items: all }) => {
-    const answerIdx = all.findLastIndex((it) => it.kind === 'assistant')
-    if (answerIdx === -1) return { user, process: all, answer: null }
-    const answer = all[answerIdx] as Extract<ChatItem, { kind: 'assistant' }>
-    return { user, process: all.filter((_, i) => i !== answerIdx), answer }
+    const deliveries = all.filter(
+      (it): it is Extract<ChatItem, { kind: 'file_send' }> => it.kind === 'file_send',
+    )
+    const rest = deliveries.length ? all.filter((it) => it.kind !== 'file_send') : all
+    const answerIdx = rest.findLastIndex((it) => it.kind === 'assistant')
+    if (answerIdx === -1) return { user, process: rest, deliveries, answer: null }
+    const answer = rest[answerIdx] as Extract<ChatItem, { kind: 'assistant' }>
+    return {
+      user,
+      process: rest.filter((_, i) => i !== answerIdx),
+      deliveries,
+      answer,
+    }
   })
 }
 
@@ -163,10 +174,7 @@ function WorkItem({ item }: { item: ChatItem }) {
     return <ToolCallCard call={item.call} result={item.result} />
   }
   if (item.kind === 'ask_user') {
-    return <AskUserCard callId={item.callId} query={item.query} options={item.options} approval={item.approval} answer={item.answer} />
-  }
-  if (item.kind === 'file_send') {
-    return <FileSendCard fileId={item.fileId} filename={item.filename} size={item.size} note={item.note} />
+    return <AskUserCard callId={item.callId} query={item.query} options={item.options} questions={item.questions} approval={item.approval} answer={item.answer} />
   }
   // 中间解说：正文照常渲染，但不带尾部时间/复制/用量（那属于最终回答）
   if (item.kind === 'assistant') {
@@ -238,6 +246,16 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
             hideMeta={active}
           />
         )}
+        {/* 产物交付卡：常驻最终回答下方，不随过程区折叠 */}
+        {turn.deliveries.map((d, i) => (
+          <FileSendCard
+            key={i}
+            fileId={d.fileId}
+            filename={d.filename}
+            size={d.size}
+            note={d.note}
+          />
+        ))}
       </div>
     </section>
   )

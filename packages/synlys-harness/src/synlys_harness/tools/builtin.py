@@ -363,10 +363,12 @@ async def file_read_image(ctx: ToolContext, args: dict) -> ToolResult:
 @tool(
     name="ask_user",
     description=(
-        "向用户提问并等待回答（对话流内出现问题卡片）。两种用法："
-        "1) 只传 query：用户自由输入回答；"
-        "2) query + options（2-4 个选项）：用户点选或自由输入。"
-        "信息不足、方案有重大取舍或需要用户确认时使用；不要用它问能自己查到的问题。"
+        "向用户提问并等待回答（对话流内出现问答卡片，用户勾选/填写后统一确认提交）。"
+        "两种用法：1) 单问题：只传 query（可带 2-4 个 options）；"
+        "2) 多问题：传 questions 数组（每题 question 必填，可带 header 短标题、"
+        "options 2-4 个选项、multi_select 多选标记），用户逐题作答、一次提交。"
+        "信息不足、方案有重大取舍或需要用户确认时使用；不要用它问能自己查到的问题；"
+        "一次最多 4 题，问题相关的合并为一次提问，不要连续多次调用。"
     ),
     parameters={"type": "object", "properties": {
         "query": {"type": "string", "description": "要问用户的问题（一句话说清背景与选项含义）"},
@@ -380,7 +382,28 @@ async def file_read_image(ctx: ToolContext, args: dict) -> ToolResult:
             },
             "description": "预置选项（2-4 个）；不传则用户自由输入",
         },
-    }, "required": ["query"]},
+        "questions": {
+            "type": "array", "maxItems": 4,
+            "items": {
+                "type": "object", "properties": {
+                    "question": {"type": "string", "description": "问题正文"},
+                    "header": {"type": "string", "description": "短标题（卡片头部显示，可选）"},
+                    "options": {
+                        "type": "array", "maxItems": 4,
+                        "items": {
+                            "type": "object", "properties": {
+                                "label": {"type": "string", "description": "选项文案（1-5 个词）"},
+                                "description": {"type": "string", "description": "选项含义补充说明"},
+                            }, "required": ["label"],
+                        },
+                        "description": "预置选项（2-4 个）；不传则该题自由输入",
+                    },
+                    "multi_select": {"type": "boolean", "description": "允许多选（默认单选）"},
+                }, "required": ["question"],
+            },
+            "description": "多问题模式（与 query 二选一）：用户逐题作答、一次提交",
+        },
+    }, "required": []},
     timeout_s=600,  # 等人回答；管线超时后工具取消并报错，不打断后续
 )
 async def ask_user(ctx: ToolContext, args: dict) -> ToolResult:
@@ -388,16 +411,42 @@ async def ask_user(ctx: ToolContext, args: dict) -> ToolResult:
     handler = ctx.extra.get("ask_user_handler")
     if not callable(handler):
         return ToolResult(ok=False, content="当前运行环境不支持用户问询", error="no_handler")
-    options = [
-        {"label": str(o.get("label", ""))[:40],
-         **({"description": str(o.get("description", ""))[:120]} if o.get("description") else {})}
-        for o in (args.get("options") or []) if isinstance(o, dict) and o.get("label")
-    ][:4]
-    answer = await handler({
-        "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
-        "query": args["query"],
-        "options": options,
-    })
+
+    def _norm_options(raw: list) -> list[dict]:
+        return [
+            {"label": str(o.get("label", ""))[:40],
+             **({"description": str(o.get("description", ""))[:120]} if o.get("description") else {})}
+            for o in (raw or []) if isinstance(o, dict) and o.get("label")
+        ][:4]
+
+    payload: dict = {"tool_call_id": str(ctx.extra.get("tool_call_id", ""))}
+    if args.get("questions"):
+        questions = []
+        for q in args["questions"][:4]:
+            if not isinstance(q, dict) or not str(q.get("question", "")).strip():
+                continue
+            question = {
+                "question": str(q["question"])[:500],
+                "options": _norm_options(q.get("options")),
+            }
+            if q.get("header"):
+                question["header"] = str(q["header"])[:30]
+            if q.get("multi_select") and question["options"]:
+                question["multi_select"] = True
+            questions.append(question)
+        if not questions:
+            return ToolResult(ok=False, content="questions 内没有有效问题（question 必填）",
+                              error="invalid_arguments")
+        payload.update({"questions": questions, "query": ""})
+    else:
+        if not str(args.get("query", "")).strip():
+            return ToolResult(ok=False, content="query 与 questions 至少提供其一",
+                              error="invalid_arguments")
+        payload.update({
+            "query": args["query"],
+            "options": _norm_options(args.get("options")),
+        })
+    answer = await handler(payload)
     return ToolResult(ok=True, content=f"用户回答：{answer}", data={"answer": answer})
 
 

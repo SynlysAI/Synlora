@@ -1551,6 +1551,66 @@ class AskFakeBackend(FakeBackend):
             yield ev
 
 
+class MultiAskFakeBackend(FakeBackend):
+    """先以多题模式调 ask_user（questions 数组），回答后收尾。"""
+
+    calls: ClassVar[int] = 0
+
+    async def stream(self, messages, tools=None):
+        FakeBackend.received.append(list(messages))
+        MultiAskFakeBackend.calls += 1
+        if MultiAskFakeBackend.calls == 1:
+            yield ToolCallChunk(id="mq1", name="ask_user", arguments={
+                "questions": [
+                    {"question": "用哪个数据集？", "header": "数据", "multi_select": True,
+                     "options": [{"label": "A"}, {"label": "B"}]},
+                    {"question": "输出什么格式？"},
+                ],
+            })
+            return
+        for ev in FakeBackend.script.pop(0):
+            yield ev
+
+
+async def test_ask_user_multi_questions_e2e(app, client, admin_headers, monkeypatch):
+    """ask_user 多题全链路：questions 落事件 → answer 拼接文本 → tool/result 携带。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", MultiAskFakeBackend)
+    FakeBackend.script = [[TextDelta(text="按答案执行"), Usage()]]
+    FakeBackend.received = []
+    MultiAskFakeBackend.calls = 0
+    sid = await _make_session(client, admin_headers)
+
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "帮我配置"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+    asked = None
+    for _ in range(80):
+        events = await app.state.event_repo.list_events(sid)
+        asked = next((e for e in events if e.type.value == "ask/user"), None)
+        if asked:
+            break
+        await asyncio.sleep(0.1)
+    assert asked is not None
+    qs = asked.payload["questions"]
+    assert [q["question"] for q in qs] == ["用哪个数据集？", "输出什么格式？"]
+    assert qs[0]["multi_select"] is True and qs[0]["header"] == "数据"
+    assert "kind" not in asked.payload  # 非审批
+
+    reply = "1. 用哪个数据集？：A、B\n2. 输出什么格式？：Word"
+    r = await client.post(f"/api/v1/runs/{run_id}/answer", headers=admin_headers,
+                          json={"text": reply})
+    assert r.status_code == 200
+
+    resp = await asyncio.wait_for(task, timeout=15)
+    events = parse_sse(resp.text)
+    result = [e for t, e in events
+              if t == "tool/result" and e["payload"].get("name") == "ask_user"][0]
+    assert reply in result["payload"]["content"]
+    assert events[-1][0] == "turn/end"
+
+
 async def test_ask_user_end_to_end(app, client, admin_headers, monkeypatch):
     """ask_user 全链路：问题事件落盘 → answer API → 回答进 tool/result 与第二轮上下文。"""
     await _bind_provider_to_asst_data(client, admin_headers)
