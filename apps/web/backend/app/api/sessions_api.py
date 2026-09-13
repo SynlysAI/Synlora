@@ -276,8 +276,14 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     doc = await _own_session(sid, user, repos)
     # 助手指针失效（未选专家/专家已删）不报错，交 chat 走无 persona 路径
     assistant = await repos.assistant.get(doc.get("assistant_id") or "")
-    # 模型优先级：会话级覆盖 > 助手绑定（两者皆无 → 422）
+    # 模型优先级：会话级覆盖 > 助手绑定 > 第一个启用模型（回落）。回落只作用于
+    # 本次发送、**不写回会话**——查看会话必须零写入（否则 updated_at 变"刚刚"，
+    # 侧栏时间/排序漂移）；口径与前端 ModelPicker 的 explicitId 一致
     pid = doc.get("model_provider_id") or (assistant or {}).get("model_provider_id")
+    if not pid:
+        enabled = [p for p in await repos.provider.list() if p.get("enabled")]
+        if enabled:
+            pid = enabled[0]["_id"]
     owner = doc.get("title") or (assistant or {}).get("name") or sid
     cfg = await _resolve_provider(pid, str(owner), repos)
     service = _agent_service(request)

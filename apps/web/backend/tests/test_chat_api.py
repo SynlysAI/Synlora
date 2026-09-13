@@ -1595,3 +1595,27 @@ async def test_file_send_end_to_end(app, client, admin_headers, monkeypatch):
     file_id = send_ev[0]["payload"]["file_id"]
     dl = await client.get(f"/api/v1/files/{file_id}/download", headers=admin_headers)
     assert dl.status_code == 200
+
+
+async def test_send_falls_back_to_first_enabled_model(app, client, admin_headers,
+                                                      monkeypatch):
+    """无专家且会话未存模型：发送回落第一个启用模型（不写回会话，查看零写入）。"""
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    enabled = await _make_provider(client, admin_headers, name="only-enabled",
+                                   model_id="m-enabled")
+    disabled = await _make_provider(client, admin_headers, name="disabled-one",
+                                    model_id="m-disabled", enabled=False)
+    # 无专家、不带模型的会话
+    sid = (await client.post("/api/v1/sessions", headers=admin_headers,
+                             json={})).json()["_id"]
+    resp = await client.post(f"/api/v1/sessions/{sid}/messages",
+                             headers=admin_headers, json={"text": "你好"})
+    assert resp.status_code == 200, resp.text
+    # 实际用的是启用模型（FakeBackend 收到的 provider 配置）
+    assert FakeBackend.providers[-1].model_id == "m-enabled"
+    # 回落不写回会话（updated_at/model_provider_id 不变 → 查看零写入）
+    doc = await app.state.session_repo.get(sid)
+    assert doc.get("model_provider_id") is None
+    await client.delete(f"/api/v1/models/{enabled['_id']}", headers=admin_headers)
+    await client.delete(f"/api/v1/models/{disabled['_id']}", headers=admin_headers)

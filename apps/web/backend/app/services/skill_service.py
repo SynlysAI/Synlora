@@ -18,7 +18,7 @@ import yaml
 
 NAME_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
-BUILTIN_SKILL_NAMES = frozenset({"data-analysis", "pdf-extraction"})
+BUILTIN_SKILL_NAMES = frozenset({"data-analysis", "pdf-extraction", "office-doc"})
 RESOURCE_SKILLS = Path(synlys_harness.__file__).resolve().parent / "resources" / "skills"
 
 

@@ -74,19 +74,16 @@ export default function ModelPicker() {
       : (models[0]?._id ?? null)
     : overrideId
 
-  // 自动下发：无专家且还没有可用的模型时——草稿态写进 draft，有会话则 PATCH
+  // 自动补选（仅草稿态写本地 store）：无专家且还没选模型时先记第一个可用模型，
+  // 建会话时随请求下发。**已存在的会话不在查看时 PATCH**——那会把 updated_at
+  // 刷成"刚刚"，侧栏时间/排序随之漂移（查看必须零写入）；这类会话发送时由
+  // 后端回落第一个启用模型，与本组件 explicitId 的显示口径一致。
   useEffect(() => {
     if (!needsExplicitModel || !modelsLoaded || !explicitId || explicitId === overrideId) return
     if (drafting) {
       setDraftModel(explicitId)
-      return
     }
-    if (!currentId) return
-    void setModel(currentId, explicitId).catch(() => {
-      // 失败静默：按钮仍显示该模型，用户可手动重选（错误由下拉操作路径提示）
-    })
-  }, [needsExplicitModel, drafting, currentId, modelsLoaded, explicitId, overrideId,
-      setModel, setDraftModel])
+  }, [needsExplicitModel, drafting, modelsLoaded, explicitId, overrideId, setDraftModel])
 
   /** 跟随助手时的助手侧模型名（联查字段：正常名 / "(已停用)" / "(已删除)" / null=未绑定）。 */
   const assistantModel = boundAssistant?.model_name
