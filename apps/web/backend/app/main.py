@@ -3,7 +3,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.assistants_api import router as assistants_router
@@ -86,9 +87,33 @@ def create_app() -> FastAPI:
         """健康检查。"""
         return {"status": "ok"}
 
-    # 单端口部署：dist 存在时托管前端（必须在所有 API 路由之后挂 "/"，否则会吞掉 API 请求）
+    # 单端口部署：dist 存在时托管前端 SPA（必须在所有 API 路由之后注册，否则会吞掉 API 请求）。
+    # /chat/<id>、/admin/* 等前端路径刷新时会直接打到后端，StaticFiles(html=True) 只回
+    # 404，因此用「静态资源挂载 + SPA catch-all 回 index.html」的标准做法（等价于
+    # vite/nginx 的 historyApiFallback）。
     if (FRONTEND_DIST / "index.html").is_file():
-        app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="spa")
+        assets_dir = FRONTEND_DIST / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> FileResponse:
+            """SPA 回退：dist 根下的真实文件（favicon/icons 等）直接返回，其余路径回 index.html。
+
+            Args:
+                full_path: 去掉前导斜杠后的请求路径。
+
+            Returns:
+                命中的静态文件；未命中（前端路由）时为 index.html。
+            """
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
+            candidate = (FRONTEND_DIST / full_path).resolve() if full_path else None
+            if (candidate is not None
+                    and candidate.is_file()
+                    and candidate.is_relative_to(FRONTEND_DIST.resolve())):
+                return FileResponse(candidate)
+            return FileResponse(FRONTEND_DIST / "index.html")
     else:
         logger.warning("未找到前端构建产物 %s（先在 apps/web/frontend 执行 npm run build），当前仅 API 模式", FRONTEND_DIST)
 

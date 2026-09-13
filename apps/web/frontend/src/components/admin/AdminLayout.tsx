@@ -1,27 +1,27 @@
 /**
  * 管理页布局：顶栏（返回工作台 + 页签切换 + 主题切换 + 用户名）+ 内容区。
  *
- * hash 路由 #/admin/models | #/admin/assistants | #/admin/skills
+ * 路径路由 /admin/models | /admin/assistants | /admin/skills
  * 由 App.tsx 解析后传入 tab；
  * 非 admin 渲染无权限页（菜单入口已隐藏，此处为直链访问兜底）。
  */
 import type { ReactNode } from 'react'
 import { ToastHost } from '@/components/layout'
+import { appRoutePath, type AdminTab } from '@/routing/route'
+import { useRouterStore } from '@/routing/router'
 import { useAuthStore } from '@/stores/auth'
 import { useDarkTheme } from '@/utils/theme'
 
-/** 管理页页签。 */
-export type AdminTab = 'models' | 'assistants' | 'skills'
-
-/** 页签定义：key + 目标 hash + 展示名。 */
-const TABS: Array<{ key: AdminTab; hash: string; label: string }> = [
-  { key: 'models', hash: '#/admin/models', label: '模型服务' },
-  { key: 'assistants', hash: '#/admin/assistants', label: '助手管理' },
-  { key: 'skills', hash: '#/admin/skills', label: '技能管理' },
+/** 页签定义：key + 路由 + 展示名。 */
+const TABS: Array<{ key: AdminTab; label: string }> = [
+  { key: 'models', label: '模型服务' },
+  { key: 'assistants', label: '助手管理' },
+  { key: 'skills', label: '技能管理' },
 ]
 
 /** 无权限页：仅管理员可访问的直链兜底。 */
 function NoPermission() {
+  const navigate = useRouterStore((s) => s.navigate)
   return (
     <div className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[360px] flex-col items-center gap-3 rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-8 py-10 text-center">
@@ -44,7 +44,11 @@ function NoPermission() {
           管理页仅对管理员开放，如需管理模型服务与助手请联系管理员开通权限。
         </p>
         <a
-          href="#"
+          href="/chat/new"
+          onClick={(e) => {
+            e.preventDefault()
+            navigate({ kind: 'chat-new' })
+          }}
           className="rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-button-primary-fill)] px-3 py-1.5 text-[13px] font-medium text-[var(--sa-alias-label-primary-foreground)] transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-button-primary-hover)]"
         >
           返回工作台
@@ -64,6 +68,7 @@ interface AdminLayoutProps {
 /** 管理页布局组件（独立于 AppShell 的全屏壳）。 */
 export default function AdminLayout({ tab, children }: AdminLayoutProps) {
   const user = useAuthStore((s) => s.user)
+  const navigate = useRouterStore((s) => s.navigate)
   const [dark, toggleDark] = useDarkTheme()
 
   return (
@@ -71,7 +76,11 @@ export default function AdminLayout({ tab, children }: AdminLayoutProps) {
       {/* 顶栏 */}
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-bg-layer-1)] px-4">
         <a
-          href="#"
+          href="/chat/new"
+          onClick={(e) => {
+            e.preventDefault()
+            navigate({ kind: 'chat-new' })
+          }}
           className="flex items-center gap-1.5 rounded-[var(--sa-radius-sm)] px-2 py-1.5 text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
         >
           <svg
@@ -99,8 +108,12 @@ export default function AdminLayout({ tab, children }: AdminLayoutProps) {
           {TABS.map((t) => (
             <a
               key={t.key}
-              href={t.hash}
+              href={appRoutePath({ kind: 'admin', tab: t.key })}
               aria-current={t.key === tab ? 'page' : undefined}
+              onClick={(e) => {
+                e.preventDefault()
+                navigate({ kind: 'admin', tab: t.key })
+              }}
               className={`rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
                 t.key === tab
                   ? 'bg-[var(--sa-specific-sidebar-nav-item-active)] font-medium text-[var(--sa-alias-label-primary)]'

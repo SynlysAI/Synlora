@@ -10,6 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Session } from '@/types'
+import { useRouterStore } from '@/routing/router'
 import { useSessionsStore } from '@/stores/sessions'
 import ConfirmDialog from './ConfirmDialog'
 import { toast } from '@/stores/toasts'
@@ -84,7 +85,10 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
     setDeleting(true)
     setDeleteError(null)
     try {
+      // 删的是当前会话时，删完回 /chat/new 草稿态（URL 不再指向已删会话）
+      const wasCurrent = useSessionsStore.getState().currentId === session._id
       await remove(session._id)
+      if (wasCurrent) useRouterStore.getState().navigate({ kind: 'chat-new' })
       setConfirmOpen(false)
       toast('success', '会话已删除')
     } catch (err) {
@@ -247,7 +251,6 @@ export default function SessionList({
 }: SessionListProps) {
   const storeSessions = useSessionsStore((s) => s.sessions)
   const currentId = useSessionsStore((s) => s.currentId)
-  const setCurrent = useSessionsStore((s) => s.setCurrent)
   const [archivedOpen, setArchivedOpen] = useState(false)
   const [restOpen, setRestOpen] = useState(false)
 
@@ -294,7 +297,8 @@ export default function SessionList({
           active={s._id === currentId}
           indent={indent}
           onSelect={() => {
-            setCurrent(s._id)
+            // 选中会话 = 导航到 /chat/<id>（URL 是唯一事实源，AppShell 同步 store）
+            useRouterStore.getState().navigate({ kind: 'chat-session', sessionId: s._id })
             onNavigate?.()
           }}
         />
@@ -357,7 +361,7 @@ export default function SessionList({
                 active={s._id === currentId}
                 indent={indent}
                 onSelect={() => {
-                  setCurrent(s._id)
+                  useRouterStore.getState().navigate({ kind: 'chat-session', sessionId: s._id })
                   onNavigate?.()
                 }}
               />

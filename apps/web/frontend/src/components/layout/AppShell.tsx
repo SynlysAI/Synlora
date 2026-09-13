@@ -9,10 +9,11 @@ import {
 import { ToastHost } from './ToastHost'
 import BrandMark from './BrandMark'
 import BrandWordmark from './BrandWordmark'
-import { ChatPanel } from '@/components/chat'
+import { ChatPanel, ConversationNotFound } from '@/components/chat'
 import { Rightbar } from '@/components/rightbar'
 import { Sidebar } from '@/components/sidebar'
 import { useAuthStore } from '@/stores/auth'
+import { useRouterStore } from '@/routing/router'
 import { FolderIcon } from '@/components/sidebar/icons'
 import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
@@ -140,6 +141,7 @@ const iconProps = {
 function UserMenu() {
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
+  const navigate = useRouterStore((s) => s.navigate)
   const [open, setOpen] = useState(false)
   if (!user) return null
 
@@ -180,7 +182,16 @@ function UserMenu() {
             className="absolute bottom-full left-0 z-50 mb-1.5 w-44 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
           >
             {user.role === 'admin' && (
-              <a role="menuitem" href="#/admin/models" onClick={() => setOpen(false)} className={itemClass}>
+              <a
+                role="menuitem"
+                href="/admin/models"
+                onClick={(e) => {
+                  e.preventDefault()
+                  setOpen(false)
+                  navigate({ kind: 'admin', tab: 'models' })
+                }}
+                className={itemClass}
+              >
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M2 4.5h12M2 8h12M2 11.5h7" />
                 </svg>
@@ -333,7 +344,10 @@ export default function AppShell() {
   const [dragging, setDragging] = useState(false)
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const route = useRouterStore((s) => s.route)
+  const navigate = useRouterStore((s) => s.navigate)
   const sessions = useSessionsStore((s) => s.sessions)
+  const sessionsLoaded = useSessionsStore((s) => s.loaded)
   const currentId = useSessionsStore((s) => s.currentId)
   const isEmptySession = sessions.find((s) => s._id === currentId)?.message_count === 0
   // 进入空会话时收起右栏（Jiuwen 式欢迎页无右栏），同一会话内用户手动展开后不再干预。
@@ -343,6 +357,31 @@ export default function AppShell() {
     setCollapsedFor(currentId)
     setRightState('hidden')
   }
+
+  // URL 是会话选中态的唯一事实源（照 jiuwen）：路径变化 → 同步 store；
+  // /chat/new → 草稿态（currentId 置 null，ChatPanel 据此重置聊天态）
+  useEffect(() => {
+    const st = useSessionsStore.getState()
+    if (route.kind === 'chat-session') {
+      if (st.currentId !== route.sessionId) st.setCurrent(route.sessionId)
+    } else if (st.currentId !== null) {
+      st.setCurrent(null)
+    }
+  }, [route])
+
+  // 懒创建落库：草稿态首条消息由 chat store 建会话并把 currentId 置为新 id，
+  // 这里把 URL **replace** 到 /chat/<id>——后退键不回到 /chat/new 草稿（照 jiuwen）
+  useEffect(() => {
+    if (route.kind === 'chat-new' && currentId) {
+      navigate({ kind: 'chat-session', sessionId: currentId }, { replace: true })
+    }
+  }, [currentId, navigate, route])
+
+  // 直开/刷新 /chat/<id> 但会话不在当前账号列表（已删/他人会话）：缺失提示卡
+  const sessionMissing =
+    route.kind === 'chat-session' &&
+    sessionsLoaded &&
+    !sessions.some((s) => s._id === route.sessionId)
 
   // 视口监听：<900px 自动切换 compact（左栏改 overlay 抽屉）
   useEffect(() => {
@@ -394,7 +433,13 @@ export default function AppShell() {
               onOpenDrawer={compact ? () => setSidebarOpen(true) : undefined}
             />
             <div className="min-h-0 flex-1">
-              <ChatPanel />
+              {sessionMissing ? (
+                <div className="flex h-full items-center justify-center">
+                  <ConversationNotFound description="该对话不存在或已被删除，可能属于其他账号。" />
+                </div>
+              ) : (
+                <ChatPanel />
+              )}
             </div>
           </div>
         </section>

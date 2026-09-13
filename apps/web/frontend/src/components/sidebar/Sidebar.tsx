@@ -17,6 +17,7 @@
  */
 import { useMemo, useState } from 'react'
 import type { Session } from '@/types'
+import { useRouterStore } from '@/routing/router'
 import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
@@ -33,7 +34,6 @@ interface SidebarProps {
 /** 左栏组件（AppShell 左侧列 / compact 抽屉）。 */
 export default function Sidebar({ onNavigate }: SidebarProps) {
   const sessions = useSessionsStore((s) => s.sessions)
-  const setCurrentSession = useSessionsStore((s) => s.setCurrent)
   const projects = useProjectsStore((s) => s.projects)
   const projectsLoaded = useProjectsStore((s) => s.loaded)
   /** 切换「新会话目标工作区」（null = 未选 → 建会话时由后端回落默认工作区）。 */
@@ -77,7 +77,8 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
    */
   const handleNew = (projectId?: string) => {
     setCurrentProject(projectId ?? defaultProject?._id ?? null)
-    setCurrentSession(null)
+    // 导航到 /chat/new 草稿态（AppShell 据此把 currentId 置 null 并重置聊天态）
+    useRouterStore.getState().navigate({ kind: 'chat-new' })
     onNavigate?.()
   }
 
