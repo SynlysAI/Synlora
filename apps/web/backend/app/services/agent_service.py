@@ -128,7 +128,8 @@ class AgentService:
     async def chat(self, session_id: str, user: dict, assistant: dict | None,
                    provider_cfg: ModelProviderConfig, text: str,
                    workspace_root: Path,
-                   requested_skills: list[str] | None = None) -> str:
+                   requested_skills: list[str] | None = None,
+                   attachments: list[dict] | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
@@ -146,6 +147,9 @@ class AgentService:
                 必填而非回落用户目录：C6 把文件也项目作用域化后，用户目录下不会
                 再有 files/，静默回落等于把 run 跑在错误目录。
             requested_skills: 本会话选中的技能名列表；None 或空列表表示全部可用。
+            attachments: 随消息发送的附件元数据（[{file_id, filename, path}]，
+                path 为相对 workspace_root 的路径；调用方保证文件已在该项目内）。
+                None/空 = 无附件。
 
         Returns:
             run_id。
@@ -297,7 +301,8 @@ class AgentService:
             )
             active.session = session
             t = asyncio.create_task(
-                self._drive(run_id, session, text, user["sub"], session_id))
+                self._drive(run_id, session, text, user["sub"], session_id,
+                            attachments=attachments))
             self._bg.add(t)
             t.add_done_callback(self._bg.discard)
         except Exception:
@@ -310,7 +315,8 @@ class AgentService:
         return run_id
 
     async def _drive(self, run_id: str, session: RunSession, text: str,
-                     user_id: str, session_id: str) -> None:
+                     user_id: str, session_id: str,
+                     attachments: list[dict] | None = None) -> None:
         """后台驱动 run 至完成并落盘终态（独立于 SSE 消费者，断连不中断）。
 
         Args:
@@ -319,6 +325,7 @@ class AgentService:
             text: 用户消息文本。
             user_id: 用户 sub。
             session_id: 会话 id。
+            attachments: 随消息发送的附件元数据（None/空 = 无附件）。
         """
         try:
             await self._store.insert("runs", {
@@ -329,7 +336,7 @@ class AgentService:
             pass  # run 记录失败不阻断对话流（并发限制会暂时失效，属存储故障降级）
         final_status = "completed"
         try:
-            stream = session.run(text)
+            stream = session.run(text, attachments=attachments)
             async with contextlib.aclosing(stream):
                 async for _event in stream:
                     pass  # 事件已由 sinks 持久化并入队

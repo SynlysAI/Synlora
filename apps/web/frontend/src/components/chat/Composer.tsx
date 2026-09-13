@@ -19,7 +19,12 @@
  * 已选技能是「本轮一次性」语义：发送后清空。
  */
 import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import type { MessageAttachment, UploadResponse } from '@/types'
+import { api } from '@/api/client'
 import { useChatStore } from '@/stores/chat'
+import { pickActiveProject, useProjectsStore } from '@/stores/projects'
+import { useSessionsStore } from '@/stores/sessions'
+import { toast } from '@/stores/toasts'
 import AttachMenu from './AttachMenu'
 import ModelPicker from './ModelPicker'
 import WorkspacePicker from './WorkspacePicker'
@@ -55,6 +60,24 @@ interface ComposerProps {
   empty: boolean
 }
 
+/** 附件草稿（照 jiuwen AttachmentDraft 简化版：上传中 / 就绪两态）。 */
+interface AttachmentDraft {
+  /** 列表内唯一键（同名文件可重复选择）。 */
+  key: string
+  status: 'uploading' | 'ready'
+  filename: string
+  size: number
+  /** 上传完成后的文件记录 id（发送时引用）。 */
+  fileId: string
+}
+
+/** 文件大小格式化（与 FileSendCard 同口径）。 */
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${bytes} B`
+}
+
 /**
  * 输入框组件（中间列下部）。
  *
@@ -70,7 +93,11 @@ export default function Composer({ empty }: ComposerProps) {
   const [value, setValue] = useState('')
   /** 本轮勾选的技能名（一次性：发送后清空，见 submit）。 */
   const [skills, setSkills] = useState<string[]>([])
+  /** 本轮附件草稿（一次性：发送后清空，见 submit）。 */
+  const [attachments, setAttachments] = useState<AttachmentDraft[]>([])
   const ref = useRef<HTMLTextAreaElement>(null)
+  const hasUploadingAttachments = attachments.some((a) => a.status === 'uploading')
+  const readyAttachments = attachments.filter((a) => a.status === 'ready')
 
   /** 勾选/取消勾选一个技能（「+」菜单技能面板回调）。 */
   const toggleSkill = (name: string) =>
@@ -87,18 +114,83 @@ export default function Composer({ empty }: ComposerProps) {
     el.style.overflowY = el.scrollHeight > MAX_INPUT_HEIGHT ? 'auto' : 'hidden'
   }, [value])
 
+  /**
+   * 选中文件 → 立即上传到会话目标工作区并进附件草稿（chips 显示，随下一条消息发送）。
+   *
+   * 上传目标：已有会话用**会话绑定的工作区**（agent 的工作目录），草稿态用
+   * WorkspacePicker 当前选中的目标工作区；失败项 toast 后丢弃。
+   */
+  const handleFiles = async (list: File[]) => {
+    const sessionsState = useSessionsStore.getState()
+    const session = sessionsState.sessions.find((s) => s._id === sessionsState.currentId)
+    const projectId =
+      session?.project_id ?? pickActiveProject(useProjectsStore.getState())?._id ?? null
+    if (!projectId) {
+      toast('error', '请先创建或选择工作区后再上传附件')
+      return
+    }
+    // 先挂「上传中」占位 chips，完成/失败后逐项更新
+    const drafts = list.map((f) => ({
+      key: `${f.name}-${f.size}-${crypto.randomUUID()}`,
+      status: 'uploading' as const,
+      filename: f.name,
+      size: f.size,
+      fileId: '',
+    }))
+    setAttachments((prev) => [...prev, ...drafts])
+    const form = new FormData()
+    list.forEach((f) => form.append('files', f))
+    try {
+      const res = await api<UploadResponse>(`/api/v1/projects/${projectId}/files`, {
+        method: 'POST',
+        form,
+      })
+      // 上传端点与 list 同序（逐项处理、失败即跳过）
+      res.results.forEach((r, i) => {
+        const key = drafts[i]?.key
+        if (!key) return
+        if (r.ok && r.file) {
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.key === key
+                ? { ...a, status: 'ready', fileId: r.file!._id, size: r.file!.size }
+                : a,
+            ),
+          )
+        } else {
+          setAttachments((prev) => prev.filter((a) => a.key !== key))
+          toast('error', `上传失败（${r.code ?? 'error'}）：${r.error ?? r.file?.filename ?? '未知错误'}`)
+        }
+      })
+    } catch (err) {
+      setAttachments((prev) => prev.filter((a) => !drafts.some((d) => d.key === a.key)))
+      toast('error', `上传失败：${(err as Error).message}`)
+    }
+  }
+
   /** 发送当前输入；流式中转为 steering 插话（不打断当前步骤，下一步生效）。 */
   const submit = () => {
     const text = value.trim()
     if (!text) return
+    if (hasUploadingAttachments) {
+      toast('info', '附件上传中，请稍候再发送')
+      return
+    }
     if (streaming) {
       setValue('')
       void steer(text)
       return
     }
     setValue('')
-    void send(text, skills)
+    const messageAttachments: MessageAttachment[] = readyAttachments.map((a) => ({
+      file_id: a.fileId,
+      filename: a.filename,
+      path: '',
+      size: a.size,
+    }))
+    void send(text, skills, messageAttachments.length ? messageAttachments : undefined)
     setSkills([])
+    setAttachments([])
   }
 
   /** Enter 发送 / Shift+Enter 换行；中文输入法组合中的 Enter 不发送。 */
@@ -109,9 +201,74 @@ export default function Composer({ empty }: ComposerProps) {
     }
   };
 
-  /** 卡片内容（两种形态共用）：已选技能 chips + 输入区 + 底部功能行。 */
+  /** 卡片内容（两种形态共用）：附件/技能 chips + 输入区 + 底部功能行。 */
   const body = (
     <>
+      {/* 附件草稿 chips（输入框上方，照 jiuwen AttachmentDraft：上传中半透明、
+          就绪可删除；随下一条消息一起发送） */}
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 pb-1.5">
+          {attachments.map((a) => (
+            <span
+              key={a.key}
+              className={`inline-flex h-6 max-w-[220px] items-center gap-1.5 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-interactive-bg-hover)] pl-2.5 pr-1 text-xs ${
+                a.status === 'uploading'
+                  ? 'text-[var(--sa-alias-label-caption)]'
+                  : 'text-[var(--sa-alias-label-secondary)]'
+              }`}
+              title={a.status === 'uploading' ? `${a.filename}（上传中…）` : a.filename}
+            >
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="shrink-0 opacity-70"
+                aria-hidden="true"
+              >
+                <path d="M5.5 3.5h5L15 8v8a.9.9 0 0 1-.9.9H5.5a.9.9 0 0 1-.9-.9V4.4a.9.9 0 0 1 .9-.9z" />
+                <path d="M10.3 3.5V8H15" />
+              </svg>
+              <span className="truncate">{a.filename}</span>
+              {a.status === 'uploading' ? (
+                <span className="shrink-0 text-[11px]">上传中…</span>
+              ) : (
+                <>
+                  <span className="shrink-0 text-[11px] text-[var(--sa-alias-label-caption)]">
+                    {formatSize(a.size)}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`移除附件 ${a.filename}`}
+                    title={`移除附件 ${a.filename}`}
+                    onClick={() =>
+                      setAttachments((prev) => prev.filter((x) => x.key !== a.key))
+                    }
+                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] text-[var(--sa-alias-label-tertiary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-active)] hover:text-[var(--sa-alias-label-primary)]"
+                  >
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M4 4l8 8M12 4l-8 8" />
+                    </svg>
+                  </button>
+                </>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
       {/* 已选技能 chips（输入框上方，可逐个删除；发送后清空） */}
       {skills.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 pb-1.5">
@@ -158,7 +315,7 @@ export default function Composer({ empty }: ComposerProps) {
       />
       {/* 底部功能行：左「+」菜单（含专家 chip），右模型选择器 + 发送/停止 */}
       <div className="flex items-center justify-between gap-2 pt-1.5">
-        <AttachMenu selectedSkills={skills} onToggleSkill={toggleSkill} />
+        <AttachMenu selectedSkills={skills} onToggleSkill={toggleSkill} onFiles={(list) => void handleFiles(list)} />
         <div className="flex shrink-0 items-center gap-1.5">
           <ModelPicker />
           {/* 流式中有输入时：先出插话发送键（steering），停止键保留 */}
@@ -204,7 +361,7 @@ export default function Composer({ empty }: ComposerProps) {
               aria-label="发送"
               title="发送（Enter）"
               onClick={submit}
-              disabled={!value.trim()}
+              disabled={!value.trim() || hasUploadingAttachments}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-static-blue-500)] text-white transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-static-blue-600)] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <svg

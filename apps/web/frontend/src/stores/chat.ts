@@ -13,7 +13,7 @@
  *   文本（中止/断连）定稿保留。
  */
 import { create } from 'zustand'
-import type { SessionEvent, ToolCallPayload, ToolResultPayload } from '@/types'
+import type { MessageAttachment, SessionEvent, ToolCallPayload, ToolResultPayload } from '@/types'
 import { api, ApiError } from '@/api/client'
 import { streamSse } from '@/api/sse'
 import { pickSelectedAssistant, useAssistantsStore } from './assistants'
@@ -22,7 +22,7 @@ import { useSessionsStore } from './sessions'
 
 /** 聊天条目视图模型（由会话事件投影）。 */
 export type ChatItem =
-  | { kind: 'user'; text: string }
+  | { kind: 'user'; text: string; attachments?: MessageAttachment[] }
   | { kind: 'reasoning'; text: string }
   | {
       kind: 'assistant'
@@ -169,8 +169,11 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
     case 'turn/start':
       return { ...state, turnStartTs: ev.ts }
     case 'user/message': {
-      // 用户消息（含 steering 插话）逐条展示
-      const item: ChatItem = { kind: 'user', text: String(payload.text ?? '') }
+      // 用户消息（含 steering 插话）逐条展示；附件（已上传文件引用）随事件展示
+      const attachments = Array.isArray(payload.attachments)
+        ? (payload.attachments as MessageAttachment[])
+        : undefined
+      const item: ChatItem = { kind: 'user', text: String(payload.text ?? ''), attachments }
       return { ...state, items: [...state.items, item] }
     }
     case 'llm/delta':
@@ -334,8 +337,9 @@ interface ChatState {
    *
    * @param text 消息文本。
    * @param skills 本轮勾选的技能名（空/缺省 = 用全部可用技能，后端 requested_skills）。
+   * @param attachments 随消息发送的附件（已上传文件的元数据；空/缺省 = 无附件）。
    */
-  send: (text: string, skills?: string[]) => Promise<void>
+  send: (text: string, skills?: string[], attachments?: MessageAttachment[]) => Promise<void>
   /** 停止当前运行（POST cancel；失败兜底断开本地流）。 */
   stop: () => Promise<void>
   /** 运行中插话（steering：不打断当前步骤，下一个 step 边界注入）。 */
@@ -398,7 +402,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  send: async (text, skills) => {
+  send: async (text, skills, attachments) => {
     const trimmed = text.trim()
     if (!trimmed || get().streaming) return
 
@@ -440,9 +444,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const controller = new AbortController()
     activeController = controller
-    // optimistic 用户气泡；后端的 user/message 事件不再重复投影
+    // optimistic 用户气泡（含附件 chips）；后端的 user/message 事件不再重复投影
     set((s) => ({
-      messages: [...s.messages, { kind: 'user', text: trimmed }],
+      messages: [...s.messages, {
+        kind: 'user',
+        text: trimmed,
+        ...(attachments?.length ? { attachments } : {}),
+      }],
       streaming: true,
       error: null,
       streamingText: '',
@@ -453,8 +461,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await streamSse(
         `/api/v1/sessions/${sessionId}/messages`,
-        // 本轮技能非空才带 skills 字段（缺省 = 全部可用技能，后端据此区分）
-        skills && skills.length ? { text: trimmed, skills } : { text: trimmed },
+        // 技能/附件非空才带对应字段（缺省语义由后端区分：skills = 全部可用）
+        {
+          text: trimmed,
+          ...(skills && skills.length ? { skills } : {}),
+          ...(attachments && attachments.length
+            ? { attachments: attachments.map((a) => ({ file_id: a.file_id })) }
+            : {}),
+        },
         (m) => {
           if (get().epoch !== epoch) return
           let ev: SessionEvent

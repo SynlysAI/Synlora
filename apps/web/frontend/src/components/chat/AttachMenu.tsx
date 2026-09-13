@@ -15,13 +15,10 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { Assistant, UploadResponse } from '@/types'
-import { api } from '@/api/client'
+import type { Assistant } from '@/types'
 import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
-import { pickActiveProject, useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
-import { toast } from '@/stores/toasts'
 import ExpertPicker from './ExpertPicker'
 import SkillPicker from './SkillPicker'
 
@@ -42,10 +39,12 @@ interface AttachMenuProps {
   selectedSkills: string[]
   /** 勾选/取消勾选一个技能。 */
   onToggleSkill: (name: string) => void
+  /** 选中待上传文件（Composer 负责上传到工作区并出附件 chips）。 */
+  onFiles: (files: File[]) => void
 }
 
 /** 输入框左下「+」菜单（含当前专家 chip）。 */
-export default function AttachMenu({ selectedSkills, onToggleSkill }: AttachMenuProps) {
+export default function AttachMenu({ selectedSkills, onToggleSkill, onFiles }: AttachMenuProps) {
   const streaming = useChatStore((s) => s.streaming)
   const assistants = useAssistantsStore((s) => s.assistants)
   const defaultAssistant = useAssistantsStore(pickSelectedAssistant)
@@ -53,8 +52,6 @@ export default function AttachMenu({ selectedSkills, onToggleSkill }: AttachMenu
   const session = useSessionsStore((s) =>
     s.sessions.find((x) => x._id === s.currentId),
   )
-  // 上传落盘目录：显式选中的工作区优先，未选回落默认工作区（pickActiveProject）
-  const projectId = useProjectsStore((s) => pickActiveProject(s)?._id ?? null)
 
   const [open, setOpen] = useState(false)
   /** 当前展开的二级面板（三选一互斥）。 */
@@ -108,28 +105,15 @@ export default function AttachMenu({ selectedSkills, onToggleSkill }: AttachMenu
     else openMenu('expert')
   }
 
-  /** 上传到当前项目 files/：逐项 toast（成功文件名 / 失败 error 文案）。 */
-  const handleFiles = async (list: File[]) => {
-    if (!projectId || !list.length) return
-    const form = new FormData()
-    list.forEach((f) => form.append('files', f))
-    try {
-      const res = await api<UploadResponse>(`/api/v1/projects/${projectId}/files`, {
-        method: 'POST',
-        form,
-      })
-      for (const r of res.results) {
-        if (r.ok) toast('success', `已上传 ${r.file?.filename ?? ''}`)
-        else toast('error', `上传失败（${r.code ?? 'error'}）：${r.error ?? '未知错误'}`)
-      }
-    } catch (err) {
-      toast('error', `上传失败：${(err as Error).message}`)
-    }
+  /** 选中文件：交给 Composer 上传到会话目标工作区并进附件草稿（chips 随消息发送）。 */
+  const handleFiles = (list: File[]) => {
+    if (!list.length) return
+    onFiles(list)
   }
 
   return (
     <div ref={rootRef} className="flex min-w-0 items-center gap-1.5">
-      {/* 隐藏文件输入（上传到当前项目 files/） */}
+      {/* 隐藏文件输入（选中后由 Composer 上传为附件草稿） */}
       <input
         ref={fileInputRef}
         type="file"
@@ -137,7 +121,7 @@ export default function AttachMenu({ selectedSkills, onToggleSkill }: AttachMenu
         hidden
         data-testid="composer-attach-file-input"
         onChange={(e) => {
-          void handleFiles(Array.from(e.target.files ?? []))
+          handleFiles(Array.from(e.target.files ?? []))
           // 重置 value 使同名文件可重复选择
           e.target.value = ''
           setOpen(false)
@@ -235,14 +219,12 @@ export default function AttachMenu({ selectedSkills, onToggleSkill }: AttachMenu
                   }
             }
           >
-            {/* 上传文件：无项目时禁用（避免必然 404） */}
+            {/* 上传文件（作为附件随消息发送） */}
             <button
               type="button"
               role="menuitem"
-              disabled={!projectId}
-              title={projectId ? '上传文件到当前项目' : '请先创建或选择项目'}
+              title="选择文件作为附件，随消息一起发送"
               onClick={() => {
-                if (!projectId) return
                 fileInputRef.current?.click()
               }}
               className={ITEM_CLASS}

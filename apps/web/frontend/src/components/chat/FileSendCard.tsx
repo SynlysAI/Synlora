@@ -1,8 +1,12 @@
 /**
  * file.send 交付卡：agent 把工作区产物发给用户（对应 jiuwen send_file_to_user）。
  * 文件已被后端复制进项目 files/ 并登记（fileId），下载走既有
- * GET /api/v1/files/{fileId}/download；回放时同样可下载（文件持久在工作区）。
+ * GET /api/v1/files/{fileId}/download（带鉴权 blob 下载，裸跳转会 401 存成
+ * download.json）；回放时同样可下载（文件持久在工作区）。
  */
+import { downloadFile } from '@/api/client'
+import { toast } from '@/stores/toasts'
+
 interface FileSendCardProps {
   /** files 集合文档 id（下载端点用）。 */
   fileId: string
@@ -26,7 +30,13 @@ export default function FileSendCard({ fileId, filename, size, note }: FileSendC
   return (
     <a
       href={`/api/v1/files/${fileId}/download`}
-      download
+      onClick={(e) => {
+        // 裸跳转不带鉴权头（会存成 download.json）：走带 token 的 blob 下载
+        e.preventDefault()
+        void downloadFile(`/api/v1/files/${fileId}/download`, filename).catch(
+          (err: Error) => toast('error', `下载失败：${err.message}`),
+        )
+      }}
       className="group/file my-1 flex items-center gap-3 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3.5 py-2.5 transition-colors duration-[var(--sa-duration-fast)] hover:border-[var(--sa-alias-border-l3)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
       title={`下载 ${filename}`}
     >

@@ -103,3 +103,48 @@ export async function api<T>(path: string, opts: ApiOptions = {}): Promise<T> {
   const text = await resp.text()
   return (text ? JSON.parse(text) : undefined) as T
 }
+
+/**
+ * 带鉴权下载文件并触发浏览器保存。
+ *
+ * 裸 `<a href>` 跳转不带 Authorization 头，鉴权端点会回 401 的 JSON 错误体并被
+ * 浏览器存成 download.json——必须用 fetch（注入 token）取 blob 后程序化下载。
+ *
+ * @param path 下载端点路径（如 /api/v1/files/{id}/download）。
+ * @param fallbackName 响应未带 Content-Disposition 文件名时的兜底文件名。
+ * @throws ApiError 非 2xx 响应；401 同时清 token 并派发 sa:unauthorized。
+ */
+export async function downloadFile(path: string, fallbackName: string): Promise<void> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+
+  const resp = await fetch(path, { headers })
+  if (!resp.ok) {
+    if (resp.status === 401) {
+      setToken(null)
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+    }
+    throw await toApiError(resp)
+  }
+  const blob = await resp.blob()
+  // 文件名优先取 Content-Disposition（RFC 5987 filename* 优先，兼容 filename）
+  let filename = fallbackName
+  const disposition = resp.headers.get('content-disposition') ?? ''
+  const star = disposition.match(/filename\*=(?:UTF-8'')?([^;]+)/i)
+  const plain = disposition.match(/filename="?([^";]+)"?/i)
+  try {
+    if (star?.[1]) filename = decodeURIComponent(star[1].trim())
+    else if (plain?.[1]) filename = plain[1].trim()
+  } catch {
+    // 文件名解析失败保持兜底名
+  }
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}

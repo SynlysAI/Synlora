@@ -195,7 +195,7 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
 
   return (
     <section className="mt-6 first:mt-0">
-      {turn.user && <UserMessage text={turn.user.text} />}
+      {turn.user && <UserMessage text={turn.user.text} attachments={turn.user.attachments} />}
       <div className="flex flex-col gap-1.5">
         {hasHeader && (
           <TurnHeader name={assistantName} platformDefault={platformDefault} active={active} />

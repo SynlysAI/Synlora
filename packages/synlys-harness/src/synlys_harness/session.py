@@ -4,6 +4,30 @@ from __future__ import annotations
 from .types import EventType, Message, Role, SessionEvent, ToolCall
 
 
+def _user_content(p: dict) -> str:
+    """投影 user/message 的 payload 为 LLM 可见的 content。
+
+    附件（{filename, path} 列表，path 为工作区相对路径）以路径块追加在正文后，
+    agent 据此知道可用 file 工具读取哪些文件；正文与块对前端展示不可见的部分
+    由前端自行处理（payload 原文不因此改动）。
+
+    Args:
+        p: user/message 事件 payload。
+
+    Returns:
+        拼接附件块后的 content（无附件即原文）。
+    """
+    text = p.get("text") or ""
+    attachments = p.get("attachments")
+    if not isinstance(attachments, list) or not attachments:
+        return text
+    lines = [f"- {a.get('filename', '')}（工作区路径：{a.get('path', '')}）"
+             for a in attachments if isinstance(a, dict)]
+    if not lines:
+        return text
+    return f"{text}\n\n[用户上传的附件]\n" + "\n".join(lines)
+
+
 def derive_messages(events: list[SessionEvent], include_system: bool = True) -> list[Message]:
     """把会话事件流投影为 LLM 消息序列。
 
@@ -61,7 +85,7 @@ def derive_messages(events: list[SessionEvent], include_system: bool = True) -> 
                     system_emitted = True
         elif ev.type is EventType.USER_MESSAGE:
             flush_calls()
-            messages.append(Message(role=Role.USER, content=p.get("text") or ""))
+            messages.append(Message(role=Role.USER, content=_user_content(p)))
         elif ev.type is EventType.ASSISTANT_MESSAGE:
             flush_calls()
             messages.append(Message(role=Role.ASSISTANT, content=p.get("content")))

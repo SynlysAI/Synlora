@@ -120,11 +120,14 @@ class RunSession:
             return "llm_error"
         return "consumer_closed"
 
-    async def run(self, user_text: str) -> AsyncIterator[SessionEvent]:
+    async def run(self, user_text: str,
+                  attachments: list[dict] | None = None) -> AsyncIterator[SessionEvent]:
         """执行一轮 turn：用户输入 → step 循环（steering/钩子/LLM 流/工具管线）→ 收尾事件。
 
         Args:
             user_text: 用户输入文本。
+            attachments: 用户随消息发送的附件元数据（[{file_id, filename, path}]，
+                path 为工作区相对路径）；None/空 = 无附件，事件 payload 不带该字段。
 
         Yields:
             SessionEvent（本 turn 全部事件，同时写入 EventLog 供 sink 持久化）。
@@ -141,7 +144,10 @@ class RunSession:
             "user_id": self._user_id,
             "run_id": self._run_id,
         })
-        yield await self._emit(EventType.USER_MESSAGE, {"text": user_text})
+        user_payload: dict = {"text": user_text}
+        if attachments:
+            user_payload["attachments"] = attachments
+        yield await self._emit(EventType.USER_MESSAGE, user_payload)
 
         ctx = ToolContext(
             user_id=self._user_id, run_id=self._run_id,

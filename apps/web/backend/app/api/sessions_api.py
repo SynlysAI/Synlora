@@ -15,6 +15,7 @@ from synlys_harness import ModelProviderConfig
 
 from app.api.assistants_api import _validate_provider
 from app.api.deps import Repos, get_current_user, get_repos
+from app.services import workspace
 from app.services.agent_service import AgentService, TooManyRuns
 
 router = APIRouter(prefix="/api/v1", tags=["sessions"])
@@ -83,6 +84,64 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
     )
 
 
+async def _normalize_attachments(request: Request, user: dict, repos: Repos,
+                                 file_ids: list[str], project: dict) -> list[dict]:
+    """把附件 file_id 归一化为「文件在本会话项目内」的元数据列表。
+
+    附件在草稿态上传时落的是**当时选中的目标项目**，而 agent 只在会话绑定的
+    项目目录里跑（workspace_root）：文件躺在别的项目时复制一份进本会话项目
+    files/ 并新落一条记录（原文件不动，仍属原项目），保证 agent 用 file 工具
+    按相对路径一定能读到。
+
+    Args:
+        request: FastAPI 请求（取 project_service）。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+        file_ids: 附件文件记录 id 列表。
+        project: 会话解析出的目标项目文档。
+
+    Returns:
+        [{file_id, filename, path}]（path 为相对项目根的存储路径）。
+
+    Raises:
+        HTTPException: 任一附件不存在/非本人（404）或磁盘文件缺失（422）。
+    """
+    service = request.app.state.project_service
+    root = service.root_for(project)
+    out: list[dict] = []
+    for fid in file_ids:
+        doc = await repos.file.get(fid)
+        if doc is None or doc.get("user_id") != user["sub"]:
+            raise HTTPException(404, f"附件不存在: {fid}")
+        stored_path = str(doc.get("stored_path") or "")
+        filename = str(doc.get("filename") or "")
+        # 已在本项目内：直接引用
+        if str(doc.get("project_id") or "") == str(project["_id"]):
+            out.append({"file_id": fid, "filename": filename, "path": stored_path,
+                        "size": int(doc.get("size") or 0)})
+            continue
+        # 跨项目：定位原文件（按记录归属解析）并复制进本会话项目 files/
+        owner = None
+        if doc.get("project_id"):
+            owner = await service.get(user["sub"], str(doc["project_id"]))
+        src = service.root_for(owner) / stored_path if owner else None
+        if src is None or not src.is_file():
+            raise HTTPException(422, f"附件文件已丢失: {filename or fid}")
+        target = workspace.unique_target(root / "files", src.name)
+        target.write_bytes(src.read_bytes())
+        clone = await repos.file.create({
+            "user_id": user["sub"],
+            "project_id": project["_id"],
+            "filename": filename or src.name,
+            "stored_path": target.relative_to(root).as_posix(),
+            "size": int(doc.get("size") or target.stat().st_size),
+            "mime": doc.get("mime") or "application/octet-stream",
+        })
+        out.append({"file_id": clone["_id"], "filename": clone["filename"],
+                    "path": clone["stored_path"], "size": int(clone.get("size") or 0)})
+    return out
+
+
 class SessionCreateBody(BaseModel):
     """新建会话请求体。
 
@@ -111,11 +170,22 @@ class SessionUpdateBody(BaseModel):
     assistant_id: str | None = None
 
 
+class AttachmentIn(BaseModel):
+    """随消息发送的附件引用（file_id 指向已上传到工作区的文件记录）。"""
+
+    file_id: str
+
+
 class MessageIn(BaseModel):
-    """发消息请求体（skills 为本轮勾选的技能名；None/空表示用全部可用技能）。"""
+    """发消息请求体（skills 为本轮勾选的技能名；None/空表示用全部可用技能）。
+
+    attachments 为随消息发送的附件（已上传文件的 file_id 列表）；None/空 =
+    无附件，老前端不带该字段时行为不变。
+    """
 
     text: str
     skills: list[str] | None = None
+    attachments: list[AttachmentIn] | None = None
 
     @field_validator("text")
     @classmethod
@@ -298,13 +368,20 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     if doc.get("project_id") != project["_id"]:
         await repos.session.update(sid, {"project_id": project["_id"]})
 
+    # 附件归一化：文件复制进本会话项目（跨项目时），agent 按相对路径可读
+    attachments_meta = None
+    if body.attachments:
+        attachments_meta = await _normalize_attachments(
+            request, user, repos, [a.file_id for a in body.attachments], project)
+
     # 先 chat（可能 429）：被拒消息不计数、不生成标题、不建 run 记录，无需回滚；
     # 但前面的项目解析可能已补种默认项目 / 迁移旧布局 / 回写 project_id——
     # 这些是用户可见的引导副作用（项目列表、会话绑定都会变），注释勿再声称"零副作用"
     try:
         run_id = await service.chat(sid, user, assistant, cfg, body.text,
                                     workspace_root=workspace_root,
-                                    requested_skills=body.skills)
+                                    requested_skills=body.skills,
+                                    attachments=attachments_meta)
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
 

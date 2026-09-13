@@ -187,3 +187,13 @@ export interface UploadResponse {
     file?: { _id: string; filename: string; size: number }
   }>
 }
+
+/** 随消息发送的附件（user/message 事件 payload.attachments 项）。 */
+export interface MessageAttachment {
+  /** files 集合记录 id（下载端点用）。 */
+  file_id: string
+  filename: string
+  /** 工作区相对路径（agent 按此读取）。 */
+  path: string
+  size: number
+}
