@@ -31,6 +31,7 @@ from app.services.agent_service import AgentService
 from app.services.project_service import ProjectService
 from app.services.skill_service import SkillService
 from app.services.weknora_service import WeKnoraService
+from app.version import APP_VERSION, APP_VERSION_LABEL
 
 logger = logging.getLogger("synlys.web")
 
@@ -69,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """构建 FastAPI 应用（任务逐步扩展路由）。"""
-    app = FastAPI(title="SynlysAgent", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="SynlysAgent", version=APP_VERSION, lifespan=lifespan)
     app.state.settings = Settings()
     app.state.store = None  # lifespan 启动时初始化（未就绪时依赖层 503）
     app.include_router(auth_router)
@@ -84,8 +85,12 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health() -> dict:
-        """健康检查。"""
-        return {"status": "ok"}
+        """健康检查（公开端点，同时返回版本信息供前端展示）。"""
+        return {
+            "status": "ok",
+            "version": APP_VERSION,
+            "version_label": APP_VERSION_LABEL,
+        }
 
     # 单端口部署：dist 存在时托管前端 SPA（必须在所有 API 路由之后注册，否则会吞掉 API 请求）。
     # /chat/<id>、/admin/* 等前端路径刷新时会直接打到后端，StaticFiles(html=True) 只回

@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import { ToastHost } from './ToastHost'
+import { VersionTag } from './VersionTag'
 import BrandMark from './BrandMark'
 import BrandWordmark from './BrandWordmark'
 import { ChatPanel, ConversationNotFound } from '@/components/chat'
@@ -265,6 +266,10 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
             </svg>
           )}
         </IconButton>
+      </div>
+      {/* 版本徽标（读 /api/health，与后端口径一致） */}
+      <div className="flex shrink-0 justify-center pb-1.5">
+        <VersionTag />
       </div>
     </div>
   )

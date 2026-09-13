@@ -6,6 +6,7 @@
  */
 import { useState, type FormEvent } from 'react'
 import { ApiError } from '@/api/client'
+import { VersionTag } from '@/components/layout'
 import { useAuthStore } from '@/stores/auth'
 
 /** dev 模式 token（.env 的 VITE_DEV_TOKEN 或默认 devtok，须与后端 DEV_AUTH_TOKEN 一致）。 */
@@ -146,9 +147,12 @@ export default function LoginPage() {
           </button>
         )}
 
-        <p className="pt-5 text-center text-xs text-[var(--sa-alias-label-caption)]">
+        <p className="flex items-center justify-center gap-2 pt-5 text-center text-xs text-[var(--sa-alias-label-caption)]">
           通过 AI4MS 门户跳转可免登录
         </p>
+        <div className="flex justify-center pt-2">
+          <VersionTag />
+        </div>
       </div>
     </div>
   )
