@@ -14,6 +14,9 @@ dist/
 # playwright-cli 会话沙箱（快照/下载/上传中转）
 .playwright-cli/
 
+# codegraph 代码索引（SQLite 库与守护进程产物）
+.codegraph/
+
 # 运行时数据（用户工作区/会话事件/本地库）
 data/
 
