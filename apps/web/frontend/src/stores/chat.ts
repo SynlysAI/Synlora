@@ -41,6 +41,8 @@ export type ChatItem =
       callId: string
       query: string
       options: { label: string; description?: string }[]
+      /** 管线强制审批卡（payload.kind=approval）：允许/拒绝按钮提交固定文案。 */
+      approval?: { tool: string; argsPreview?: string }
       answer?: string
     }
   | {
@@ -219,11 +221,20 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
       }
     }
     case 'ask/user': {
+      const isApproval = payload.kind === 'approval'
       const item: ChatItem = {
         kind: 'ask_user',
         callId: String(payload.tool_call_id ?? ''),
         query: String(payload.query ?? ''),
-        options: (payload.options as { label: string; description?: string }[] | undefined) ?? [],
+        options: isApproval
+          ? []
+          : (payload.options as { label: string; description?: string }[] | undefined) ?? [],
+        approval: isApproval
+          ? {
+              tool: String(payload.tool ?? ''),
+              argsPreview: payload.args_preview ? String(payload.args_preview) : undefined,
+            }
+          : undefined,
       }
       return { ...state, items: [...state.items, item] }
     }
@@ -244,8 +255,9 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
         (it) =>
           it.kind === 'tool' && it.call.tool_call.id === result.tool_call_id && !it.result,
       )
-      // ask_user 的回答同时回填问题卡（callId 配对）
-      if (String(payload.name ?? '') === 'ask_user') {
+      // ask_user / 审批卡的答复同时回填卡片（callId 全局唯一配对；审批的
+      // tool/result name 是被审批工具而非 ask_user，故不按 name 过滤）
+      {
         const askIdx = state.items.findLastIndex(
           (it) => it.kind === 'ask_user' && it.callId === result.tool_call_id && !it.answer,
         )
@@ -253,7 +265,15 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
           const items = [...state.items]
           const ask = items[askIdx]
           if (ask.kind === 'ask_user') {
-            items[askIdx] = { ...ask, answer: String(result.content ?? '') }
+            items[askIdx] = {
+              ...ask,
+              // 审批卡只显示终态（工具结果详情在配对的工具行）；问答卡显示回答原文
+              answer: ask.approval
+                ? result.ok || result.error !== 'denied'
+                  ? '已允许'
+                  : '已拒绝'
+                : String(result.content ?? ''),
+            }
           }
           state = { ...state, items }
         }

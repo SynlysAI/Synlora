@@ -12,9 +12,12 @@ from typing import ClassVar
 
 import pytest
 from synlys_harness import (
-    ModelProviderConfig, ReasoningDelta, TextDelta, ToolCallChunk, Usage,
+    ModelProviderConfig, ReasoningDelta, TextDelta, ToolCallChunk, ToolResult, Usage,
 )
+from synlys_harness.tools.registry import tool
+from synlys_harness.types import Permission
 
+from app.api import assistants_api as assistants_api_mod
 from app.services import agent_service as agent_service_mod
 
 PROVIDER_BODY = {
@@ -1531,6 +1534,95 @@ async def test_ask_user_end_to_end(app, client, admin_headers, monkeypatch):
     assert "方案A" in ask_result["payload"]["content"]
     # 收尾正常
     assert events[-1][0] == "turn/end"
+
+
+# ---------- 管线强制审批（Permission.ASK_USER → approval_handler 复用 ask/user 回路） ----------
+
+
+@tool(name="demo.risky", description="需审批演示工具", parameters={
+    "type": "object", "properties": {},
+}, permission=Permission.ASK_USER)
+async def _demo_risky(ctx, args):
+    """执行前需用户审批的演示工具。"""
+    return ToolResult(ok=True, content="已执行敏感操作")
+
+
+agent_service_mod._REGISTRY.register(_demo_risky)
+# assistants_api 白名单校验持有独立注册表实例，两边都要注册
+assistants_api_mod._REGISTRY.register(_demo_risky)
+
+
+class ApprovalFakeBackend(FakeBackend):
+    """先调需审批工具，用户答复后收尾（按调用次数判定）。"""
+
+    calls: ClassVar[int] = 0
+
+    async def stream(self, messages, tools=None):
+        FakeBackend.received.append(list(messages))
+        ApprovalFakeBackend.calls += 1
+        if ApprovalFakeBackend.calls == 1:
+            yield ToolCallChunk(id="rk1", name="demo.risky", arguments={})
+            return
+        for ev in FakeBackend.script.pop(0):
+            yield ev
+
+
+async def _approval_e2e(app, client, admin_headers, monkeypatch, reply: str) -> dict:
+    """跑一遍审批全链路并返回断言素材（ask/user 事件 + tool/result 事件）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    # 白名单检查先于审批判定：把演示工具补进助手工具面
+    r = await client.patch("/api/v1/assistants/asst-data", headers=admin_headers,
+                           json={"tool_whitelist": [
+                               "python.run", "file.read", "file.write", "file.list",
+                               "demo.risky"]})
+    assert r.status_code == 200, r.text
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend",
+                        ApprovalFakeBackend)
+    FakeBackend.script = [[TextDelta(text="收尾"), Usage()]]
+    FakeBackend.received = []
+    ApprovalFakeBackend.calls = 0
+    sid = await _make_session(client, admin_headers)
+
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "执行敏感操作"}))
+    run_id = (await _wait_for_running_runs(app, 1))[0]
+    asked = None
+    for _ in range(80):
+        events = await app.state.event_repo.list_events(sid)
+        asked = next((e for e in events if e.type.value == "ask/user"), None)
+        if asked:
+            break
+        await asyncio.sleep(0.1)
+    assert asked is not None
+    assert asked.payload["kind"] == "approval"
+    assert asked.payload["tool"] == "demo.risky"
+
+    r = await client.post(f"/api/v1/runs/{run_id}/answer", headers=admin_headers,
+                          json={"text": reply})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+    resp = await asyncio.wait_for(task, timeout=15)
+    sse_events = parse_sse(resp.text)
+    result = [e for t, e in sse_events
+              if t == "tool/result" and e["payload"].get("name") == "demo.risky"][0]
+    assert sse_events[-1][0] == "turn/end"
+    return result["payload"]
+
+
+async def test_approval_allowed_e2e(app, client, admin_headers, monkeypatch):
+    """审批允许：管线放行 → 工具执行成功，tool/result 为工具真实结果。"""
+    payload = await _approval_e2e(app, client, admin_headers, monkeypatch, "允许")
+    assert payload["ok"] is True
+    assert payload["content"] == "已执行敏感操作"
+
+
+async def test_approval_denied_e2e(app, client, admin_headers, monkeypatch):
+    """审批拒绝：fail-closed，tool/result 为 denied 且给 LLM 可见原因。"""
+    payload = await _approval_e2e(app, client, admin_headers, monkeypatch, "拒绝")
+    assert payload["ok"] is False
+    assert payload["error"] == "denied"
+    assert "拒绝执行" in payload["content"]
 
 
 async def test_answer_no_pending_409(app, client, admin_headers, monkeypatch):

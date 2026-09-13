@@ -163,7 +163,7 @@ function WorkItem({ item }: { item: ChatItem }) {
     return <ToolCallCard call={item.call} result={item.result} />
   }
   if (item.kind === 'ask_user') {
-    return <AskUserCard callId={item.callId} query={item.query} options={item.options} answer={item.answer} />
+    return <AskUserCard callId={item.callId} query={item.query} options={item.options} approval={item.approval} answer={item.answer} />
   }
   if (item.kind === 'file_send') {
     return <FileSendCard fileId={item.fileId} filename={item.filename} size={item.size} note={item.note} />

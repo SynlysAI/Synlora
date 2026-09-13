@@ -51,10 +51,17 @@ async def banned(ctx, args):
     return ToolResult(ok=True, content="不应执行到这里")
 
 
+@tool(name="risky", description="需审批", parameters={"type": "object", "properties": {}},
+      permission=Permission.ASK_USER)
+async def risky(ctx, args):
+    """执行前需用户审批的工具。"""
+    return ToolResult(ok=True, content="已执行")
+
+
 def _pipeline() -> tuple[ToolPipeline, ToolRegistry]:
     reg = ToolRegistry()
     reg.register(add); reg.register(boom); reg.register(slow); reg.register(big)
-    reg.register(raw_dict); reg.register(banned)
+    reg.register(raw_dict); reg.register(banned); reg.register(risky)
     return ToolPipeline(registry=reg), reg
 
 
@@ -126,3 +133,40 @@ async def test_deny_by_not_allowed(tmp_path):
     pipe, _ = _pipeline()
     r = await pipe.run("add", _ctx(tmp_path), {"a": 1, "b": 2}, allowed=["other"])
     assert not r.ok and r.error == "denied"
+
+
+async def test_ask_user_without_handler_denied(tmp_path):
+    """permission=ASK_USER 且宿主未注入 approval_handler：fail-closed 拒绝。"""
+    pipe, _ = _pipeline()
+    r = await pipe.run("risky", _ctx(tmp_path), {})
+    assert not r.ok and r.error == "denied" and "审批" in r.content
+
+
+async def test_ask_user_allowed(tmp_path):
+    """审批回复"允许"：放行并正常执行工具。"""
+    pipe, _ = _pipeline()
+    seen: list[dict] = []
+
+    async def allow_handler(payload: dict) -> str:
+        seen.append(payload)
+        return "允许"
+
+    ctx = _ctx(tmp_path)
+    ctx.extra["approval_handler"] = allow_handler
+    ctx.extra["tool_call_id"] = "c1"
+    r = await pipe.run("risky", ctx, {})
+    assert r.ok and r.content == "已执行"
+    assert seen == [{"tool": "risky", "args": {}, "tool_call_id": "c1"}]
+
+
+async def test_ask_user_denied_by_reply(tmp_path):
+    """审批回复非"允许"（拒绝/其他文本）：拒绝执行。"""
+    pipe, _ = _pipeline()
+
+    async def deny_handler(payload: dict) -> str:
+        return "拒绝"
+
+    ctx = _ctx(tmp_path)
+    ctx.extra["approval_handler"] = deny_handler
+    r = await pipe.run("risky", ctx, {})
+    assert not r.ok and r.error == "denied" and "拒绝执行" in r.content

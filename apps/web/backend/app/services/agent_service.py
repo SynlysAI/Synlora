@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import shutil
 import time
@@ -266,6 +267,22 @@ class AgentService:
                 finally:
                     active.ask_future = None
 
+            # 管线强制审批（Permission.ASK_USER）：复用 ask_user 的 future 回路，
+            # payload 加 kind=approval 供前端渲染审批卡（允许/拒绝按钮）；用户
+            # 答复仍走同一 answer API（固定文案"允许"/"拒绝"，管线按文本判定）
+            async def approval_handler(payload: dict) -> str:
+                tool = str(payload.get("tool", ""))
+                preview = json.dumps(payload.get("args", {}), ensure_ascii=False)
+                if len(preview) > 600:
+                    preview = preview[:600] + "…"
+                return await ask_handler({
+                    "kind": "approval",
+                    "tool_call_id": str(payload.get("tool_call_id", "")),
+                    "tool": tool,
+                    "query": f"请求执行工具 {tool}，是否允许？",
+                    "args_preview": preview,
+                })
+
             # file.send：复制产物进项目 files/ 沙箱 → 登记 files 集合 → 发事件
             async def send_file_handler(payload: dict) -> ToolResult:
                 return await self._deliver_file(active, log, workspace_root,
@@ -294,9 +311,10 @@ class AgentService:
                     # 联网搜索（SearXNG）：地址空 = 未启用，web.search 工具报明确错误
                     "web_search_endpoint": self._settings.assistant_web_search_endpoint,
                     "web_search_api_key": self._settings.assistant_web_search_api_key,
-                    # 用户交互工具的宿主回调（ask_user / file.send）
+                    # 用户交互工具的宿主回调（ask_user / file.send）与管线强制审批
                     "ask_user_handler": ask_handler,
                     "send_file_handler": send_file_handler,
+                    "approval_handler": approval_handler,
                 },
             )
             active.session = session

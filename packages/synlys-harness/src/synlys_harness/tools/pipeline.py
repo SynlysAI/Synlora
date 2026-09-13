@@ -51,7 +51,20 @@ class ToolPipeline:
             return err("denied", f"工具不在白名单: {name}")
         if definition.permission is Permission.DENY:
             return err("denied", f"工具 {name} 已被禁用")
-        # ASK_USER 预留：V2 接入宿主审批回路后再处理。
+        if definition.permission is Permission.ASK_USER:
+            # 强制审批（硬约束）：管线在执行前打断，宿主经 ctx.extra 注入
+            # approval_handler（发审批事件并等用户答复）；fail-closed——
+            # 无回路或用户未明确允许一律拒绝。与 ask_user 工具（模型主动
+            # 问询的软约束）共用宿主的同一条事件/回答回路。
+            handler = ctx.extra.get("approval_handler")
+            if not callable(handler):
+                return err("denied", f"工具 {name} 需要用户审批，但当前环境不支持审批回路")
+            reply = await handler({
+                "tool": name, "args": args,
+                "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
+            })
+            if str(reply).strip() != "允许":
+                return err("denied", f"用户拒绝执行 {name}")
         if not isinstance(args, dict):
             return err("invalid_arguments", "参数必须是 JSON 对象")
         for key in definition.parameters.get("required", []):
