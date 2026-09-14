@@ -11,12 +11,17 @@
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
+
+from cryptography.fernet import InvalidToken
 
 from app.core.crypto import decrypt_key, encrypt_key
 
 CONFIG_COLLECTION = "plugin_configs"
+
+logger = logging.getLogger(__name__)
 
 
 class PluginConfigStore:
@@ -60,42 +65,87 @@ class PluginConfigStore:
 
         Returns:
             扁平配置 dict；未安装时为空 dict。
+
+        Raises:
+            RuntimeError: 密文解密失败（FERNET_KEY 变更或缺失，需重新填写凭证）。
         """
         doc = await self.get_doc(plugin_id)
         if doc is None:
             return {}
-        out: dict = dict(doc.get("config") or {})
-        for key, item in (doc.get("secrets") or {}).items():
-            out[key] = decrypt_key(
-                item.get("value", ""), self._fernet_key, bool(item.get("encrypted")))
-        return out
+        return self._resolve_doc(doc)
 
     async def all_resolved(self) -> dict[str, dict]:
         """全部已安装插件的解密配置（运行期注入 ctx.extra 用）。
 
+        单条解密失败（key 轮换/记录畸形）只告警并跳过该插件——该插件工具后续会返回
+        "未配置"错误（明确的用户可见结果），不应让整轮对话崩掉。
+
         Returns:
-            {插件 id: 扁平配置}。
+            {插件 id: 扁平配置}，不可解密/畸形的插件被剔除。
         """
-        return {pid: await self.resolved(pid) for pid in await self.installed_ids()}
+        out: dict[str, dict] = {}
+        for doc in await self._store.list(CONFIG_COLLECTION):
+            pid = doc.get("_id")
+            try:
+                out[pid] = self._resolve_doc(doc)
+            except RuntimeError as exc:
+                logger.warning("插件 %s 配置解密失败，已跳过运行期注入：%s", pid, exc)
+        return out
+
+    def _resolve_doc(self, doc: dict) -> dict:
+        """解密单个配置文档为扁平 dict（resolved / all_resolved 共用）。
+
+        Args:
+            doc: 插件配置原始文档。
+
+        Returns:
+            扁平配置 dict（畸形的 secrets 项直接跳过）。
+
+        Raises:
+            RuntimeError: 密文解密失败（FERNET_KEY 变更或缺失）。
+        """
+        out: dict = dict(doc.get("config") or {})
+        for key, item in (doc.get("secrets") or {}).items():
+            if not isinstance(item, dict):
+                logger.warning("插件 %s 的敏感字段 %s 结构畸形，已跳过", doc.get("_id"), key)
+                continue
+            try:
+                out[key] = decrypt_key(
+                    item.get("value", ""), self._fernet_key, item.get("encrypted") is True)
+            except (InvalidToken, ValueError) as exc:
+                # key 轮换/缺失（如加密数据配空 key 时 Fernet 构造抛 ValueError）统一转友好错误，
+                # 与 ProviderRepo.get_decrypted 口径一致，避免底层异常裸抛到 API 层。
+                raise RuntimeError(
+                    f"插件 {doc.get('_id')} 配置解密失败：FERNET_KEY 是否已更换？"
+                    "请到插件页重新填写凭证") from exc
+        return out
 
     async def save(self, plugin_id: str, values: dict, schema: list[dict]) -> dict:
-        """保存配置：非敏感字段覆盖，敏感字段非空才更新（留空保持原值）。
+        """保存配置：按 schema 声明的 key 白名单过滤后写入。
+
+        未在 schema 中声明的 key 一律忽略（记 warning），避免 UI 传参差异被升级为 500；
+        这同时是敏感字段的唯一护栏——漏传 schema 时敏感值被丢弃而非明文落库（fail-closed）。
+        敏感字段留空（含纯空白）表示保持原值；当前不提供清除路径，需清除时直接删插件配置记录。
 
         Args:
             plugin_id: 插件 id（首次保存即视为安装）。
             values: 页面提交的字段值。
-            schema: 插件配置 schema（决定哪些字段是敏感的）。
+            schema: 插件配置 schema（既是字段白名单，也决定哪些字段是敏感的）。
 
         Returns:
             保存后的原始文档。
         """
+        declared = {f["key"] for f in schema}
         secret_keys = {f["key"] for f in schema if f.get("secret")}
         doc = await self.get_doc(plugin_id) or {}
         config = dict(doc.get("config") or {})
         secrets = dict(doc.get("secrets") or {})
         for key, value in values.items():
+            if key not in declared:
+                logger.warning("插件 %s 收到 schema 未声明的字段 %s，已忽略", plugin_id, key)
+                continue
             if key in secret_keys:
-                if value:
+                if value is not None and str(value).strip():
                     stored, encrypted = encrypt_key(str(value), self._fernet_key)
                     secrets[key] = {"value": stored, "encrypted": encrypted}
             else:

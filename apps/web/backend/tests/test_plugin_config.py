@@ -77,3 +77,68 @@ async def test_repeated_save_updates_same_record(store, fernet_key):
     assert docs[0]["_id"] == "demo"
     assert docs[0]["created_at"] == first["created_at"]
     assert await cs.resolved("demo") == {"base_url": "http://z", "token": "t2"}
+
+
+async def test_undeclared_keys_are_ignored(store, fernet_key):
+    """schema 未声明的 key 被忽略（漏传 schema 时敏感值不得明文落库）。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"base_url": "http://x", "rogue": "x", "token": "s"}, SCHEMA)
+
+    doc = await store.get(CONFIG_COLLECTION, "demo")
+    assert doc["config"] == {"base_url": "http://x"}  # rogue 未落库
+    assert doc["secrets"]["token"]["encrypted"] is True
+    assert await cs.resolved("demo") == {"base_url": "http://x", "token": "s"}
+
+
+async def test_secret_not_declared_stays_out_of_config(store, fernet_key):
+    """schema 为空时，可疑字段不会明文写进 config。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"token": "SUPER_SECRET"}, [])
+
+    assert await cs.resolved("demo") == {}
+    assert "SUPER_SECRET" not in str(await store.get(CONFIG_COLLECTION, "demo"))
+
+
+async def test_whitespace_secret_keeps_previous_value(store, fernet_key):
+    """敏感字段纯空白也视为留空（保持原值）。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"base_url": "http://x", "token": "tok-1"}, SCHEMA)
+    await cs.save("demo", {"base_url": "http://y", "token": "   "}, SCHEMA)
+
+    assert (await cs.resolved("demo"))["token"] == "tok-1"
+
+
+async def test_resolved_raises_clear_error_on_key_rotation(store, fernet_key):
+    """密钥轮换后用新 key 解密 → 抛出清晰的 RuntimeError（不裸抛 InvalidToken）。"""
+    await PluginConfigStore(store, fernet_key).save(
+        "demo", {"base_url": "http://x", "token": "tok"}, SCHEMA)
+
+    rotated = PluginConfigStore(store, Fernet.generate_key().decode())
+    with pytest.raises(RuntimeError, match="解密失败"):
+        await rotated.resolved("demo")
+
+
+async def test_all_resolved_skips_undecryptable_plugin(store, fernet_key):
+    """运行期批量注入：单条解密失败只跳过该插件，不打挂其余。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("good", {"base_url": "http://x", "token": "t"}, SCHEMA)
+    await cs.save("bad", {"base_url": "http://y", "token": "t"}, SCHEMA)
+
+    rotated = PluginConfigStore(store, Fernet.generate_key().decode())
+    out = await rotated.all_resolved()
+    assert "bad" not in out and "good" not in out  # 两把 key 都不同：均应跳过
+
+    # 同 key 场景：只有 bad 被外部改成不可解时才跳过（用直接改库文档模拟畸形）
+    await store.update(CONFIG_COLLECTION, "bad",
+                      {"secrets": {"token": {"value": "not-a-fernet-token", "encrypted": True}}})
+    out2 = await cs.all_resolved()
+    assert "good" in out2 and "bad" not in out2
+
+
+async def test_malformed_secret_item_is_skipped(store, fernet_key):
+    """secrets 项结构畸形（非 dict）时跳过该项，不抛 AttributeError。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"base_url": "http://x", "token": "t"}, SCHEMA)
+    await store.update(CONFIG_COLLECTION, "demo", {"secrets": {"token": "legacy-plain"}})
+
+    assert await cs.resolved("demo") == {"base_url": "http://x"}
