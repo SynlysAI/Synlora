@@ -2,7 +2,9 @@
 
 类 Claude/DeepSeek Harness 的科研智能体 Web 平台：三栏对话工作台，通过对话形式使用各助手（谱图解析、高分子研发、数据分析、文件处理等），每个用户拥有独立沙箱（文件工作区 + 受限 Python 执行），管理员可在页面上配置模型与助手。作为 AI⁴MS 生态的独立子平台部署，现有 AI⁴MS 能力后续通过 Tool Registry 接入。
 
-- 版本：V1（0.1.0）
+平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。
+
+- 版本：0.3.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -113,11 +115,11 @@ pm2 logs synlys-agent
 ## 测试
 
 ```bash
-# harness 核心运行时（75 项）
+# harness 核心运行时（132 项）
 cd packages/synlys-harness
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
-# web 后端（87 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
+# web 后端（207 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
 cd apps/web/backend
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
@@ -127,6 +129,13 @@ npm run build
 npm run lint
 ```
 
-## 后续路线（V1 之后）
+## 后续路线
 
-详见设计文档 §11：AI⁴MS 工具接入（Spec_Agent 异步任务、WeKnora 检索替换 knowledge.search mock、SpecLabOS 设备/工作流）、MCP adapter、多 Agent/声明式 team 装配、SKILL.md 动态技能、双进程演进（harness RPC server 层）。
+按价值与触发条件推进（详见 [docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md](docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md)）：
+
+- **沙箱升级（多用户部署前置）**：python.run 由同进程围栏升级为 Docker 容器执行（资源限额 + 无网络），是用户数据隔离的边界
+- **AI⁴MS 工具接入（项目立身之本）**：统一 Job 注册表（异步任务状态机 + 完成通知）→ Spec_Agent 谱学任务 / Poly_Agent / SpecLabOS 设备工作流（后者经强制审批）
+- **跨会话长期记忆**：工作区级记忆抽取与注入
+- **MCP adapter**：Tool Registry 加 MCP 来源，一次投入换第三方工具生态
+- **多 Agent / SwarmFlow**：声明式 team 装配（出现并行科研场景需求时启动）
+- **动态技能市场 / 双进程运行时**：用量驱动，暂缓
