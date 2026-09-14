@@ -24,6 +24,13 @@ class Settings(BaseSettings):
         weknora_api_key: WeKnora API Key（X-API-Key 头）。
         assistant_web_search_endpoint: SearXNG 搜索服务地址（空 = 未启用联网搜索）。
         assistant_web_search_api_key: SearXNG API Key（实例配了才需要，默认空）。
+        sandbox_mode: python.run 执行形态（local|docker，默认 local；docker 需
+            预构建 sandbox_docker_image 镜像，见 docker/sandbox/）。
+        sandbox_docker_image: docker 模式镜像名。
+        sandbox_strict: docker 模式不可用时拒绝执行（fail-closed）而非回退本机
+            （回退时事件带 sandbox=local-weak 标记）。多用户/公网部署建议开启。
+        sandbox_mem_limit / sandbox_cpus / sandbox_pids_limit: 单容器资源限额。
+        sandbox_docker_user: 容器内运行用户（空 = 镜像默认非 root 用户）。
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -45,6 +52,13 @@ class Settings(BaseSettings):
     weknora_api_key: str = ""
     assistant_web_search_endpoint: str = ""
     assistant_web_search_api_key: str = ""
+    sandbox_mode: str = "local"
+    sandbox_docker_image: str = "synlora-sandbox:latest"
+    sandbox_strict: bool = False
+    sandbox_mem_limit: str = "512m"
+    sandbox_cpus: float = 1.0
+    sandbox_pids_limit: int = 256
+    sandbox_docker_user: str = ""
 
     @property
     def data_root(self) -> Path:

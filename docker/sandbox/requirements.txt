@@ -1,0 +1,11 @@
+# python.run 沙箱镜像依赖（与内置技能声明对齐，勿随意删减）：
+# office-doc: docx/pptx/openpyxl/pandas/matplotlib
+# data-analysis: pandas/matplotlib
+# pdf-extraction: pypdf/pdfplumber
+pandas>=2.2
+matplotlib>=3.9
+openpyxl>=3.1
+python-docx>=1.1
+python-pptx>=0.6
+pypdf>=4.0
+pdfplumber>=0.11

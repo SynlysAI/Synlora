@@ -11,6 +11,15 @@ from .session import derive_messages
 from .tools.builtin import register_builtin_tools
 from .tools.pipeline import ToolPipeline
 from .tools.registry import ToolRegistry, tool
+from .tools.sandbox import (
+    CodeExecutor,
+    DEFAULT_LOCAL_EXECUTOR,
+    DockerCodeExecutor,
+    FailingExecutor,
+    LocalCodeExecutor,
+    resolve_executor,
+    run_python,
+)
 from .types import (
     AgentConfig, EventType, ExtensionHooks, Message, Permission, Role,
     SessionEvent, ToolCall, ToolContext, ToolDefinition, ToolResult,
@@ -19,6 +28,8 @@ from .types import (
 __all__ = [
     "RunSession", "EventLog", "Compactor", "derive_messages", "build_system_prompt",
     "ToolRegistry", "tool", "ToolPipeline", "register_builtin_tools",
+    "CodeExecutor", "LocalCodeExecutor", "DockerCodeExecutor", "FailingExecutor",
+    "DEFAULT_LOCAL_EXECUTOR", "resolve_executor", "run_python",
     "LLMBackend", "OpenAICompatibleBackend", "ModelProviderConfig",
     "TextDelta", "ReasoningDelta", "ToolCallChunk", "Usage",
     "AgentConfig", "EventType", "ExtensionHooks", "Message", "Permission",

@@ -15,6 +15,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
 ]
+# python.run 容器沙箱（sandbox_mode=docker 时需要；local 模式零依赖）
+docker = [
+    "docker>=7.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

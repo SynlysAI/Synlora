@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。
 
-- 版本：0.3.0-beta.1（内测版）
+- 版本：0.4.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -107,6 +107,21 @@ pm2 logs synlys-agent
 | `DEV_AUTH_TOKEN` | 空 | sqlite 开发模式的固定 token，登录页"开发模式进入"直连（如 `devtok`） |
 | `FERNET_KEY` | 空 | provider api_key 落库加密 key（Fernet）；生成方式见 `.env.example` |
 | `HTTP_ALLOWED_HOSTS` | 空 | `http.request` 工具域名白名单（逗号分隔），空则全部拒绝 |
+| `SANDBOX_MODE` | `local` | `python.run` 执行形态：`local`（本机 `-I` 子进程，事故围栏）或 `docker`（临时容器强隔离，多用户部署用） |
+| `SANDBOX_STRICT` | `false` | `docker` 模式不可用时：`false` 回退本机执行（事件标 `sandbox=local-weak`）；`true` 拒绝执行（fail-closed，公网部署建议开启） |
+| `SANDBOX_MEM_LIMIT` / `SANDBOX_CPUS` / `SANDBOX_PIDS_LIMIT` | `512m` / `1.0` / `256` | docker 模式单容器资源限额 |
+
+其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+
+### Docker 沙箱（多用户/云部署）
+
+`SANDBOX_MODE=docker` 时，`python.run` 在临时容器中执行：workspace 单目录挂载（容器内 `/workspace`，目录约定不变）、断网、内存/CPU/进程数限额、非 root 用户、跑完即删；镜像需预构建（分析全家桶，与内置技能依赖对齐）：
+
+```bash
+docker build -t synlora-sandbox:latest docker/sandbox/
+```
+
+宿主需安装 docker SDK：`pip install "synlys-harness[docker]"`。探测失败（daemon 不可达/镜像缺失）按 `SANDBOX_STRICT` 决定回退或拒绝；每次执行结果带 `sandbox` 标记（`docker`/`local`/`local-weak`）随事件可观测。
 
 其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
@@ -118,7 +133,7 @@ pm2 logs synlys-agent
 ## 测试
 
 ```bash
-# harness 核心运行时（132 项）
+# harness 核心运行时（145 项；另有 docker 沙箱逃逸集成用例，无 daemon/镜像自动 skip）
 cd packages/synlys-harness
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
@@ -136,7 +151,7 @@ npm run lint
 
 按价值与触发条件推进（详见 [docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md](docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md)）：
 
-- **沙箱升级（多用户部署前置）**：python.run 由同进程围栏升级为 Docker 容器执行（资源限额 + 无网络），是用户数据隔离的边界
+- **~~沙箱升级（多用户部署前置）~~**（✅ 0.4.0 完成）：`python.run` 执行器抽象（local/docker 可切换），docker 形态为临时容器 + 资源限额 + 断网，探测失败按 strict 回退或拒绝
 - **AI⁴MS 工具接入（项目立身之本）**：统一 Job 注册表（异步任务状态机 + 完成通知）→ Spec_Agent 谱学任务 / Poly_Agent / SpecLabOS 设备工作流（后者经强制审批）
 - **跨会话长期记忆**：工作区级记忆抽取与注入
 - **MCP adapter**：Tool Registry 加 MCP 来源，一次投入换第三方工具生态

@@ -8,12 +8,12 @@
 
 ## 阶段一：V1.x 打磨（近期，各项 0.5~2 天）
 
-### 1. 沙箱升级（多用户部署的前置条件）
-- [ ] 选型：Docker 容器执行（首选）vs Windows 受限令牌（备选），写结论
-- [ ] `run_python` 抽象执行器接口：local（现状）/ docker 两实现，env 开关切换
-- [ ] Docker 实现：临时容器、工作区 tmp/ 卷挂载、CPU/内存/超时限制、无网络（或代理白名单）
-- [ ] 回退兼容：Docker 不可用时回落 local 并在日志/事件中标记 `sandbox=weak`
-- [ ] 测试：逃逸用例（写工作区外路径、读环境变量、外联）在强沙箱下全被拦
+### 1. 沙箱升级（多用户部署的前置条件）✅ 2026-09-14 完成（0.4.0-beta.1）
+- [x] 选型：**Docker 容器执行**。结论：DSH/Pi 的 OS 级包装路线（bwrap/Seatbelt）在 Windows 开发机不可用且无网络/内存限制，jiuwenbox 绑定 Linux 内核机制；Docker 双平台通吃且原生覆盖文件系统/网络/CPU/内存/进程数全维度。Windows 受限令牌（参考 DSH sandbox-windows-acl）留作纯本地加固备选，不在本轮范围
+- [x] `run_python` 抽象执行器接口：`CodeExecutor` 协议（Pi BashOperations 模式）+ Local/Docker/Failing 三实现，`SANDBOX_MODE` 切换、宿主经 `ctx.extra.code_executor` 注入
+- [x] Docker 实现：每次执行临时容器（workspace 单目录挂载 /workspace、断网、mem/cpu/pids 限额、非 root、跑完即删；代码经工作区文件传入不进 argv），镜像 `docker/sandbox/`（分析全家桶 + CJK 字体）
+- [x] 回退兼容：探测失败回落 local 并在日志/事件中标记 `sandbox=local-weak`；`SANDBOX_STRICT=true` 时 fail-closed 拒绝执行（云部署）
+- [x] 测试：逃逸用例（写工作区外路径、读宿主环境变量、外联 DNS/连接）在 docker 沙箱下全被拦（`test_sandbox_docker.py`，无 daemon/镜像自动 skip）；超时 kill、取消清理、挂载产物、截断均有断言
 
 ### 2. 跨会话长期记忆（工作区级）
 - [ ] 记忆存储：`memories` 集合，维度 `user_id + project_id`（事实/偏好/实验结论，带来源会话 id）
@@ -81,3 +81,4 @@
 
 - Office 文档生成：python-docx/python-pptx/openpyxl/pandas + 内置技能 `office-doc`（产物落工作区 output/）
 - 管线强制审批（Permission.ASK_USER）：pre-execute 打断 + approval_handler 复用 ask/user 事件与 answer 回路（fail-closed）+ 前端审批卡（允许/拒绝）；内置工具暂均 ALLOW，SpecLabOS 接入时声明即生效
+- 沙箱升级（0.4.0-beta.1）：python.run 执行器抽象（local/docker/fail-closed 三态，`SANDBOX_MODE`/`SANDBOX_STRICT` 切换）+ 临时容器强隔离（断网/资源限额/非 root/单目录挂载）+ 沙箱镜像 `docker/sandbox/` + 逃逸集成测试（详见阶段一·1）

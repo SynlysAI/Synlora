@@ -39,6 +39,11 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 | `FERNET_KEY` | 空 | provider `api_key` 落库加密 key（Fernet）。生成：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`；留空则 api_key 明文落库（仅开发）；生产配置后注意：换 key 前已加密的数据不可解（读取报错需重录） |
 | `HTTP_ALLOWED_HOSTS` | 空 | `http.request` 工具的域名白名单（逗号分隔，支持子域后缀匹配），空则全部拒绝 |
 | `USER_QUOTA_BYTES` | `1073741824` | 每用户工作区配额（字节） |
+| `SANDBOX_MODE` | `local` | `python.run` 执行形态：`local`（本机 `-I` 子进程）或 `docker`（临时容器强隔离，多用户/云部署用；需预构建镜像并装 `synlys-harness[docker]`） |
+| `SANDBOX_DOCKER_IMAGE` | `synlora-sandbox:latest` | docker 模式镜像名（构建：`docker build -t synlora-sandbox:latest docker/sandbox/`） |
+| `SANDBOX_STRICT` | `false` | docker 不可用时：`false` 回退本机执行（事件标 `sandbox=local-weak`）；`true` 拒绝执行（fail-closed） |
+| `SANDBOX_MEM_LIMIT` / `SANDBOX_CPUS` / `SANDBOX_PIDS_LIMIT` | `512m` / `1.0` / `256` | docker 模式单容器资源限额 |
+| `SANDBOX_DOCKER_USER` | 空 | 容器内运行用户（空 = 镜像默认非 root 用户） |
 
 ## 与 AI4MS 门户对接
 

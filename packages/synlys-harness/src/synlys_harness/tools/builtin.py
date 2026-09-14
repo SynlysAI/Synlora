@@ -11,7 +11,7 @@ import httpx
 
 from ..types import ToolContext, ToolResult
 from .registry import ToolRegistry, tool
-from .sandbox import run_python
+from .sandbox import DEFAULT_LOCAL_EXECUTOR
 
 
 def _safe_path(root: Path, rel: str) -> Path | None:
@@ -160,12 +160,13 @@ async def file_list(ctx: ToolContext, args: dict) -> ToolResult:
     timeout_s=70,  # 外层管线兜底须晚于沙箱内部 60s，保证内部先走到 kill+收尸路径
 )
 async def python_run(ctx: ToolContext, args: dict) -> ToolResult:
-    """在用户沙箱 tmp/ 下执行代码。"""
+    """在用户沙箱 tmp/ 下执行代码（执行器经 ctx.extra 注入，缺省本机）。"""
     if ctx.workspace_root is None:
         return _no_workspace()
     cwd = ctx.workspace_root / "tmp"
     cwd.mkdir(parents=True, exist_ok=True)
-    result = await run_python(args["code"], cwd=cwd, timeout_s=60)
+    executor = ctx.extra.get("code_executor") or DEFAULT_LOCAL_EXECUTOR
+    result = await executor.run(args["code"], cwd=cwd, timeout_s=60)
     result.data["cwd"] = str(cwd)
     return result
 

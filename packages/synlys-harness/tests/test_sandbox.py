@@ -4,7 +4,12 @@ import time
 
 import pytest
 
-from synlys_harness.tools.sandbox import run_python
+from synlys_harness.tools.sandbox import (
+    DockerCodeExecutor,
+    FailingExecutor,
+    resolve_executor,
+    run_python,
+)
 
 
 async def test_simple_execution(tmp_path):
@@ -91,3 +96,64 @@ async def test_uses_same_interpreter_family(tmp_path):
     """沙箱解释器与当前环境一致（可用已装依赖）。"""
     r = await run_python("import sys; print(sys.version_info[0])", cwd=tmp_path, timeout_s=10)
     assert r.ok and r.content.strip().startswith("3")
+
+
+def test_resolve_local_default():
+    """local 模式直返本机执行器，不做任何探测。"""
+    executor, note = resolve_executor("local")
+    assert executor.sandbox == "local"
+    assert note == "local"
+
+
+def test_resolve_docker_weak_fallback(monkeypatch):
+    """docker 模式探测失败：非 strict 时弱回退本机（backlog 口径 sandbox=local-weak）。"""
+    monkeypatch.setattr(DockerCodeExecutor, "probe", lambda self: (False, "daemon 不可达"))
+    executor, note = resolve_executor("docker")
+    assert executor.sandbox == "local-weak"
+    assert note.startswith("local-weak") and "daemon 不可达" in note
+
+
+def test_resolve_docker_strict_fails_closed(monkeypatch):
+    """docker 模式探测失败 + strict：fail-closed，绝不落到本机执行。"""
+    monkeypatch.setattr(DockerCodeExecutor, "probe", lambda self: (False, "镜像不存在"))
+    executor, _ = resolve_executor("docker", strict=True)
+    assert isinstance(executor, FailingExecutor)
+    assert executor.sandbox == "unavailable"
+
+
+async def test_failing_executor_refuses(tmp_path):
+    """strict 不可用执行器每次调用都明确拒绝。"""
+    r = await FailingExecutor("daemon 不可达").run("print('hi')", cwd=tmp_path)
+    assert not r.ok and r.error == "sandbox_unavailable"
+    assert "daemon 不可达" in r.content
+
+
+def test_resolve_docker_ok(monkeypatch):
+    """docker 模式探测通过：返回容器执行器。"""
+    monkeypatch.setattr(DockerCodeExecutor, "probe", lambda self: (True, ""))
+    executor, note = resolve_executor("docker")
+    assert executor.sandbox == "docker"
+    assert note == "docker"
+
+
+async def test_python_run_uses_injected_executor(tmp_path):
+    """python.run 工具优先取 ctx.extra 注入的执行器（宿主部署级注入回路）。"""
+    from synlys_harness.tools.builtin import python_run
+    from synlys_harness.types import ToolContext
+
+    class _Marker:
+        """记名执行器：返回固定标记便于断言被调用。"""
+
+        def __init__(self):
+            self.sandbox = "marker"
+
+        async def run(self, code, cwd, timeout_s=60.0, max_output_bytes=65_536):
+            from synlys_harness.types import ToolResult
+            return ToolResult(ok=True, content="injected", data={"sandbox": self.sandbox})
+
+    ctx = ToolContext(
+        user_id="u", run_id="r", workspace_root=tmp_path,
+        extra={"code_executor": _Marker()},
+    )
+    r = await python_run(ctx, {"code": "print(1)"})
+    assert r.ok and r.content == "injected" and r.data["sandbox"] == "marker"

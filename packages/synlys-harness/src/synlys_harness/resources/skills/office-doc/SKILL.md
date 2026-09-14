@@ -33,7 +33,8 @@ tags:
 
 ## 中文与排版要点
 - matplotlib 中文字体必须显式设置，否则方框：
-  `plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei']`，
+  `plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC']`
+  （前两项是 Windows 本地，Noto 是容器沙箱内置），
   负号 `plt.rcParams['axes.unicode_minus'] = False`
 - Word 正文默认即可；标题用 `doc.add_heading(级数)`；表格用 `doc.add_table` 后填 `cell.text`
 - PPT 每页一个观点：`prs.slide_layouts[1]`（标题+内容）起步，避免整段文字堆一页

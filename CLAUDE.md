@@ -44,7 +44,7 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 - 事件流是唯一事实源：所有进入 LLM 上下文的内容都先落 session 事件；`derive_messages()` 投影；瞬态事件（llm/delta、reasoning/delta）只推 SSE 不落盘
 - harness 不 import FastAPI；web 只是宿主；接入契约见 `docs/superpowers/plans/2026-09-10-synlysagent-02-web-backend.md` 文首 10 条
 - 认证与 AI⁴MS 门户逐字兼容（HMAC token + `ai4ms.users`，`#token=` 跳转）
-- python.run 是事故围栏非安全边界（-I 隔离/环境白名单/超时/截断）；多用户公网部署前必须升级 Docker 沙箱（backlog 1）
+- python.run 执行器抽象（`tools/sandbox.py`）：local（-I 隔离/环境白名单/超时/截断，事故围栏）与 docker（临时容器：workspace 单目录挂载 /workspace、断网、资源限额、非 root、跑完即删）两实现；宿主经 `ctx.extra.code_executor` 注入、`resolve_executor()` 探测解析（不可用时 strict 拒绝或回退 local-weak 标记）；镜像构建见 `docker/sandbox/`
 - 工具强制审批：`Permission.ASK_USER` 在管线 pre-execute 打断，宿主 `approval_handler` 复用 ask/user 事件与 answer 回路，fail-closed（SpecLabOS 类工具声明即生效）
 - 插话（steering）双语义：模型还有 step 则下个边界注入本轮；turn 正常结束时残留插话经 `take_queued_turn()` 自动转为下一轮续跑（取消/失败路径丢弃）
 - 运行时（ActiveRun/SSE 队列/ask future）为单进程内存态：uvicorn 必须 workers=1 单实例部署，多副本会破坏 steer/answer/cancel
@@ -60,4 +60,4 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 
 对齐 backlog 文档 `docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md`（含各项触发条件）：
 
-沙箱 Docker 化（多用户部署前置）→ AI⁴MS 工具接入（统一 Job 注册表先行：异步状态机 + 完成通知；Spec_Agent → SpecLabOS 经强制审批）→ 跨会话长期记忆 → 工具结果 spill → MCP adapter → 多 Agent/SwarmFlow（参考 jiuwenswarm agents/swarm 声明式装配）→ 动态技能市场 / headless 运行时（用量驱动，暂缓）
+沙箱 Docker 化 ✅（0.4.0，`SANDBOX_MODE=docker`）→ AI⁴MS 工具接入（统一 Job 注册表先行：异步状态机 + 完成通知；Spec_Agent → SpecLabOS 经强制审批）→ 跨会话长期记忆 → 工具结果 spill → MCP adapter → 多 Agent/SwarmFlow（参考 jiuwenswarm agents/swarm 声明式装配）→ 动态技能市场 / headless 运行时（用量驱动，暂缓）

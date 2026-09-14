@@ -29,6 +29,7 @@ from typing import Any
 
 from synlys_harness import (
     AgentConfig,
+    CodeExecutor,
     EventLog,
     EventType,
     ExtensionHooks,
@@ -41,6 +42,7 @@ from synlys_harness import (
     ToolResult,
     build_system_prompt,
     register_builtin_tools,
+    resolve_executor,
 )
 
 from app.services.skill_service import SkillService
@@ -101,6 +103,33 @@ class AgentService:
         self._active_by_session: dict[str, set[str]] = {}
         # 后台驱动 task 的强引用（事件循环仅持弱引用，防 task 被 GC 中断）
         self._bg: set[asyncio.Task] = set()
+        # python.run 沙箱执行器（首次使用时解析一次：local 直返；docker 探测
+        # daemon+镜像，失败按 strict 拒绝或弱回退 local-weak 并告警）
+        self._executor: CodeExecutor | None = None
+
+    async def _code_executor(self) -> CodeExecutor:
+        """解析（一次）沙箱执行器并缓存。
+
+        Returns:
+            部署级 CodeExecutor；docker 模式探测失败时为弱回退本机或
+            fail-closed 拒绝执行器（取决于 sandbox_strict）。
+        """
+        if self._executor is None:
+            executor, note = await asyncio.to_thread(
+                resolve_executor, self._settings.sandbox_mode,
+                image=self._settings.sandbox_docker_image,
+                strict=self._settings.sandbox_strict,
+                mem_limit=self._settings.sandbox_mem_limit,
+                cpus=self._settings.sandbox_cpus,
+                pids_limit=self._settings.sandbox_pids_limit,
+                container_user=self._settings.sandbox_docker_user,
+            )
+            if executor.sandbox != "docker":
+                _LOGGER.warning("python.run 沙箱: %s", note)
+            else:
+                _LOGGER.info("python.run 沙箱: %s", note)
+            self._executor = executor
+        return self._executor
 
     def _jsonl_path(self, session_id: str) -> Path:
         """会话事件文件路径（父目录自动创建）。
@@ -300,6 +329,8 @@ class AgentService:
                 workspace_root=workspace_root,
                 context_extra={
                     "http_allowed_hosts": self._settings.allowed_hosts,
+                    # python.run 执行器（部署级注入，缺省工具回落本机执行）
+                    "code_executor": await self._code_executor(),
                     "skills": bodies,
                     "skill_meta": {s["name"]: s["description"] for s in active_skills},
                     # WeKnora 知识检索：连接配置 + 助手绑定的知识库范围（None/空 =
