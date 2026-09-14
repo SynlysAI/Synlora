@@ -37,15 +37,13 @@ from synlys_harness import (
     OpenAICompatibleBackend,
     RunSession,
     SessionEvent,
-    ToolPipeline,
-    ToolRegistry,
     ToolResult,
     build_system_prompt,
-    register_builtin_tools,
     resolve_executor,
 )
 
 from app.services.skill_service import SkillService
+from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGISTRY
 
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
 
@@ -58,9 +56,7 @@ TRANSIENT = {EventType.LLM_DELTA, EventType.REASONING_DELTA}
 
 _LOGGER = logging.getLogger(__name__)
 
-_REGISTRY = ToolRegistry()
-register_builtin_tools(_REGISTRY)
-_PIPELINE = ToolPipeline(registry=_REGISTRY)
+# 工具注册表收口在 app.services.tool_registry（与 assistants_api 共用同一实例）
 
 
 class TooManyRuns(Exception):

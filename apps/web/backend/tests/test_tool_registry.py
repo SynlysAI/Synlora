@@ -1,57 +1,43 @@
-"""AI⁴MS provider 插件层与共享工具注册表测试。"""
+"""共享工具注册表测试（运行装配与白名单校验必须同一实例）。"""
 from __future__ import annotations
 
-from synlys_harness import ToolContext, ToolRegistry, ToolResult, tool
 
-from app.core.settings import Settings
-from app.integrations import enabled_provider_names, register_providers
+def test_shared_registry_singleton():
+    """两侧取到同一实例，且含内置工具。"""
+    from app.api import assistants_api
+    from app.services import agent_service
+    from app.services.tool_registry import PIPELINE, REGISTRY
 
-
-class _FakeProvider:
-    """最小 provider：注册一个 fake.ping 工具（测试插件 seam 用）。"""
-
-    name = "fake"
-
-    def register(self, registry: ToolRegistry) -> None:
-        """注册 fake.ping。"""
-        registry.register(fake_ping)
-
-
-@tool(name="fake.ping", description="测试用工具",
-      parameters={"type": "object", "properties": {}})
-async def fake_ping(ctx: ToolContext, args: dict) -> ToolResult:
-    """测试用工具：回 pong。"""
-    return ToolResult(ok=True, content="pong")
+    assert assistants_api._REGISTRY is REGISTRY
+    assert agent_service._REGISTRY is REGISTRY
+    assert agent_service._PIPELINE is PIPELINE
+    assert PIPELINE._registry is REGISTRY
+    assert "python.run" in REGISTRY.names
+    assert "file.read" in REGISTRY.names
 
 
-def test_enabled_provider_names_parsing():
-    """启用名单按逗号拆分、去空白；未配置为空列表（默认全关）。"""
-    assert enabled_provider_names(Settings(ai4ms_providers="")) == []
-    assert enabled_provider_names(Settings(ai4ms_providers="spec_agent")) == ["spec_agent"]
-    assert enabled_provider_names(Settings(ai4ms_providers=" spec_agent , fake ")) == [
-        "spec_agent", "fake"]
-    assert enabled_provider_names(Settings(ai4ms_providers="spec_agent,spec_agent")) == ["spec_agent"]
+def test_registry_is_empty_of_plugin_tools_by_default():
+    """未安装任何插件时，注册表里没有插件工具（宿主启动时才注册）。"""
+    from app.services.tool_registry import REGISTRY
+
+    assert [n for n in REGISTRY.names if n.startswith("spec.")] == []
 
 
-def test_register_providers_disabled_by_default():
-    """默认（未配置）零注册。"""
-    registry = ToolRegistry()
-    assert register_providers(registry, Settings(ai4ms_providers="")) == []
-    assert registry.names == []
+def test_registry_supports_runtime_registration():
+    """注册表支持运行期注册/注销（插件安装/卸载依赖这一能力）。"""
+    from synlys_harness import ToolContext, ToolResult, tool
+    from app.services.tool_registry import REGISTRY
 
+    @tool(name="tmp.demo", description="临时工具",
+          parameters={"type": "object", "properties": {}})
+    async def tmp_demo(ctx: ToolContext, args: dict) -> ToolResult:
+        """临时工具。"""
+        return ToolResult(ok=True, content="ok")
 
-def test_register_providers_registers_enabled(monkeypatch):
-    """启用后按 provider 表注册工具。"""
-    monkeypatch.setattr("app.integrations._provider_table",
-                        lambda: {"fake": _FakeProvider()})
-    registry = ToolRegistry()
-    assert register_providers(registry, Settings(ai4ms_providers="fake")) == ["fake"]
-    assert registry.names == ["fake.ping"]
-
-
-def test_register_providers_unknown_name_skipped(monkeypatch):
-    """未知 provider 名跳过且不抛异常（配置写错不阻断服务启动）。"""
-    monkeypatch.setattr("app.integrations._provider_table", lambda: {})
-    registry = ToolRegistry()
-    assert register_providers(registry, Settings(ai4ms_providers="nope")) == []
-    assert registry.names == []
+    REGISTRY.register(tmp_demo)
+    try:
+        assert "tmp.demo" in REGISTRY.names
+        assert REGISTRY.find("tmp.demo") is not None
+    finally:
+        REGISTRY.unregister("tmp.demo")
+    assert "tmp.demo" not in REGISTRY.names

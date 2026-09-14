@@ -3,14 +3,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
-from synlys_harness import ToolRegistry, register_builtin_tools
 
 from app.api.deps import Repos, get_current_user, get_repos, require_admin
+from app.services.tool_registry import REGISTRY as _REGISTRY
 
 router = APIRouter(prefix="/api/v1/assistants", tags=["assistants"])
-
-_REGISTRY = ToolRegistry()
-register_builtin_tools(_REGISTRY)
 
 
 def _validate_tool_whitelist(whitelist: list[str]) -> None:

@@ -17,7 +17,6 @@ from synlys_harness import (
 from synlys_harness.tools.registry import tool
 from synlys_harness.types import Permission
 
-from app.api import assistants_api as assistants_api_mod
 from app.services import agent_service as agent_service_mod
 
 PROVIDER_BODY = {
@@ -1664,9 +1663,8 @@ async def _demo_risky(ctx, args):
     return ToolResult(ok=True, content="已执行敏感操作")
 
 
+# 工具注册表已收口：assistants_api 与 agent_service 共用同一实例，注册一次两边可见
 agent_service_mod._REGISTRY.register(_demo_risky)
-# assistants_api 白名单校验持有独立注册表实例，两边都要注册
-assistants_api_mod._REGISTRY.register(_demo_risky)
 
 
 class ApprovalFakeBackend(FakeBackend):
