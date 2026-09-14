@@ -90,16 +90,42 @@ def test_skills_root_present_when_dir_exists(tmp_path):
 
 
 def test_scan_plugins_skips_malformed(tmp_path):
-    """manifest 非法（JSON 坏 / 缺必填字段 / 无 manifest）只跳过，不抛异常。"""
+    """manifest 非法（JSON 坏 / 非对象 JSON / 缺必填字段 / id 非法 / 无 manifest）只跳过，不抛异常。"""
     bad = tmp_path / "bad"
     bad.mkdir()
     (bad / "plugin.json").write_text("{ not json", encoding="utf-8")
+    as_list = tmp_path / "as-list"
+    as_list.mkdir()
+    (as_list / "plugin.json").write_text("[1, 2, 3]", encoding="utf-8")
+    as_str = tmp_path / "as-str"
+    as_str.mkdir()
+    (as_str / "plugin.json").write_text('"hello"', encoding="utf-8")
+    bad_id = tmp_path / "bad-id"
+    bad_id.mkdir()
+    (bad_id / "plugin.json").write_text(json.dumps({"id": 123, "name": "n",
+                                                    "version": "1", "tools_module": "tools.py"}),
+                                        encoding="utf-8")
     missing = tmp_path / "missing"
     missing.mkdir()
     (missing / "plugin.json").write_text(json.dumps({"id": "x"}), encoding="utf-8")
     (tmp_path / "not-a-plugin").mkdir()  # 无 manifest 的目录
 
     assert scan_plugins([tmp_path]) == {}
+
+
+def test_scan_plugins_duplicate_id_last_wins(tmp_path):
+    """两个根出现同名 id：后者覆盖前者（不抛异常）。"""
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_a.mkdir()
+    root_b.mkdir()
+    _make_package(root_a, plugin_id="dup",
+                  manifest={**MANIFEST, "id": "dup", "name": "仓库版"})
+    _make_package(root_b, plugin_id="dup",
+                  manifest={**MANIFEST, "id": "dup", "name": "数据目录版"})
+
+    packages = scan_plugins([root_a, root_b])
+    assert packages["dup"].name == "数据目录版"
 
 
 def test_scan_plugins_missing_root_is_fine(tmp_path):
@@ -121,3 +147,29 @@ def test_load_plugin_tools_missing_module_returns_empty(tmp_path):
     (d / "tools.py").unlink()
     pkg = scan_plugins([tmp_path])["demo"]
     assert load_plugin_tools(pkg) == []
+
+
+def test_load_plugin_tools_cleans_sys_modules_on_failure(tmp_path):
+    """工具模块导入抛异常时清理 sys.modules 残留（不污染后续导入）。"""
+    import sys
+
+    d = _make_package(tmp_path)
+    (d / "tools.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+    pkg = scan_plugins([tmp_path])["demo"]
+
+    assert load_plugin_tools(pkg) == []
+    assert "synlora_plugin_demo" not in sys.modules
+
+
+def test_load_plugin_tools_sanitizes_module_name(tmp_path):
+    """id 含非法标识符字符时模块名被净化，仍能加载。"""
+    import sys
+
+    root = tmp_path / "p"
+    root.mkdir()
+    _make_package(root, plugin_id="spec-agent", manifest={**MANIFEST, "id": "spec-agent"})
+    pkg = scan_plugins([root])["spec-agent"]
+
+    tools = load_plugin_tools(pkg)
+    assert [t.__tool_definition__.name for t in tools] == ["demo.hello"]
+    assert "synlora_plugin_spec_agent" in sys.modules

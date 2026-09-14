@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,7 +29,7 @@ class PluginPackage:
     """一个插件包（插件目录 + 解析后的 manifest）。
 
     Attributes:
-        id: 插件 id（= 目录名，工具配置命名空间）。
+        id: 插件 id（manifest 声明，通常与目录名一致；工具配置命名空间）。
         name: 显示名。
         version: 版本号。
         description: 描述。
@@ -75,6 +76,9 @@ def plugin_roots(settings: "Settings") -> list[Path]:
 def scan_plugins(roots: list[Path]) -> dict[str, PluginPackage]:
     """扫描插件根目录，解析全部合法插件包。
 
+    同名插件 id 出现在多个根时，遍历顺序靠后的根覆盖靠前的
+    （`plugin_roots()` 先返回仓库根、后返回数据目录根，故数据目录版优先）。
+
     Args:
         roots: 插件根目录列表（不存在的根直接跳过）。
 
@@ -94,12 +98,21 @@ def scan_plugins(roots: list[Path]) -> dict[str, PluginPackage]:
             except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("插件 manifest 解析失败，已跳过 %s: %s", entry.name, exc)
                 continue
+            if not isinstance(data, dict):
+                logger.warning("插件 manifest 非对象，已跳过 %s", entry.name)
+                continue
+            plugin_id = data.get("id")
+            if not isinstance(plugin_id, str) or not plugin_id.strip():
+                logger.warning("插件 manifest id 非法，已跳过 %s", entry.name)
+                continue
             missing = [k for k in REQUIRED_FIELDS if not data.get(k)]
             if missing:
                 logger.warning("插件 manifest 缺字段 %s，已跳过 %s", missing, entry.name)
                 continue
-            packages[data["id"]] = PluginPackage(
-                id=str(data["id"]),
+            if plugin_id in packages:
+                logger.warning("插件 id 重复，后者覆盖前者: %s（%s）", plugin_id, entry)
+            packages[plugin_id] = PluginPackage(
+                id=plugin_id,
                 name=str(data["name"]),
                 version=str(data["version"]),
                 description=str(data.get("description") or ""),
@@ -125,7 +138,7 @@ def load_plugin_tools(package: PluginPackage) -> list[Any]:
     if not module_path.is_file():
         logger.warning("插件 %s 的工具模块不存在: %s", package.id, module_path)
         return []
-    module_name = f"synlora_plugin_{package.id}"
+    module_name = f"synlora_plugin_{re.sub(r'[^0-9a-zA-Z_]', '_', package.id)}"
     try:
         spec = importlib.util.spec_from_file_location(module_name, module_path)
         if spec is None or spec.loader is None:
@@ -135,6 +148,7 @@ def load_plugin_tools(package: PluginPackage) -> list[Any]:
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
     except Exception as exc:
+        sys.modules.pop(module_name, None)  # 清掉半初始化模块，避免污染后续导入
         logger.warning("插件 %s 工具模块导入失败: %s", package.id, exc)
         return []
     return [obj for obj in vars(module).values()
