@@ -31,6 +31,12 @@ class Settings(BaseSettings):
             （回退时事件带 sandbox=local-weak 标记）。多用户/公网部署建议开启。
         sandbox_mem_limit / sandbox_cpus / sandbox_pids_limit: 单容器资源限额。
         sandbox_docker_user: 容器内运行用户（空 = 镜像默认非 root 用户）。
+        ai4ms_providers: 启用的 AI⁴MS 子平台 provider 名单（逗号分隔，默认空 =
+            全关）。已支持：spec_agent（Spec_Agent 核磁预测三件套）。
+        spec_agent_base_url: Spec_Agent 服务地址（如 http://10.26.15.93:8001，
+            空 = 工具报未配置）。
+        spec_agent_token: 调用 Spec_Agent 的 Bearer token（空 = 不发认证头，
+            适配 Spec_Agent 侧 AUTH_ENABLED=false）。
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -59,6 +65,9 @@ class Settings(BaseSettings):
     sandbox_cpus: float = 1.0
     sandbox_pids_limit: int = 256
     sandbox_docker_user: str = ""
+    ai4ms_providers: str = ""
+    spec_agent_base_url: str = ""
+    spec_agent_token: str = ""
 
     @property
     def data_root(self) -> Path:
