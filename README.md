@@ -84,6 +84,7 @@ cd apps/web/frontend
 npm run build                # 产物 dist/（已在 .gitignore）
 cd ../backend
 python run_uvicorn.py        # 后端启动时检测到 dist/index.html 即托管前端
+uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 ```
 
 浏览器访问 `http://127.0.0.1:8005/`：同一端口同时提供页面与 API；无 dist 时自动退化为仅 API 模式（日志有提示）。
