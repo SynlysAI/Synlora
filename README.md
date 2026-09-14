@@ -1,4 +1,6 @@
-# SynlysAgent 科研智能体平台
+# Synlora 科研智能体平台
+
+（内部代号 SynlysAgent：目录/包/conda 环境沿用早期代号，对外品牌统一为 Synlora）
 
 类 Claude/DeepSeek Harness 的科研智能体 Web 平台：三栏对话工作台，通过对话形式使用各助手（谱图解析、高分子研发、数据分析、文件处理等），每个用户拥有独立沙箱（文件工作区 + 受限 Python 执行），管理员可在页面上配置模型与助手。作为 AI⁴MS 生态的独立子平台部署，现有 AI⁴MS 能力后续通过 Tool Registry 接入。
 
@@ -39,7 +41,7 @@
 ## 目录结构
 
 ```
-SynlysAgent/
+Synlora/
 ├── packages/synlys-harness/     # 纯 Python Agent 运行时（零 FastAPI 依赖）
 │   └── src/synlys_harness/      #   agent loop / session 事件 / tools 管线 / models 路由
 ├── apps/web/

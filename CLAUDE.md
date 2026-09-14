@@ -1,4 +1,4 @@
-# SynlysAgent 项目说明
+# Synlora 项目说明（内部代号 SynlysAgent：目录/包/conda 环境沿用早期代号）
 
 科研智能体平台：类 ChatGPT/Claude 的三栏 Web 工作台（对话式使用科研助手 + 用户沙箱 + 知识库），WeKnora 知识检索已实接，后续接入 AI⁴MS 生态能力（Spec_Agent/Poly_Agent/SpecLabOS 等）。
 

@@ -1,4 +1,4 @@
-"""SynlysAgent Web 后端入口。"""
+"""Synlora Web 后端入口。"""
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     """构建 FastAPI 应用（任务逐步扩展路由）。"""
-    app = FastAPI(title="SynlysAgent", version=APP_VERSION, lifespan=lifespan)
+    app = FastAPI(title="Synlora", version=APP_VERSION, lifespan=lifespan)
     app.state.settings = Settings()
     app.state.store = None  # lifespan 启动时初始化（未就绪时依赖层 503）
     app.include_router(auth_router)
