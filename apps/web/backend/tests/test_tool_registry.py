@@ -30,6 +30,7 @@ def test_enabled_provider_names_parsing():
     assert enabled_provider_names(Settings(ai4ms_providers="spec_agent")) == ["spec_agent"]
     assert enabled_provider_names(Settings(ai4ms_providers=" spec_agent , fake ")) == [
         "spec_agent", "fake"]
+    assert enabled_provider_names(Settings(ai4ms_providers="spec_agent,spec_agent")) == ["spec_agent"]
 
 
 def test_register_providers_disabled_by_default():

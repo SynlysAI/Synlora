@@ -39,9 +39,11 @@ def enabled_provider_names(settings: "Settings") -> list[str]:
         settings: 应用配置。
 
     Returns:
-        去空白后的 provider 名列表；未配置时为空列表（默认全关）。
+        去空白且同名去重（按首次出现顺序）的 provider 名列表；
+        未配置时为空列表（默认全关）。
     """
-    return [p.strip() for p in (settings.ai4ms_providers or "").split(",") if p.strip()]
+    return list(dict.fromkeys(
+        p.strip() for p in settings.ai4ms_providers.split(",") if p.strip()))
 
 
 def _provider_table() -> dict[str, IntegrationProvider]:
@@ -65,9 +67,12 @@ def register_providers(registry: "ToolRegistry", settings: "Settings") -> list[s
     Returns:
         实际注册成功的 provider 名列表。
     """
+    names = enabled_provider_names(settings)
+    if not names:
+        return []
     table = _provider_table()
     registered: list[str] = []
-    for name in enabled_provider_names(settings):
+    for name in names:
         provider = table.get(name)
         if provider is None:
             logger.warning("未知的 AI4MS provider，已跳过: %s", name)
