@@ -20,6 +20,7 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "projects": ["user_id"],
     "runs": ["session_id", "user_id", "status"],
     "local_users": ["username"],
+    "plugin_configs": [],  # 插件配置：仅按 _id 读写与全量列举，无需提取索引列
 }
 
 
@@ -54,8 +55,9 @@ class SqliteStore:
         self._db.row_factory = aiosqlite.Row
         for name, indexes in COLLECTION_INDEXES.items():
             cols = ", ".join(f'"{c}" TEXT' for c in indexes)
+            extra = f", {cols}" if cols else ""  # 无索引列时不留尾逗号
             await self._db.execute(
-                f'CREATE TABLE IF NOT EXISTS "{name}" (_id TEXT PRIMARY KEY, doc TEXT NOT NULL, {cols})'
+                f'CREATE TABLE IF NOT EXISTS "{name}" (_id TEXT PRIMARY KEY, doc TEXT NOT NULL{extra})'
             )
             for c in indexes:
                 await self._db.execute(f'CREATE INDEX IF NOT EXISTS "ix_{name}_{c}" ON "{name}"("{c}")')
