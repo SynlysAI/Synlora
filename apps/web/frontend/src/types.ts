@@ -121,9 +121,24 @@ export interface CatalogItem {
   visibility: 'public' | 'hidden'
   default_enabled: boolean
   installed: boolean
+  /** 已安装时是否处于启用态（停用 = 已装但不注入运行期）。 */
+  enabled: boolean
   visible: boolean
   /** 仅插件行返回：安装时可填的配置字段 */
   config_schema?: PluginConfigField[]
+}
+
+/** 「我的」列表条目：自建（mine）或已安装的内置（installed）。 */
+export interface MyCapability {
+  kind: 'skill' | 'expert' | 'plugin'
+  id: string
+  name: string
+  description: string
+  source: 'mine' | 'installed'
+  enabled: boolean
+  builtin: boolean
+  /** 管理员已下架（仅 installed 条目可能出现）：不可启用。 */
+  revoked?: boolean
 }
 
 /** 会话元数据文档。 */

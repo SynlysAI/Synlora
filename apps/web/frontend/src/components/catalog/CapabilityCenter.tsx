@@ -1,8 +1,8 @@
 /**
  * 用户侧「能力中心」整页（/capabilities，任意登录用户可见）。
  *
- * 平台内置能力（专家 / 技能 / 插件）的市场视图：列表来自 `GET /api/v1/catalog`
- * （只返回当前用户可见的条目），按三类分组展示；每行按状态给动作——
+ * 平台内置能力（专家 / 技能 / 插件）的市场视图：列表来自 `GET /api/v1/market/{kind}`
+ * （只返回当前用户可见的条目，即不含 hidden），按三类分组展示；每行按状态给动作——
  * 默认启用（所有人可用）只显示徽标、已安装显示「卸载」、未安装显示「安装」。
  *
  * 结构与交互照 PluginsAdmin（行卡片列表 + 模态表单 + toast + 成功后刷新）：
@@ -104,9 +104,9 @@ function PluginInstallModal({
 
 /** 用户侧能力中心整页组件。 */
 export default function CapabilityCenter() {
-  const items = useCatalogStore((s) => s.items)
+  const byKind = useCatalogStore((s) => s.byKind)
   const loaded = useCatalogStore((s) => s.loaded)
-  const loadCatalog = useCatalogStore((s) => s.loadCatalog)
+  const loadMarket = useCatalogStore((s) => s.loadMarket)
   const install = useCatalogStore((s) => s.install)
   const uninstall = useCatalogStore((s) => s.uninstall)
   /** 需要先填配置再安装的插件（null 关闭）。 */
@@ -114,8 +114,8 @@ export default function CapabilityCenter() {
 
   // 挂载时拉取一次；安装/卸载在 store 内成功后自行重拉
   useEffect(() => {
-    loadCatalog().catch((err) => toast('error', `加载能力目录失败：${errorText(err)}`))
-  }, [loadCatalog])
+    loadMarket().catch((err) => toast('error', `加载能力目录失败：${errorText(err)}`))
+  }, [loadMarket])
 
   /** 安装：带 schema 的插件先开配置模态，其余直接安装。 */
   const handleInstall = async (item: CatalogItem) => {
@@ -158,7 +158,7 @@ export default function CapabilityCenter() {
 
             {/* 三个分组：专家 / 技能 / 插件 */}
             {GROUPS.map((group) => {
-              const rows = items.filter((i) => i.kind === group.kind)
+              const rows = byKind[group.kind]
               return (
                 <section key={group.kind} className="flex flex-col gap-2">
                   <h3 className="text-[13px] font-medium text-[var(--sa-alias-label-secondary)]">
