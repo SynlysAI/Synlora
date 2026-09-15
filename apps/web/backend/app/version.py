@@ -4,5 +4,5 @@
 语义化版本：主版本.次版本.补丁号[-预发布标识]，内测期使用 beta 预发布段。
 """
 
-APP_VERSION = "0.7.0-beta.1"
+APP_VERSION = "0.8.0-beta.1"
 APP_VERSION_LABEL = "内测版"

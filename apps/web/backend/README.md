@@ -35,7 +35,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 | `AUTH_ENABLED` | `true` | `false` 时匿名放行（仅本机调试） |
 | `DEV_AUTH_TOKEN` | 空 | sqlite 开发模式的固定 token（免登录调试用） |
 | `HOST` / `PORT` | `0.0.0.0` / `8005` | 监听地址与端口 |
-| `DATA_DIR` | `../data` | 运行数据根：`workspaces/`（用户文件）、`sessions/`（事件 JSONL） |
+| `DATA_DIR` | `../data` | 运行数据根，按用户分层：公共层 `public/{skills,catalog}`；用户层 `users/<uid>/{workspaces,sessions,skills,experts}`（workspaces=用户文件、sessions=事件 JSONL） |
 | `FERNET_KEY` | 空 | provider `api_key` 落库加密 key（Fernet）。生成：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`；留空则 api_key 明文落库（仅开发）；生产配置后注意：换 key 前已加密的数据不可解（读取报错需重录） |
 | `HTTP_ALLOWED_HOSTS` | 空 | `http.request` 工具的域名白名单（逗号分隔，支持子域后缀匹配），空则全部拒绝 |
 | `USER_QUOTA_BYTES` | `1073741824` | 每用户工作区配额（字节） |
@@ -109,8 +109,11 @@ conda run -n synlysagent python docker/spec-agent/mint_token.py --username <账�
 ```
 catalog_policy      { _id: "plugin:spec_agent", kind, item_id,
                       visibility: "public"|"hidden", default_enabled: bool }
-user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id, installed_at }
+user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id,
+                      installed_at, enabled: bool }
 ```
+
+`user_capabilities.enabled` 承载「已装但可停用」：安装后可启停，停用优先于管理员默认启用。
 
 **可见性规则**（`CapabilityService`，运行期过滤的唯一入口）：
 
@@ -131,14 +134,18 @@ user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id, insta
 | 侧 | 方法 | 路径 | 说明 |
 | --- | --- | --- | --- |
 | 用户 | `GET` | `/api/v1/catalog` | 当前用户可见的能力目录（含策略与安装状态；`hidden` 项不返回） |
+| 用户 | `GET` | `/api/v1/market/{kind}` | 市场列表（某类型下当前用户可见的可安装条目，含安装 / 启用状态） |
 | 用户 | `POST` | `/api/v1/catalog/{kind}/{item_id}/install` | 安装（写记录；插件可带个人配置 body `{"config": {...}}`） |
 | 用户 | `DELETE` | `/api/v1/catalog/{kind}/{item_id}/install` | 卸载（删记录） |
+| 用户 | `PUT` | `/api/v1/me/capabilities/{kind}/{item_id}` | 安装 / 卸载 / 启用 / 停用（`{installed?, enabled?}`；未安装改启用态 422） |
+| 用户 | `GET/POST` | `/api/v1/me/skills`（`PATCH/DELETE /me/skills/{name}`） | 我的技能：用户自建（落 `users/<uid>/skills/`），同名与公共层 / 内置冲突时报 409 / 403 |
+| 用户 | `GET/POST` | `/api/v1/me/experts`（`PATCH/DELETE /me/experts/{id}`） | 我的专家：用户自建（落 `users/<uid>/experts/`） |
 | 管理员 | `GET` | `/api/v1/admin/catalog` | 管理员视角目录（含 `hidden` 条目与全部策略） |
 | 管理员 | `PUT` | `/api/v1/admin/catalog/{kind}/{item_id}/policy` | 配置 `{visibility, default_enabled}` |
 
-用户侧入口：左栏底部用户菜单 →「能力中心」→ 独立整页 `/capabilities`（专家 / 技能 / 插件三分组，安装 / 卸载，插件可填个人配置）。管理后台为整页 `/admin/*`，由顶部页签改为**左侧导航列表**：常规 / 模型服务 / 助手管理 / 技能管理 / 插件。
+**「市场 / 我的」两栏语义**：市场（`/market/{kind}`）是「可安装的内置条目」，我的（`/me/{skills,experts}` + 已装集合）是「我自建的能力 + 我已安装的能力」；安装后可启用 / 停用（`user_capabilities.enabled`，停用优先于默认启用）。界面入口仍为左栏底部用户菜单 →「能力中心」→ 独立整页 `/capabilities`（专家 / 技能 / 插件三分组），管理后台为整页 `/admin/*` 左侧导航列表（常规 / 模型服务 / 助手管理 / 技能管理 / 插件）。**当前界面改造尚未开始（后续计划 `docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md`），本节描述的是接口与后端能力，界面暂沿用旧版三分组安装 / 卸载形态。**
 
-**首期明确不做**：用户自建 / 导入技能与插件（用户私有目录 `{data_dir}/users/{uid}/` 仅设计预留，无写入路径）、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、常规设置的实际内容（外观主题已可经右上角切换，界面语言等后续提供）。
+**首期明确不做**：按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、用户自建 / 导入**插件**（技能与专家已支持用户自建）、常规设置的实际内容（外观主题已可经右上角切换，界面语言等后续提供）。
 
 ## 内置内容布局（catalog/）
 
@@ -191,15 +198,15 @@ tags: [文档, 报告]
 }
 ```
 
-**扫描器**（`app/catalog/loader.py`）：`catalog_roots(settings)` 给出搜索根（随仓库的 `apps/web/backend/catalog/` + `{data_dir}/catalog/` 运行期安装预留），`scan_catalog(roots) -> CatalogIndex{.experts,.skills,.plugins}` 三类分开返回。三条规则：
+**扫描器**（`app/catalog/loader.py`）：`catalog_roots(settings)` 给出搜索根（随仓库的 `apps/web/backend/catalog/` + `{data_dir}/public/catalog/` 运行期安装预留），`scan_catalog(roots) -> CatalogIndex{.experts,.skills,.plugins}` 三类分开返回。三条规则：
 
 1. **位置即类型**：只认 `<root>/{experts,skills,plugins}/` 三个固定子目录，放错位置不收录。
 2. **非法包只告警跳过、不阻断启动**：manifest 解析失败 / 缺必填字段（专家 `id/name/system_prompt`，插件 `id/name/version/tools_module`）/ `config_schema` 缺 `key` 的包，记日志后跳过。
 3. **同名后者覆盖前者并告警**：同根内重复 id、或跨根重名时，遍历顺序靠后的覆盖靠前的（数据目录根在仓库根之后，故运行期安装预留位优先）。
 
-**只读根 vs 公共层**：`catalog/skills/` 作为**只读技能根**直接提供给 `SkillService`（不再播种拷贝到 `{data_dir}/skills`），其技能标记 `builtin=True`、不可删（删除返回 404）；`{data_dir}/skills/` 退回**可写公共层**（管理员自建 / 导入技能，始终可见），两者同名时**公共层优先**。`builtin` 标记语义 = 「来自只读根」。
+**只读根 vs 公共层**：`catalog/skills/` 作为**只读技能根**直接提供给 `SkillService`（不再播种拷贝到 `{data_dir}/public/skills`），其技能标记 `builtin=True`、不可删（删除返回 404）；`{data_dir}/public/skills/` 为**可写公共层**（管理员自建 / 导入技能，始终可见），两者同名时**公共层优先**。`builtin` 标记语义 = 「来自只读根」。用户自建技能另落 `{data_dir}/users/<uid>/skills/`，优先序为「用户根 → 公共层 → 只读根」。
 
-**旧副本迁移**：启动时清理 `{data_dir}/skills` 里与 `catalog/skills` 同名且 `SKILL.md` **字节一致**的旧播种副本；**字节不同 → 保留并告警**（可能是管理员改过，也可能是旧播种残留，需人工核对；保留期间它会因「公共层优先」遮蔽内置版本）。
+**旧副本迁移**：启动时清理 `public/skills` 里与 `catalog/skills` 同名且 `SKILL.md` **字节一致**的旧播种副本；**字节不同 → 保留并告警**（可能是管理员改过，也可能是旧播种残留，需人工核对；保留期间它会因「公共层优先」遮蔽内置版本）。更早的旧播种路径 `{data_dir}/skills` 已废弃、不再被扫描，遗留目录需人工清理（详见 `app/services/skill_service.py::migrate_legacy_builtin_copies`）。
 
 **专家种子**：`app/catalog/seed.py::seed_experts` 按 `_id` 幂等（已存在跳过、不覆盖管理员改动，缺失补种），内置专家由 `catalog/experts` 驱动，原先的 `SEED_ASSISTANTS` 与 `BUILTIN_SKILL_NAMES` 两个硬编码已删除。
 

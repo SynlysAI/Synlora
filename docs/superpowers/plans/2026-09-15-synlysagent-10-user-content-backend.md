@@ -869,27 +869,40 @@ def client(monkeypatch, tmp_path):
 HEADERS = {"Authorization": "Bearer devtok"}
 
 
-def test_capability_switch_requires_install_first(client):
-    resp = client.put("/api/v1/me/capabilities/skill/demo", json={"enabled": True},
-                      headers=HEADERS)
+# 用真实的内置目录条目（catalog/skills/data-analysis）：
+# 公共层技能不在 catalog 里，can_install 会 404，不能拿它当被安装对象
+ITEM = "data-analysis"
+
+
+def test_switch_enabled_without_install_is_422(client):
+    resp = client.put(f"/api/v1/me/capabilities/skill/{ITEM}",
+                      json={"enabled": True}, headers=HEADERS)
     assert resp.status_code == 422
 
 
-def test_capability_install_then_disable(client):
-    # 先建一个公共技能作为可安装条目
-    client.post("/api/v1/skills", json={
-        "name": "demo", "description": "演示", "content": "## 目标\n演示"}, headers=HEADERS)
-    install = client.post("/api/v1/catalog/skill/demo/install", headers=HEADERS)
-    assert install.status_code == 201
-    off = client.put("/api/v1/me/capabilities/skill/demo", json={"enabled": False},
-                     headers=HEADERS)
+def test_switch_install_then_disable(client):
+    install = client.put(f"/api/v1/me/capabilities/skill/{ITEM}",
+                         json={"installed": True}, headers=HEADERS)
+    assert install.status_code == 200
+    assert install.json() == {"kind": "skill", "id": ITEM,
+                             "installed": True, "enabled": True}
+
+    off = client.put(f"/api/v1/me/capabilities/skill/{ITEM}",
+                     json={"enabled": False}, headers=HEADERS)
     assert off.status_code == 200
-    assert off.json() == {"kind": "skill", "id": "demo", "installed": True, "enabled": False}
+    assert off.json() == {"kind": "skill", "id": ITEM,
+                          "installed": True, "enabled": False}
+
     # 停用后从可见性中被剔除（此任务用既有 /catalog 端点校验；/market 在 Task 9 提供）
     rows = client.get("/api/v1/catalog?kind=skill", headers=HEADERS).json()
-    row = next(r for r in rows if r["id"] == "demo")
-    assert row["installed"] is True and row["enabled"] is False and row["visible"] is False
+    row = next(r for r in rows if r["id"] == ITEM)
+    assert row["installed"] is True
+    assert row["enabled"] is False
+    assert row["visible"] is False
 ```
+
+> **示例订正**：可安装对象必须落在 catalog 内置目录里（`can_install` 只认内置条目），
+> 所以这里用真实条目 `data-analysis`，而不是临时 `POST /api/v1/skills` 建的公共层技能。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -983,14 +996,27 @@ git commit -m "feat: 能力开关端点（安装/卸载/启用/停用）"
 
 ```python
 def test_market_lists_items_with_state(client):
-    client.post("/api/v1/skills", json={
-        "name": "market-demo", "description": "市场演示", "content": "## 目标\nx"},
-        headers=HEADERS)
+    """市场列表返回条目及其安装/启用/可见状态。"""
     rows = client.get("/api/v1/market/skill", headers=HEADERS).json()
-    row = next(r for r in rows if r["id"] == "market-demo")
-    assert row["installed"] is False and row["enabled"] is False
+    row = next(r for r in rows if r["id"] == ITEM)   # ITEM = "data-analysis"（内置条目）
+    # 下面三行只是"平台缺省值快照"（public + 非默认启用 + 未安装），实现里写死
+    # 常量也能通过，判别力弱；本用例真正有判别力的断言是 `visible is False`
+    # （缺省不可见）。默认启用那半边分支见 test_market_item_visible_when_default_enabled。
+    assert row["installed"] is False
+    assert row["enabled"] is False
+    assert row["visible"] is False
     assert row["visibility"] == "public"
+    assert row["default_enabled"] is False
+
+    client.put(f"/api/v1/me/capabilities/skill/{ITEM}",
+               json={"installed": True}, headers=HEADERS)
+    row = next(r for r in client.get("/api/v1/market/skill", headers=HEADERS).json()
+               if r["id"] == ITEM)
+    assert row["installed"] is True and row["enabled"] is True and row["visible"] is True
 ```
+
+> **示例订正**：同 Task 8——市场列表里的可安装对象来自 catalog 内置条目（此处 `data-analysis`），
+> 不能拿 `POST /api/v1/skills` 建的公共层技能充当，否则 `can_install` 判 404。
 
 - [ ] **Step 2: 运行测试确认失败**
 

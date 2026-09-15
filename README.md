@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。
 
-- 版本：0.7.0-beta.1（内测版）
+- 版本：0.8.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -52,7 +52,7 @@ Synlora/
 │   └── frontend/                # React 19 + TS + Vite 三栏工作台（npm run build 产物由后端托管）
 ├── docs/superpowers/            # 设计文档（specs/）、实施计划（plans/）、验收报告与截图（acceptance/）
 ├── ecosystem.config.cjs         # PM2 部署配置
-└── data/                        # 运行时数据（不入库）：workspaces/、sessions/、sqlite 库
+└── data/                        # 运行时数据（不入库）：public/{skills,catalog}（公共层）、users/<uid>/{workspaces,sessions,skills,experts}（用户层）、sqlite 库
 ```
 
 ## 快速开始
@@ -120,11 +120,15 @@ pm2 logs synlys-agent
 
 ### 能力目录（市场）
 
-「专家 / 技能 / 插件」统一纳入能力目录，三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认；普通用户在左栏用户菜单「能力中心」（独立整页 `/capabilities`）自行安装/卸载。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+「专家 / 技能 / 插件」统一纳入能力目录，三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。
+
+能力中心按「**市场 / 我的**」两栏组织：市场是「可安装的内置条目」，我的 = 用户自建能力 + 已安装能力。用户在市场安装后可**启用 / 停用**（`user_capabilities.enabled`，停用优先于默认启用）；用户还可**自建技能与专家**（落各自 `{data_dir}/users/<uid>/{skills,experts}/`，技能同名全局唯一，内置条目不可编辑、想定制请自建换名）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。
+
+**当前状态**：目录分层、安装/启用模型与用户自建的后端接口已就绪（`/api/v1/market/{kind}`、`PUT /api/v1/me/capabilities/{kind}/{id}`、`/api/v1/me/{skills,experts}`）；界面的「市场 / 我的」两栏改造**尚未开始**（见 [docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md](docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md)），用户侧入口暂沿用旧版「能力中心」（`/capabilities`）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 内置内容布局（catalog/）
 
-**位置即类型，加一个目录即扩展**：内置专家 / 技能 / 插件统一落在 `apps/web/backend/catalog/`（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`），由 `app/catalog/loader.py` 的 `scan_catalog()` 一次性扫入；`catalog/skills/` 作为**只读技能根**直接提供，`{data_dir}/skills/` 退回可写公共层（同名公共层优先）。**harness 内不含任何内置内容（内容归宿主、机制归 harness）**，宿主的 `catalog/` 是数据目录而非 Python 包，非 editable 部署需与 `app/` 同级一起放。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+**位置即类型，加一个目录即扩展**：内置专家 / 技能 / 插件统一落在 `apps/web/backend/catalog/`（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`），由 `app/catalog/loader.py` 的 `scan_catalog()` 一次性扫入；`catalog/skills/` 作为**只读技能根**直接提供，`{data_dir}/public/skills/` 为可写公共层（同名公共层优先），用户自建技能另落 `{data_dir}/users/<uid>/skills/`。**harness 内不含任何内置内容（内容归宿主、机制归 harness）**，宿主的 `catalog/` 是数据目录而非 Python 包，非 editable 部署需与 `app/` 同级一起放。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### Docker 沙箱（多用户/云部署）
 
@@ -150,7 +154,7 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 cd packages/synlys-harness
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
-# web 后端（341 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
+# web 后端（411 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
 cd apps/web/backend
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
@@ -166,7 +170,7 @@ npm run lint
 
 - **~~沙箱升级（多用户部署前置）~~**（✅ 0.4.0 完成）：`python.run` 执行器抽象（local/docker 可切换），docker 形态为临时容器 + 资源限额 + 断网，探测失败按 strict 回退或拒绝
 - **AI⁴MS 工具接入（项目立身之本）**：首期（Spec_Agent 核磁三件套，插件化接入）✅ 0.5.0；统一 Job 注册表（异步任务状态机 + 完成通知）→ 5 种谱图解析异步任务 / Poly_Agent / SpecLabOS 设备工作流（后者经强制审批）
-- **能力市场延续项**：用户自建 / 导入技能与插件（用户私有目录 `{data_dir}/users/{uid}/` 仅设计预留）、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载（首期已上线内置目录 + 管理员策略 + 用户安装，见「能力目录（市场）」）
+- **能力市场延续项**：用户自建技能与专家 ✅ 0.8.0（落各自 `users/<uid>/`，界面的「市场 / 我的」两栏改造待后续计划 11）；导入 / 自建**插件**、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载（首期已上线内置目录 + 管理员策略 + 用户安装 + 启用/停用，见「能力目录（市场）」）
 - **跨会话长期记忆**：工作区级记忆抽取与注入
 - **MCP adapter**：Tool Registry 加 MCP 来源，一次投入换第三方工具生态
 - **多 Agent / SwarmFlow**：声明式 team 装配（出现并行科研场景需求时启动）

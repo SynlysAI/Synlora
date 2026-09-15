@@ -84,7 +84,7 @@ async def export_skill(request: Request, name: str, user=Depends(get_current_use
 
 @router.post("", status_code=201)
 async def create_skill(request: Request, body: SkillBody, user=Depends(require_admin)):
-    """新建技能（写 {data_root}/skills/<name>/SKILL.md）。
+    """新建技能（写 {data_root}/public/skills/<name>/SKILL.md，管理员公共层）。
 
     Args:
         request: FastAPI 请求。

@@ -1,14 +1,15 @@
 """内置目录条目枚举。
 
-三类内置条目**一律来自** `apps/web/backend/catalog/`（按类型分目录，只读，
-首期不支持用户自建），由 `app.catalog.loader.scan_catalog()` 一次扫描得出：
+三类内置条目**一律来自** `apps/web/backend/catalog/`（按类型分目录，只读；
+用户自建技能 / 专家落各自用户目录，不经此处枚举），由
+`app.catalog.loader.scan_catalog()` 一次扫描得出：
 
 - 专家：`catalog/experts/<dir>/expert.json`（插件播种的 `asst-plugin-*` 专家
   由插件运行时生成，不落在 catalog 里，天然不计入）；
 - 技能：`catalog/skills/<name>/SKILL.md`（frontmatter 即元数据，无额外 manifest）；
 - 插件：`catalog/plugins/<id>/plugin.json`（沿用既有插件契约）。
 
-另有数据目录根 `{data_dir}/catalog/`（运行期安装预留），同名后者覆盖前者。
+另有数据目录公共层根 `{data_dir}/public/catalog/`（运行期安装预留），同名后者覆盖前者。
 """
 from __future__ import annotations
 
