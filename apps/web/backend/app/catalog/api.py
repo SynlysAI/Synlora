@@ -290,3 +290,27 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
         "installed": await service.installs.is_installed(user_id, kind, item_id),
         "enabled": await service.installs.is_enabled(user_id, kind, item_id),
     }
+
+
+@router.get("/market/{kind}")
+async def market(kind: str, user=Depends(get_current_user),
+                 service=Depends(get_capability_service)) -> list[dict]:
+    """市场列表（某类型下当前用户可见的可安装条目）。
+
+    按 kind 分片返回单类条目，供用户侧「能力中心」渲染；与 `/catalog` 的区别
+    是后者把三类混排且 kind 非法时静默退化为全类型，而本端点类型非法即 404。
+
+    Args:
+        kind: 条目类型（expert/skill/plugin）。
+        user: 当前用户。
+        service: 能力服务。
+
+    Returns:
+        条目列表（含 installed/enabled/default_enabled/visibility）。
+
+    Raises:
+        HTTPException: 类型非法（404）。
+    """
+    if kind not in KINDS:
+        raise HTTPException(404, f"未知类型: {kind}")
+    return await service.market_items(user["sub"], kind)

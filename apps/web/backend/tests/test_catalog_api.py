@@ -73,3 +73,40 @@ def test_switch_install_unknown_item_is_404(client):
     resp = client.put("/api/v1/me/capabilities/skill/no-such-skill",
                       json={"installed": True}, headers=HEADERS)
     assert resp.status_code == 404
+
+
+def test_market_lists_items_with_state(client):
+    """市场列表返回条目及其安装/启用/可见状态。"""
+    rows = client.get("/api/v1/market/skill", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == ITEM)
+    assert row["installed"] is False
+    assert row["enabled"] is False
+    assert row["visible"] is False
+    assert row["visibility"] == "public"
+    assert row["default_enabled"] is False
+
+    client.put(f"/api/v1/me/capabilities/skill/{ITEM}",
+               json={"installed": True}, headers=HEADERS)
+    row = next(r for r in client.get("/api/v1/market/skill", headers=HEADERS).json()
+               if r["id"] == ITEM)
+    assert row["installed"] is True and row["enabled"] is True and row["visible"] is True
+
+
+def test_market_unknown_kind_is_404(client):
+    resp = client.get("/api/v1/market/nope", headers=HEADERS)
+    assert resp.status_code == 404
+    # 断言错误来自本端点的类型校验，而非路由缺失（否则删掉端点本条依然绿）
+    assert "未知类型" in resp.json()["detail"]
+
+
+def test_market_hides_hidden_items(client):
+    """管理员下架的条目不出现在用户市场里。"""
+    client.put(f"/api/v1/admin/catalog/skill/{ITEM}/policy",
+               json={"visibility": "hidden", "default_enabled": False}, headers=HEADERS)
+    ids = {r["id"] for r in client.get("/api/v1/market/skill", headers=HEADERS).json()}
+    assert ITEM not in ids
+
+    # 管理员视角仍能看到（既有 /admin/catalog 端点，语义不变）
+    admin_ids = {r["id"] for r in client.get("/api/v1/admin/catalog?kind=skill",
+                                             headers=HEADERS).json()}
+    assert ITEM in admin_ids
