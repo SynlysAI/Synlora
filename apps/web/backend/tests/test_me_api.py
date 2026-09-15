@@ -89,3 +89,42 @@ def test_my_skills_marks_revoked_installed_item(client):
     rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
     row = next(r for r in rows if r["name"] == "data-analysis")
     assert row["revoked"] is True
+
+
+EXPERT = {"name": "化学助手", "avatar": "🧪", "description": "演示",
+          "system_prompt": "你是化学助手", "tool_whitelist": ["python.run"]}
+
+
+def test_create_list_and_delete_my_expert(client):
+    created = client.post("/api/v1/me/experts", json=EXPERT, headers=HEADERS)
+    assert created.status_code == 201
+    expert_id = created.json()["id"]
+    rows = client.get("/api/v1/me/experts", headers=HEADERS).json()
+    assert any(r["id"] == expert_id and r["source"] == "mine" for r in rows)
+    assert client.delete(f"/api/v1/me/experts/{expert_id}",
+                         headers=HEADERS).status_code == 200
+    assert all(r["id"] != expert_id for r in
+               client.get("/api/v1/me/experts", headers=HEADERS).json())
+
+
+def test_my_expert_is_instantiated_as_assistant(client):
+    """自建专家会实例化进 assistants（否则会话里选不到它）。"""
+    created = client.post("/api/v1/me/experts", json=EXPERT, headers=HEADERS).json()
+    client.get("/api/v1/me/experts", headers=HEADERS)
+    assistants = client.get("/api/v1/assistants", headers=HEADERS).json()
+    assert any(a["_id"] == created["id"] for a in assistants)
+
+
+def test_update_my_expert(client):
+    created = client.post("/api/v1/me/experts", json=EXPERT, headers=HEADERS).json()
+    resp = client.patch(f"/api/v1/me/experts/{created['id']}",
+                        json={**EXPERT, "description": "改过"}, headers=HEADERS)
+    assert resp.status_code == 200
+    rows = client.get("/api/v1/me/experts", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == created["id"])
+    assert row["description"] == "改过"
+
+
+def test_cannot_update_others_expert(client):
+    assert client.patch("/api/v1/me/experts/u-other:chem", json=EXPERT,
+                        headers=HEADERS).status_code == 404
