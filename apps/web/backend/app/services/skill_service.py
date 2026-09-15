@@ -89,7 +89,8 @@ class SkillService:
             extra_roots: 额外技能根（插件包的 skills/ 目录；同名时用户目录优先）。
         """
         self._data_root = data_root
-        self._extra_roots: list[Path] = list(extra_roots or [])
+        # 规范化额外技能根，避免同一目录的不同写法被重复扫描（口径与 add_root 一致）
+        self._extra_roots: list[Path] = [Path(r).resolve() for r in (extra_roots or [])]
 
     @property
     def skills_dir(self) -> Path:
@@ -108,8 +109,9 @@ class SkillService:
         Args:
             root: 技能根目录（其下每个子目录是一个技能）。
         """
-        if root not in self._extra_roots:
-            self._extra_roots.append(root)
+        normalized = Path(root).resolve()
+        if normalized not in self._extra_roots:
+            self._extra_roots.append(normalized)
 
     def _scan_root(self, root: Path, *, builtin: bool) -> list[dict]:
         """扫描单个技能根目录。
@@ -172,7 +174,7 @@ class SkillService:
             try:
                 return parse_skill_md(md.read_text(encoding="utf-8"))["content"]
             except (ValueError, yaml.YAMLError):
-                return None
+                continue  # 该根的技能损坏：跳过，继续找后续根（与 _scan_root 的"跳过"语义一致）
         return None
 
     def write_skill(self, *, name: str, description: str, content: str,

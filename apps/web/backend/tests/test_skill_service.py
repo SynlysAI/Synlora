@@ -166,3 +166,39 @@ def test_extra_root_missing_dir_is_fine(tmp_path):
     svc = SkillService(tmp_path / "data", extra_roots=[tmp_path / "nope"])
     assert svc.list_skills() == []
     assert svc.read_body("anything") is None
+
+
+def test_broken_user_skill_falls_back_to_plugin(tmp_path):
+    """用户目录同名技能损坏时，read_body 回退到插件根（与 list_skills 语义一致）。
+
+    回归：修复前 read_body 命中损坏目录即返回 None，导致技能进索引却没有正文。
+    """
+    data_root = tmp_path / "data"
+    user_dir = data_root / "skills" / "spec-nmr"
+    user_dir.mkdir(parents=True)
+    (user_dir / "SKILL.md").write_text("没有 frontmatter 的坏文件", encoding="utf-8")
+    plugin_skills = tmp_path / "plugin" / "skills"
+    (plugin_skills / "spec-nmr").mkdir(parents=True)
+    (plugin_skills / "spec-nmr" / "SKILL.md").write_text(
+        "---\nname: spec-nmr\ndescription: 插件版本\n---\n插件正文\n", encoding="utf-8")
+
+    svc = SkillService(data_root, extra_roots=[plugin_skills])
+    assert [s["name"] for s in svc.list_skills()] == ["spec-nmr"]
+    assert svc.read_body("spec-nmr") == "插件正文"
+    assert svc.read_body("spec-nmr") != ""  # 不得出现"有索引无正文"
+
+
+def test_add_root_normalizes_path(tmp_path):
+    """同一目录用不同写法传入只挂一次（规范化去重）。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    plugin_skills = tmp_path / "plugin" / "skills"
+    (plugin_skills / "spec-nmr").mkdir(parents=True)
+    (plugin_skills / "spec-nmr" / "SKILL.md").write_text(
+        "---\nname: spec-nmr\ndescription: 核磁\n---\n正文\n", encoding="utf-8")
+
+    svc = SkillService(data_root)
+    svc.add_root(plugin_skills)
+    svc.add_root(plugin_skills / "." / ".." / "skills")  # 等价写法
+    assert len(svc._extra_roots) == 1
+    assert [s["name"] for s in svc.list_skills()] == ["spec-nmr"]
