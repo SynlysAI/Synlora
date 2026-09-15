@@ -13,7 +13,8 @@ import httpx
 from synlys_harness import ToolContext, ToolResult, tool
 
 PLUGIN_ID = "spec_agent"
-REQUEST_TIMEOUT_S = 350.0   # 上游模型推理 read_timeout
+REQUEST_TIMEOUT_S = 360.0   # 读超时，略大于上游 350s（避免边界竞态）
+CONNECT_TIMEOUT_S = 10.0    # 连接超时（宿主不可达时快速失败）
 TOOL_TIMEOUT_S = 380.0      # 工具级超时必须大于 HTTP 超时：让 HTTP 层先报错
 
 
@@ -29,13 +30,54 @@ def _config(ctx: ToolContext) -> dict:
     return (ctx.extra.get("plugins") or {}).get(PLUGIN_ID) or {}
 
 
+def _str_arg(args: dict, key: str, default: str = "") -> str:
+    """取字符串参数（None/缺失一律回落默认值，避免 str(None) 变成 "None"）。
+
+    Args:
+        args: 工具参数。
+        key: 参数名。
+        default: 缺失或为 None 时的默认值。
+
+    Returns:
+        字符串参数值。
+    """
+    value = args.get(key)
+    return default if value is None else str(value)
+
+
+def _int_arg(args: dict, key: str, default: int, *, low: int, high: int) -> int:
+    """取整数参数并钳制到 [low, high]（None/空白/非法值回落默认值）。
+
+    Args:
+        args: 工具参数。
+        key: 参数名。
+        default: 缺失或非法时的默认值。
+        low: 下界（含）。
+        high: 上界（含）。
+
+    Returns:
+        钳制后的整数。
+    """
+    raw = args.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(value, high))
+
+
 def _make_client() -> httpx.AsyncClient:
     """创建 HTTP 客户端（测试经 monkeypatch 注入 MockTransport）。
+
+    读超时略大于上游 350s（避免边界竞态）；连接超时短，宿主不可达时快速失败。
 
     Returns:
         配好超时的 httpx 异步客户端。
     """
-    return httpx.AsyncClient(timeout=REQUEST_TIMEOUT_S)
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(REQUEST_TIMEOUT_S, connect=CONNECT_TIMEOUT_S))
 
 
 async def _call_nmrserver(ctx: ToolContext, path: str, payload: dict) -> ToolResult:
@@ -48,7 +90,8 @@ async def _call_nmrserver(ctx: ToolContext, path: str, payload: dict) -> ToolRes
 
     Returns:
         ToolResult：content 为逐条 JSON（items）或"（未返回结果）"；失败时
-        error 为 spec_agent_unconfigured / http_error / upstream_error。
+        error 为 spec_agent_unconfigured / timeout / connection_error /
+        http_error / upstream_error。
     """
     config = _config(ctx)
     base_url = str(config.get("base_url") or "").rstrip("/")
@@ -66,6 +109,10 @@ async def _call_nmrserver(ctx: ToolContext, path: str, payload: dict) -> ToolRes
         async with _make_client() as client:
             resp = await client.post(
                 f"{base_url}/api/v1/nmrserver/{path}", headers=headers, json=payload)
+    except httpx.TimeoutException as exc:
+        return ToolResult(ok=False, content=f"谱图服务响应超时: {exc}", error="timeout")
+    except httpx.ConnectError as exc:
+        return ToolResult(ok=False, content=f"无法连接谱图服务: {exc}", error="connection_error")
     except httpx.HTTPError as exc:
         return ToolResult(ok=False, content=f"谱图服务请求失败: {exc}", error="http_error")
     if resp.status_code != 200:
@@ -86,9 +133,17 @@ async def _call_nmrserver(ctx: ToolContext, path: str, payload: dict) -> ToolRes
             content=f"谱图服务错误: {body.get('message') or body.get('code')}",
             error="upstream_error",
         )
-    data = body.get("data") or {}
-    items = data.get("items") if isinstance(data, dict) else None
-    if not isinstance(items, list) or not items:
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return ToolResult(
+            ok=False, content=f"谱图服务返回结构异常: {str(data)[:200]}",
+            error="upstream_error")
+    items = data.get("items")
+    if not isinstance(items, list):
+        return ToolResult(
+            ok=False, content=f"谱图服务返回缺少 items: {str(data)[:200]}",
+            error="upstream_error")
+    if not items:
         return ToolResult(ok=True, content="（未返回结果）", data={"items": 0})
     return ToolResult(
         ok=True,
@@ -119,7 +174,7 @@ async def spec_nmr_forward(ctx: ToolContext, args: dict) -> ToolResult:
     Returns:
         ToolResult（每行一个分子的预测结果 JSON）。
     """
-    return await _call_nmrserver(ctx, "forward", {"smiles_input": args["smiles_input"]})
+    return await _call_nmrserver(ctx, "forward", {"smiles_input": _str_arg(args, "smiles_input")})
 
 
 @tool(
@@ -150,12 +205,12 @@ async def spec_nmr_reverse(ctx: ToolContext, args: dict) -> ToolResult:
         ToolResult（候选结构 JSON）。
     """
     return await _call_nmrserver(ctx, "reverse", {
-        "h_shifts_input": str(args.get("h_shifts_input", "")),
-        "h_split_input": str(args.get("h_split_input", "")),
-        "c_shifts_input": str(args.get("c_shifts_input", "")),
-        "formula": str(args.get("formula", "")),
-        "allowed_elements": str(args.get("allowed_elements", "")),
-        "candidates": str(args.get("candidates", "")),
+        "h_shifts_input": _str_arg(args, "h_shifts_input"),
+        "h_split_input": _str_arg(args, "h_split_input"),
+        "c_shifts_input": _str_arg(args, "c_shifts_input"),
+        "formula": _str_arg(args, "formula"),
+        "allowed_elements": _str_arg(args, "allowed_elements"),
+        "candidates": _str_arg(args, "candidates"),
     })
 
 
@@ -188,10 +243,10 @@ async def spec_nmr_search(ctx: ToolContext, args: dict) -> ToolResult:
         ToolResult（库内候选 JSON）。
     """
     return await _call_nmrserver(ctx, "search", {
-        "h_shifts_input": str(args.get("h_shifts_input", "")),
-        "h_split_input": str(args.get("h_split_input", "")),
-        "c_shifts_input": str(args.get("c_shifts_input", "")),
-        "num_search": int(args.get("num_search", 500)),
-        "topk": int(args.get("topk", 10)),
-        "allowed_elements": str(args.get("allowed_elements", "C,H,N,O")),
+        "h_shifts_input": _str_arg(args, "h_shifts_input"),
+        "h_split_input": _str_arg(args, "h_split_input"),
+        "c_shifts_input": _str_arg(args, "c_shifts_input"),
+        "num_search": _int_arg(args, "num_search", 500, low=10, high=10000),
+        "topk": _int_arg(args, "topk", 10, low=1, high=100),
+        "allowed_elements": _str_arg(args, "allowed_elements", "C,H,N,O"),
     })
