@@ -73,7 +73,22 @@ class ProjectService:
         Returns:
             工作区目录路径（可能不存在）。
         """
-        return self._data_root / "users" / user_id / "workspaces"
+        return workspace.user_root(self._data_root, user_id) / "workspaces"
+
+    @staticmethod
+    def _reserve_default_dir(base: str, taken: set[str]) -> None:
+        """把 default 目录名钉成已占用，保证它恒留给默认工作区。
+
+        大小写变体（Default/DEFAULT）在大小写不敏感文件系统上与 default 是同一个
+        物理目录，故一并视为占用；用户项目改名/取名为 default 时会被避让成 default-2。
+
+        Args:
+            base: sanitize 后的基础目录名。
+            taken: 仍被活跃项目引用的目录名集合（就地更新）。
+        """
+        taken.add(workspace.DEFAULT_PROJECT_DIR)
+        if base.casefold() == workspace.DEFAULT_PROJECT_DIR:
+            taken.add(base)
 
     async def _create_locked(self, user_id: str, name: str, base: str) -> dict:
         """锁内新建项目（调用方必须已持有该用户的锁）。
@@ -88,10 +103,7 @@ class ProjectService:
         """
         user_dir = self._user_workspaces_dir(user_id)
         taken = await self._repo.used_dir_names(user_id)
-        taken.add(workspace.DEFAULT_PROJECT_DIR)  # default 恒留给默认工作区
-        if base.casefold() == workspace.DEFAULT_PROJECT_DIR:
-            # 大小写变体（Default/DEFAULT）在大小写不敏感盘上与 default 同目录，必须避让
-            taken.add(base)
+        self._reserve_default_dir(base, taken)
         dir_name = workspace.free_dir_name(user_dir, base, taken)
         project = await self._repo.create(
             user_id=user_id, name=name.strip(), dir_name=dir_name)
@@ -102,6 +114,9 @@ class ProjectService:
         """锁内确保该用户的默认工作区存在（目录名恒为 default，不参与避让）。
 
         磁盘上残留同名孤儿目录时直接复用（mkdir exist_ok），避免又造出 default-2。
+        幂等：若该用户已有目录名为 default 的项目则直接返回；当前唯一调用点
+        （resolve_active_project）已在锁内确认项目列表为空，故该分支实际不触发，
+        保留是为了让方法自身幂等、可被将来的调用方直接复用。
 
         Args:
             user_id: 用户 sub。
@@ -278,11 +293,7 @@ class ProjectService:
             else:
                 taken = await self._repo.used_dir_names(user_id)
                 taken.discard(old_dir)  # 自己不算占用，否则会被判成冲突而加后缀
-                # default 恒留给默认工作区（无条件保留：改名成 default 时该落在 default-2）
-                taken.add(workspace.DEFAULT_PROJECT_DIR)
-                if base.casefold() == workspace.DEFAULT_PROJECT_DIR:
-                    # 大小写变体（Default/DEFAULT）在大小写不敏感盘上与 default 同目录，必须避让
-                    taken.add(base)
+                self._reserve_default_dir(base, taken)
                 new_dir = workspace.free_dir_name(user_dir, base, taken)
             if new_dir != old_dir:
                 src = user_dir / old_dir
