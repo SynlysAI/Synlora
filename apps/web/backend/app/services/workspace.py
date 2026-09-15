@@ -1,4 +1,4 @@
-"""用户工作区布局与配额。"""
+"""用户数据根与工作区布局（路径拼接）、文件校验与配额。"""
 from __future__ import annotations
 
 import re
@@ -176,7 +176,7 @@ def free_dir_name(user_dir: Path, base: str, taken: set[str]) -> str:
     """求一个未被占用的目录名（盘上存在或仍被活跃项目引用都算占用）。
 
     Args:
-        user_dir: 该用户的工作区目录（{data_root}/workspaces/{user_id}）。
+        user_dir: 该用户的工作区目录（{data_root}/users/{user_id}/workspaces）。
         base: sanitize 后的基础目录名（须非空）。
         taken: 仍被活跃项目引用的目录名集合。
 
