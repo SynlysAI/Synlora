@@ -1,8 +1,9 @@
 /**
  * 项目（工作区）store：当前用户的项目列表 + 当前选中工作区。
  *
- * 启动时必须调用 load()：后端 GET /api/v1/projects 首次访问会执行旧布局
- * 迁移并补种「默认项目」，会话创建与文件上传都依赖迁移后的项目存在。
+ * 启动时必须调用 load()：后端 GET /api/v1/projects 只返回既有项目——不迁移旧布局、
+ * 不补种默认项目，全新用户拿到的是空列表；默认工作区推迟到首条消息（或按需解析
+ * 活跃项目）时才创建，故消费方（pickDefaultProject / pickActiveProject）需判空。
  *
  * `currentId` 是**用户显式选择**：`null` = 没选（不是"没有项目"），语义是
  * 「用默认工作区」——新建会话不传 project_id 由后端回落，只读消费侧（上传
@@ -23,7 +24,7 @@ interface ProjectsState {
   currentId: string | null
   /** load() 是否完成（空态区分加载中）。 */
   loaded: boolean
-  /** 拉取项目列表（触发后端迁移，幂等）。 */
+  /** 拉取项目列表（幂等；无迁移、无补种副作用）。 */
   load: () => Promise<void>
   /** 新建项目并切为当前（重名后端自动加目录后缀，不失败）。 */
   create: (name: string) => Promise<Project>
@@ -97,10 +98,12 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 }))
 
 /**
- * 取默认工作区（`dir_name === 'default'`，后端补种保证存在）。
+ * 取默认工作区（`dir_name === 'default'`；后端已不补种，全新用户的列表里没有默认
+ * 工作区——它要等首条消息（或按需解析活跃项目）时才建，故这里可能返回 null，消费方
+ * 须判空，不能假定一定有默认工作区）。
  *
  * @param state projects store 快照。
- * @returns 默认工作区；列表未加载时 null。
+ * @returns 默认工作区；列表未加载或该用户尚无默认工作区时 null。
  */
 export function pickDefaultProject(state: ProjectsState): Project | null {
   return state.projects.find((p) => p.dir_name === DEFAULT_PROJECT_DIR) ?? null
