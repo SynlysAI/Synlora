@@ -1,6 +1,8 @@
 """管理员目录策略存储测试。"""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.catalog.policy import POLICY_COLLECTION, CatalogPolicyRepo
@@ -51,3 +53,29 @@ async def test_policy_id_is_kind_scoped(store):
     await repo.set("plugin", "demo", visibility="public", default_enabled=True)
     assert (await repo.get("skill", "demo"))["visibility"] == "hidden"
     assert (await repo.get("plugin", "demo"))["visibility"] == "public"
+
+
+async def test_concurrent_set_does_not_raise(store):
+    """并发写同一新条目的策略：不抛异常，最终状态为其中一次写入。"""
+    repo = CatalogPolicyRepo(store)
+    results = await asyncio.gather(
+        repo.set("plugin", "race", visibility="hidden", default_enabled=False),
+        repo.set("plugin", "race", visibility="public", default_enabled=True),
+        return_exceptions=True,
+    )
+    assert all(not isinstance(r, Exception) for r in results), results
+    docs = await store.list(POLICY_COLLECTION)
+    assert len(docs) == 1
+
+
+async def test_dirty_visibility_falls_back_to_hidden(store):
+    """库中非法 visibility 值按最严处理（fail-closed，不 fail-open）。"""
+    await store.insert(POLICY_COLLECTION, {
+        "_id": "plugin:dirty", "kind": "plugin", "item_id": "dirty",
+        "visibility": "zzz", "default_enabled": True})
+    assert (await CatalogPolicyRepo(store).get("plugin", "dirty"))["visibility"] == "hidden"
+
+    await store.insert(POLICY_COLLECTION, {
+        "_id": "plugin:dirty2", "kind": "plugin", "item_id": "dirty2",
+        "visibility": "zzz", "default_enabled": True})
+    assert (await CatalogPolicyRepo(store).all_policies())["plugin:dirty2"]["visibility"] == "hidden"

@@ -53,7 +53,8 @@ class CatalogPolicyRepo:
         if doc is None:
             return {"visibility": "public", "default_enabled": True}
         return {
-            "visibility": str(doc.get("visibility") or "public"),
+            "visibility": str(doc.get("visibility") or "")
+            if str(doc.get("visibility") or "") in VISIBILITIES else "hidden",
             "default_enabled": bool(doc.get("default_enabled", True)),
         }
 
@@ -66,7 +67,8 @@ class CatalogPolicyRepo:
         docs = await self._store.list(POLICY_COLLECTION)
         return {
             str(d["_id"]): {
-                "visibility": str(d.get("visibility") or "public"),
+                "visibility": str(d.get("visibility") or "")
+                if str(d.get("visibility") or "") in VISIBILITIES else "hidden",
                 "default_enabled": bool(d.get("default_enabled", True)),
             }
             for d in docs
@@ -95,8 +97,12 @@ class CatalogPolicyRepo:
         body = {"kind": kind, "item_id": item_id, "visibility": visibility,
                 "default_enabled": bool(default_enabled), "updated_at": time.time()}
         if await self._store.get(POLICY_COLLECTION, doc_id) is None:
-            await self._store.insert(POLICY_COLLECTION,
-                                     {"_id": doc_id, **body, "created_at": time.time()})
+            try:
+                await self._store.insert(
+                    POLICY_COLLECTION, {"_id": doc_id, **body, "created_at": time.time()})
+            except ValueError:
+                # 并发下已被他者插入：退化为更新（id 冲突与"非法 visibility"不是一类错误）
+                await self._store.update(POLICY_COLLECTION, doc_id, body)
         else:
             await self._store.update(POLICY_COLLECTION, doc_id, body)
         return {"visibility": visibility, "default_enabled": bool(default_enabled)}
