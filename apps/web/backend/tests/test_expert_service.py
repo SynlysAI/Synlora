@@ -40,6 +40,18 @@ async def test_delete_removes_file_and_record(svc, tmp_path, store):
     assert await store.get("assistants", "u1:chem") is None
 
 
+async def test_expert_id_rejects_path_traversal(svc, tmp_path):
+    """expert_id 的目录名切片来自调用方，越界片段不得落到别人的专家文件上。"""
+    await svc.write("u2", dir_name="chem", name="化学助手", avatar="",
+                    description="demo", system_prompt="p")
+    for bad in ("u1:../../u2/experts/chem", "u1:..\\..\\u2\\experts\\chem",
+                "u1:", "u1:.", "u1:.."):
+        assert await svc.get_own("u1", bad) is None
+        assert await svc.delete("u1", bad) is False
+    # 越界删除被拒后，别人的专家文件与记录原样保留
+    assert (tmp_path / "users" / "u2" / "experts" / "chem" / "expert.json").is_file()
+
+
 async def test_instantiate_is_idempotent(svc, store):
     await svc.write("u1", dir_name="chem", name="化学助手", avatar="",
                     description="demo", system_prompt="p")

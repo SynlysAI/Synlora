@@ -60,6 +60,24 @@ class UserExpertService:
         """
         return _SAFE_DIR.sub("_", name.strip()).strip("_")
 
+    @staticmethod
+    def _is_safe_dir_name(dir_name: str) -> bool:
+        """目录名是否可直接拼进文件系统路径（非空、非 . / ..、不含路径分隔符）。
+
+        `write()` 的目录名经 `sanitize_dir_name` 过滤，天然安全；但 `get_own` 的目录名
+        切片自调用方给的 expert_id（T14 的 `/me/experts/{id}` 路径参数），可能含越界
+        片段（如 `u1:../../u2/experts/chem` 会指到别人的专家文件）。此处是文件系统
+        操作的最后一道防线，照 workspace.project_root 的口径拒绝。
+
+        Args:
+            dir_name: 待校验的目录名。
+
+        Returns:
+            True 表示可安全拼接。
+        """
+        return bool(dir_name) and dir_name not in {".", ".."} \
+            and "/" not in dir_name and "\\" not in dir_name
+
     def experts_dir(self, user_id: str) -> Path:
         """某用户的专家目录（不创建）。
 
@@ -100,12 +118,15 @@ class UserExpertService:
             expert_id: 专家 id（形如 {user_id}:{dir}）。
 
         Returns:
-            专家字典；不存在或不属于该用户返回 None。
+            专家字典；不存在、不属于该用户、或目录名越界返回 None。
         """
         prefix = f"{user_id}:"
         if not expert_id.startswith(prefix):
             return None
-        return self._load(user_id, expert_id[len(prefix):])
+        dir_name = expert_id[len(prefix):]
+        if not self._is_safe_dir_name(dir_name):
+            return None
+        return self._load(user_id, dir_name)
 
     async def write(self, user_id: str, *, dir_name: str, name: str, avatar: str,
                     description: str, system_prompt: str,
