@@ -176,3 +176,61 @@ async def test_list_states_excludes_secret_values(store, packages, tmp_path):
     assert "super-secret" not in json.dumps(state, ensure_ascii=False)
     assert state["secrets_set"] == {"token": True}
     assert state["config"] == {"base_url": "http://x"}
+
+
+async def test_update_config_cannot_clear_required_field(store, packages, tmp_path):
+    """清空必填字段被拒（不得绕过校验把插件打成"已安装但残缺"）。"""
+    service, _, _ = _service(store, packages, tmp_path)
+    await service.startup()
+    await service.install("demo", {"base_url": "http://x", "token": "t"})
+
+    with pytest.raises(ValueError, match="base_url"):
+        await service.update_config("demo", {"base_url": ""})
+
+    # 配置与上下文均未被破坏
+    assert service.context_extra()["demo"]["base_url"] == "http://x"
+    assert service.state("demo")["configured"] is True
+
+
+async def test_state_installed_survives_decryption_failure(store, packages, tmp_path):
+    """密钥轮换导致配置不可解时：仍报"已安装"（库事实），但 configured=False。"""
+    await PluginConfigStore(store, Fernet.generate_key().decode()).save(
+        "demo", {"base_url": "http://x", "token": "t"},
+        scan_plugins([tmp_path / "plugins"])["demo"].config_schema)
+
+    # 用另一把 key 组装服务（模拟 FERNET_KEY 轮换）
+    service, registry, _ = _service(store, packages, tmp_path)
+    await service.startup()
+
+    state = service.state("demo")
+    assert state["installed"] is True
+    assert state["configured"] is False
+    assert state["missing"] == ["base_url"]
+    assert service.context_extra() == {}
+
+
+async def test_install_degrades_when_expert_seeding_fails(store, packages, tmp_path, monkeypatch):
+    """专家播种失败降级为告警：安装仍成功（重启由 startup 自愈）。"""
+    service, registry, _ = _service(store, packages, tmp_path)
+    await service.startup()
+
+    async def _boom(package):
+        raise RuntimeError("播种炸了")
+
+    monkeypatch.setattr(service, "_seed_expert", _boom)
+    state = await service.install("demo", {"base_url": "http://x"})
+    assert state["installed"] is True and state["configured"] is True
+
+
+async def test_repeated_startup_does_not_warn_on_own_tools(store, packages, tmp_path, caplog):
+    """startup 重放同一插件：本插件已挂载的工具静默跳过，不产生冲突告警。"""
+    service, _, _ = _service(store, packages, tmp_path)
+    await service.startup()
+    await service.install("demo", {"base_url": "http://x"})
+
+    service2, registry2, _ = _service(store, packages, tmp_path)
+    await service2.startup()
+    with caplog.at_level("WARNING", logger="app.plugins.service"):
+        await service2.startup()  # 二次重放
+    assert [r for r in caplog.records if "已被其它来源注册" in r.getMessage()] == []
+    assert "demo.hello" in registry2.names

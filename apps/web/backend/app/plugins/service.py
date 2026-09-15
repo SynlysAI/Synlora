@@ -44,6 +44,11 @@ class PluginService:
         self._skill_service = skill_service
         self._assistant_repo = assistant_repo
         self._configs: dict[str, dict] = {}
+        # 安装状态（库事实：存在配置记录）与运行期配置缓存分离——密钥轮换导致
+        # 单条解密失败时，_configs 会缺项，但插件仍应报告"已安装"。
+        self._installed: set[str] = set()
+        # 本会话已由本服务挂载的工具名（{插件 id: {工具名}}），用于区分 startup 重放与跨插件冲突。
+        self._attached: dict[str, set[str]] = {}
 
     @staticmethod
     def expert_id(plugin_id: str) -> str:
@@ -75,7 +80,9 @@ class PluginService:
 
     async def startup(self) -> None:
         """启动装配：恢复已安装插件的工具、技能根、配置缓存与专家。"""
-        for plugin_id in await self._config_store.installed_ids():
+        installed_ids = await self._config_store.installed_ids()
+        self._installed = set(installed_ids)
+        for plugin_id in installed_ids:
             package = self._packages.get(plugin_id)
             if package is None:
                 logger.warning("插件配置存在但插件包缺失，已忽略: %s", plugin_id)
@@ -91,13 +98,23 @@ class PluginService:
     def _attach(self, package: PluginPackage) -> None:
         """挂载插件资源：注册工具（幂等）+ 挂技能根。
 
+        已由本插件挂载的工具（startup 重放）静默跳过；被其它来源占用的同名工具
+        告警跳过，便于排查"工具没生效"。
+
         Args:
             package: 插件包。
         """
+        attached = self._attached.setdefault(package.id, set())
         for fn in load_plugin_tools(package):
             name = fn.__tool_definition__.name
-            if self._registry.find(name) is None:
-                self._registry.register(fn)
+            if name in attached:
+                continue  # 本插件已挂载（startup 重放），静默跳过
+            if self._registry.find(name) is not None:
+                logger.warning("工具 %s 已被其它来源注册，跳过插件 %s 的同名工具",
+                               name, package.id)
+                continue
+            self._registry.register(fn)
+            attached.add(name)
         if package.skills_root is not None:
             self._skill_service.add_root(package.skills_root)
 
@@ -121,6 +138,9 @@ class PluginService:
     async def install(self, plugin_id: str, values: dict) -> dict:
         """安装插件：校验 → 存配置 → 挂资源 → 播种专家。
 
+        装配（工具注册/技能根/专家播种）失败不回滚配置；专家播种失败降级为告警，
+        重启由 startup() 自愈。
+
         Args:
             plugin_id: 插件 id。
             values: 页面提交的配置值。
@@ -135,9 +155,13 @@ class PluginService:
         package = self.package(plugin_id)
         self._validate(package, values)
         await self._config_store.save(plugin_id, values, package.config_schema)
+        self._installed.add(plugin_id)
         self._attach(package)
         self._configs[plugin_id] = await self._config_store.resolved(plugin_id)
-        await self._seed_expert(package)
+        try:
+            await self._seed_expert(package)
+        except Exception as exc:  # 播种失败不阻断安装：startup() 会重放自愈
+            logger.warning("插件 %s 专家播种失败（重启后自愈）: %s", plugin_id, exc)
         return self.state(plugin_id)
 
     async def update_config(self, plugin_id: str, values: dict) -> dict:
@@ -157,9 +181,15 @@ class PluginService:
         package = self.package(plugin_id)
         if await self._config_store.get_doc(plugin_id) is None:
             raise ValueError(f"插件未安装: {plugin_id}")
+        self._installed.add(plugin_id)
         current = await self._config_store.resolved(plugin_id)
-        merged = {**current, **{k: v for k, v in values.items() if v}}
-        self._validate(package, merged)
+        # 校验必须基于"保存后实际生效的配置"：敏感字段留空保持原值，非敏感字段以提交值为准
+        effective = dict(current)
+        for key, value in values.items():
+            if _is_secret(package, key) and not str(value or "").strip():
+                continue  # 敏感字段留空 = 保持原值
+            effective[key] = value
+        self._validate(package, effective)
         await self._config_store.save(plugin_id, values, package.config_schema)
         self._configs[plugin_id] = await self._config_store.resolved(plugin_id)
         return self.state(plugin_id)
@@ -176,13 +206,18 @@ class PluginService:
         if await self._assistant_repo.get(doc_id) is not None:
             return
         expert = package.expert
+        whitelist = [str(t) for t in (expert.get("tool_whitelist") or [])]
+        unknown = [t for t in whitelist if self._registry.find(t) is None]
+        if unknown:
+            logger.warning("插件 %s 专家白名单含未注册工具（该专家将少这些工具）: %s",
+                           package.id, unknown)
         await self._assistant_repo.create({
             "_id": doc_id,
             "name": expert.get("name") or f"{package.name}专家",
             "avatar": expert.get("avatar") or "🧩",
             "description": expert.get("description") or package.description,
             "system_prompt": expert.get("system_prompt") or "",
-            "tool_whitelist": list(expert.get("tool_whitelist") or []),
+            "tool_whitelist": whitelist,
             "model_provider_id": None,
             "knowledge_base_ids": list(expert.get("knowledge_base_ids") or []),
             "builtin": True,
@@ -217,14 +252,15 @@ class PluginService:
             f["key"] for f in package.config_schema
             if f.get("required") and not config.get(f["key"])
         ]
+        installed = plugin_id in self._installed
         return {
             "id": package.id,
             "name": package.name,
             "version": package.version,
             "description": package.description,
             "config_schema": package.config_schema,
-            "installed": plugin_id in self._configs,
-            "configured": plugin_id in self._configs and not missing,
+            "installed": installed,
+            "configured": installed and not missing,
             "missing": missing,
             "config": {k: v for k, v in config.items() if not _is_secret(package, k)},
             "secrets_set": secrets_set,
