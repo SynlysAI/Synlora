@@ -2,10 +2,11 @@
  * 应用路由表（纯函数，无副作用）：路径解析与构造。
  *
  * 路由模型照抄 jiuwenswarm `multi-session/routing/route.ts`（chat-new /
- * chat-session / not-found 三态），扩展了本项目的管理页路径：
+ * chat-session / not-found 三态），扩展了本项目的管理页与能力中心路径：
  * - `/`、`/chat`、`/chat/new` → 新对话草稿态
  * - `/chat/<id>`             → 指定会话（URL 是会话选中态的唯一事实源）
  * - `/admin/<tab>`           → 管理后台五页签
+ * - `/capabilities`          → 用户侧能力中心（市场，任意登录用户）
  * - 其余                     → not-found
  */
 
@@ -17,6 +18,7 @@ export type AppRoute =
   | { kind: 'chat-new' }
   | { kind: 'chat-session'; sessionId: string }
   | { kind: 'admin'; tab: AdminTab }
+  | { kind: 'capabilities' }
   | { kind: 'not-found'; pathname: string }
 
 /**
@@ -35,6 +37,7 @@ export function parseAppRoute(pathname: string): AppRoute {
   if (chatMatch) return { kind: 'chat-session', sessionId: decodeURIComponent(chatMatch[1]) }
   const adminMatch = path.match(/^\/admin\/(general|models|assistants|skills|plugins)$/)
   if (adminMatch) return { kind: 'admin', tab: adminMatch[1] as AdminTab }
+  if (path === '/capabilities') return { kind: 'capabilities' }
   return { kind: 'not-found', pathname }
 }
 
@@ -51,5 +54,6 @@ export function appRoutePath(route: AppRoute): string {
   if (route.kind === 'chat-new') return '/chat/new'
   if (route.kind === 'chat-session') return `/chat/${encodeURIComponent(route.sessionId)}`
   if (route.kind === 'admin') return `/admin/${route.tab}`
+  if (route.kind === 'capabilities') return '/capabilities'
   return route.pathname
 }

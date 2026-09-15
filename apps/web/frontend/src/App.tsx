@@ -1,5 +1,5 @@
 /**
- * 应用根组件：认证守卫 + 路径路由（工作台 / 管理页 / not-found）。
+ * 应用根组件：认证守卫 + 路径路由（工作台 / 管理页 / 能力中心 / not-found）。
  *
  * 路由模型照抄 jiuwenswarm：pathname 为唯一事实源（见 `routing/`），刷新/直开
  * `/chat/<id>` 恢复对应会话，`/` 与 `/chat` 一律归一化到 `/chat/new`（不恢复
@@ -10,6 +10,7 @@
 import { useEffect } from 'react'
 import { AdminLayout, GeneralAdmin, ModelsAdmin, AssistantsAdmin, SkillsAdmin, PluginsAdmin } from '@/components/admin'
 import { AppShell } from '@/components/layout'
+import { CapabilityCenter } from '@/components/catalog'
 import { ConversationNotFound } from '@/components/chat'
 import LoginPage from '@/components/LoginPage'
 import { useRouterStore } from '@/routing/router'
@@ -64,6 +65,8 @@ function App() {
       </AdminLayout>
     )
   }
+  // 能力中心：任意登录用户可访问的整页（与管理页同为独立壳，不走 AppShell）
+  if (route.kind === 'capabilities') return <CapabilityCenter key={user.sub} />
   if (route.kind === 'not-found') {
     return (
       <div className="flex h-dvh items-center justify-center bg-[var(--sa-alias-bg-base)]">

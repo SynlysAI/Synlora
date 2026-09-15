@@ -138,7 +138,7 @@ const iconProps = {
   strokeLinejoin: 'round',
 } as const
 
-/** 用户菜单（左栏底部）：头像按钮 + 下拉（管理后台入口仅 admin / 退出登录）。 */
+/** 用户菜单（左栏底部）：头像按钮 + 下拉（能力中心 / 管理后台入口仅 admin / 退出登录）。 */
 function UserMenu() {
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
@@ -182,6 +182,24 @@ function UserMenu() {
             role="menu"
             className="absolute bottom-full left-0 z-50 mb-1.5 w-44 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
           >
+            <a
+              role="menuitem"
+              href="/capabilities"
+              onClick={(e) => {
+                e.preventDefault()
+                setOpen(false)
+                navigate({ kind: 'capabilities' })
+              }}
+              className={itemClass}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1" />
+                <rect x="9" y="2.5" width="4.5" height="4.5" rx="1" />
+                <rect x="2.5" y="9" width="4.5" height="4.5" rx="1" />
+                <rect x="9" y="9" width="4.5" height="4.5" rx="1" />
+              </svg>
+              能力中心
+            </a>
             {user.role === 'admin' && (
               <a
                 role="menuitem"

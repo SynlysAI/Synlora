@@ -122,6 +122,8 @@ export interface CatalogItem {
   default_enabled: boolean
   installed: boolean
   visible: boolean
+  /** 仅插件行返回：安装时可填的配置字段 */
+  config_schema?: PluginConfigField[]
 }
 
 /** 会话元数据文档。 */
