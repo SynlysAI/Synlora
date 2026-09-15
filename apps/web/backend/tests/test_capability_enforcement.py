@@ -350,6 +350,28 @@ async def test_install_missing_required_config_422(app, client, user_headers):
     assert row["installed"] is False
 
 
+async def test_install_with_public_config_can_skip_required(
+        app, client, admin_headers, user_headers):
+    """公共配置打底后：必填字段可留空安装（市场行 config_ready_keys 供前端放宽）。
+
+    个人层只存非空值——留空的 base_url 不落个人配置，运行期回落公共值；
+    空串也不会把公共打底覆盖成"未配置"。
+    """
+    await _install_plugin(client, admin_headers)  # 管理员公共安装：base_url 打底
+    market = (await client.get("/api/v1/market/plugin", headers=user_headers)).json()
+    row = next(r for r in market if r["id"] == "spec_agent")
+    assert "base_url" in row["config_ready_keys"]
+
+    resp = await client.post("/api/v1/catalog/plugin/spec_agent/install",
+                             json={"config": {"token": "my-own", "base_url": ""}},
+                             headers=user_headers)
+    assert resp.status_code == 201, resp.text
+    resolved = await app.state.plugin_config_store.resolved_for_user(
+        "u-user", "spec_agent")
+    assert resolved["base_url"] == "http://spec.local"  # 空串未覆盖公共打底
+    assert resolved["token"] == "my-own"
+
+
 async def test_install_unknown_kind_and_uninstall(client, user_headers):
     """未知类型 404；卸载返回 removed 布尔且幂等。"""
     assert (await client.post("/api/v1/catalog/bogus/x/install", json={},

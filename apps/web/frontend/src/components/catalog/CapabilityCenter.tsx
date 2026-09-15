@@ -70,16 +70,27 @@ function PluginInstallModal({
   return (
     <Modal title={`安装 ${item.name}`} onClose={onClose}>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        {(item.config_schema ?? []).map((field, index) => (
+        {/* 公共配置打底提示：有 ready 字段才显示（无打底时留空会被必填校验挡下） */}
+        {(item.config_ready_keys?.length ?? 0) > 0 && (
+          <p className="rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-interactive-bg-hover)] px-3 py-2 text-xs text-[var(--sa-alias-label-secondary)]">
+            标注系统默认的字段已由管理员统一配置，可留空直接安装；填写则覆盖为你的个人配置（仅自己可见）。
+          </p>
+        )}
+        {(item.config_schema ?? []).map((field, index) => {
+          const hasDefault = (item.config_ready_keys ?? []).includes(field.key)
+          return (
           <label key={field.key} className={labelClass}>
             {field.label}
+            {hasDefault && (
+              <span className="pl-1 text-xs text-[var(--sa-alias-label-caption)]">（系统默认）</span>
+            )}
             <input
               type={field.type === 'password' ? 'password' : 'text'}
               value={form[field.key] ?? ''}
               onChange={(e) => setForm((f) => ({ ...f, [field.key]: e.target.value }))}
               placeholder={field.placeholder ?? ''}
-              // 原生必填校验；敏感字段留空表示不覆盖，不加 required
-              required={Boolean(field.required) && !field.secret}
+              // 原生必填校验；敏感字段留空表示不覆盖；有系统默认的字段可留空
+              required={Boolean(field.required) && !field.secret && !hasDefault}
               autoFocus={index === 0}
               autoComplete={field.type === 'password' ? 'new-password' : 'off'}
               className={inputClass}
@@ -88,7 +99,8 @@ function PluginInstallModal({
               <span className="text-xs text-[var(--sa-alias-label-caption)]">{field.description}</span>
             ) : null}
           </label>
-        ))}
+          )
+        })}
 
         {error && <FormError>{error}</FormError>}
 

@@ -126,6 +126,8 @@ export interface CatalogItem {
   visible: boolean
   /** 仅插件行返回：安装时可填的配置字段 */
   config_schema?: PluginConfigField[]
+  /** 仅插件行返回：管理员公共配置已就绪的字段名（这些留空即用系统配置） */
+  config_ready_keys?: string[]
 }
 
 /** 「我的」列表条目：自建（mine）/ 已安装的内置（installed）/ 平台内置只读（builtin）。 */

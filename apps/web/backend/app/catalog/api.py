@@ -54,6 +54,30 @@ async def _require_installable(service, user_id: str, kind: str, item_id: str) -
         raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
 
 
+async def _public_ready_keys(request: Request, plugin_id: str) -> set[str]:
+    """插件公共配置已就绪的字段 key 集合（管理员配置打底，值不外泄）。
+
+    供两处共用：市场行补 config_ready_keys（前端据此放宽必填并提示"留空用
+    系统配置"）、安装必填校验排除已有公共打底的字段。解密失败按"无打底"
+    降级（用户填全量仍可安装，不让密钥轮换问题挡住安装路径）。
+
+    Args:
+        request: FastAPI 请求（取插件配置存储）。
+        plugin_id: 插件 id。
+
+    Returns:
+        公共配置非空值的 key 集合；无公共配置/存储未就绪时空集合。
+    """
+    store = getattr(request.app.state, "plugin_config_store", None)
+    if store is None:
+        return set()
+    try:
+        resolved = await store.resolved(plugin_id)
+    except RuntimeError:
+        return set()
+    return {k for k, v in resolved.items() if str(v or "").strip()}
+
+
 async def _install_core(request: Request, service, user_id: str, kind: str,
                         item_id: str) -> None:
     """落安装记录并挂载插件（调用方须已先过 `_require_installable`）。
@@ -135,15 +159,21 @@ async def install_capability(kind: str, item_id: str, request: Request,
         package = packages.get(item_id)
         if package is None:
             raise HTTPException(404, f"插件不存在: {item_id}")
+        # 必填校验按"个人值 ∪ 公共配置打底"判定：管理员公共配置已就绪的字段，
+        # 用户可以留空（运行期个人优先、公共兜底）；个人层只存非空值，
+        # 空串不落个人层——避免用空串把公共打底覆盖成"未配置"
+        ready = await _public_ready_keys(request, item_id)
         missing = [
             f["key"] for f in package.config_schema
-            if f.get("required") and not str(values.get(f["key"]) or "").strip()
+            if f.get("required") and f["key"] not in ready
+            and not str(values.get(f["key"]) or "").strip()
         ]
         if missing:
             raise HTTPException(422, f"缺少必填配置: {', '.join(missing)}")
         store = getattr(request.app.state, "plugin_config_store", None)
         if store is None:
             raise HTTPException(503, "插件配置存储未就绪")
+        values = {k: v for k, v in values.items() if str(v or "").strip()}
         await store.save_for_user(user["sub"], item_id, values, package.config_schema)
     await _install_core(request, service, user["sub"], kind, item_id)
     return {"kind": kind, "id": item_id, "installed": True}
@@ -281,15 +311,18 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
 
 
 @router.get("/market/{kind}")
-async def market(kind: str, user=Depends(get_current_user),
+async def market(kind: str, request: Request, user=Depends(get_current_user),
                  service=Depends(get_capability_service)) -> list[dict]:
     """市场列表（某类型下当前用户可见的可安装条目）。
 
     按 kind 分片返回单类条目，供用户侧「能力中心」渲染；与 `/catalog` 的区别
     是后者把三类混排且 kind 非法时静默退化为全类型，而本端点类型非法即 404。
+    插件行额外带 config_ready_keys（管理员公共配置已就绪的字段名）：前端据此
+    在安装表单放宽这些字段的必填，并提示"留空使用系统配置"。
 
     Args:
         kind: 条目类型（expert/skill/plugin）。
+        request: FastAPI 请求（取插件配置存储）。
         user: 当前用户。
         service: 能力服务。
 
@@ -301,4 +334,9 @@ async def market(kind: str, user=Depends(get_current_user),
     """
     if kind not in KINDS:
         raise HTTPException(404, f"未知类型: {kind}")
-    return await service.market_items(user["sub"], kind)
+    rows = await service.market_items(user["sub"], kind)
+    if kind == "plugin":
+        for row in rows:
+            row["config_ready_keys"] = sorted(
+                await _public_ready_keys(request, str(row["id"])))
+    return rows
