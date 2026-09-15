@@ -42,6 +42,7 @@ from synlys_harness import (
     resolve_executor,
 )
 
+from app.services import workspace
 from app.services.skill_service import SkillService
 from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGISTRY
 
@@ -193,8 +194,9 @@ class AgentService:
         Returns:
             {data_root}/users/{user_id}/sessions/{session_id}/events.jsonl。
         """
-        p = (self._settings.data_root / "users" / user_id
-             / "sessions" / session_id / "events.jsonl")
+        # 目录口径统一由 workspace 提供（与删除侧 sessions_api.delete_session 同源）
+        p = (workspace.user_sessions_root(self._settings.data_root, user_id)
+             / session_id / "events.jsonl")
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
@@ -241,6 +243,10 @@ class AgentService:
         Raises:
             TooManyRuns: 该会话已有进行中的消息，或该用户运行中的对话已达上限。
         """
+        # 用户身份：一次取值（取不到即 KeyError，与函数内其余用法口径一致），
+        # 绝不兜底成字面量目录名——那会让多个用户共用 users/anonymous/ 且与
+        # DB 里记录的 user_id 不一致
+        user_sub = str(user["sub"])
         # 会话级互斥：检查与占位在同一同步段完成（中间无 await，并发请求
         # 串行执行到此即被拒）。同会话两个并发 run 会各自 seed 同一份历史
         # 快照、从相同 seq 起号，DB _id=f"{sid}:{seq}" 碰撞写入被 db_sink
@@ -263,9 +269,8 @@ class AgentService:
                 if event.type in TRANSIENT:
                     return
                 try:
-                    with self._jsonl_path(
-                            session_id, str(user.get("sub") or "anonymous")).open(
-                                "a", encoding="utf-8") as f:
+                    with self._jsonl_path(session_id, user_sub).open(
+                            "a", encoding="utf-8") as f:
                         f.write(event.model_dump_json() + "\n")
                 except OSError:
                     pass

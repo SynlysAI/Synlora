@@ -299,9 +299,11 @@ async def delete_session(sid: str, request: Request,
     doc = await _own_session(sid, user, repos)
     for ev in await repos.event.list(filters={"session_id": sid}):
         await repos.event.delete(ev["_id"])
-    # 事件随会话落在登录用户目录下（与 AgentService._jsonl_path 一致）
-    jsonl_dir = (request.app.state.settings.data_root / "users"
-                 / str(user.get("sub") or "anonymous") / "sessions" / sid)
+    # 事件目录口径由 workspace 提供（与写入侧 AgentService._jsonl_path 同源）；
+    # uid 取会话记录自己的 owner（_own_session 已校验其属当前用户），
+    # 用会话记录的 owner，保证与写入侧口径同一个 id
+    jsonl_dir = (workspace.user_sessions_root(
+        request.app.state.settings.data_root, str(doc["user_id"])) / sid)
     shutil.rmtree(jsonl_dir, ignore_errors=True)
     await repos.session.delete(doc["_id"])
     return {"ok": True}

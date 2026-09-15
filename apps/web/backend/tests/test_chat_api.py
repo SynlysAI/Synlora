@@ -905,10 +905,20 @@ async def test_session_without_project_id_compatible(app, client, admin_headers,
     assert r.status_code == 201, r.text
     assert r.json().get("project_id") is None
 
-    await _chat_once(client, user_headers, r.json()["_id"])
+    sid = r.json()["_id"]
+    await _chat_once(client, user_headers, sid)
     # 老会话发消息时自动补种了默认项目（后续会话有项目可挂）
     projects = await app.state.project_service.list_projects("u-user")
     assert len(projects) == 1
+
+    # 反向断言（普通用户视角，与上面签 admin token 的用例互补）：事件落本人目录
+    data_root = app.state.settings.data_root
+    sid_dir = data_root / "users" / "u-user" / "sessions" / sid
+    assert (sid_dir / "events.jsonl").exists()
+    # 没落进他人（admin）目录
+    assert not (data_root / "users" / "u-admin" / "sessions" / sid).exists()
+    # 旧的扁平路径不再写入
+    assert not (data_root / "sessions" / sid).exists()
 
 
 async def test_agent_workspace_is_project_root(app, client, admin_headers,

@@ -153,6 +153,19 @@ def user_skills_root(data_root: Path, user_id: str) -> Path:
     return data_root / "users" / user_id / "skills"
 
 
+def user_sessions_root(data_root: Path, user_id: str) -> Path:
+    """用户会话目录根（只算路径，不创建任何目录）。
+
+    Args:
+        data_root: 数据根目录。
+        user_id: 用户 sub。
+
+    Returns:
+        {data_root}/users/{user_id}/sessions 路径（可能不存在）。
+    """
+    return user_root(data_root, user_id) / "sessions"
+
+
 def resolve_in_project(root: Path, rel: str) -> Path:
     """把相对路径解析到项目根内（越界抛 ValueError）。
 
