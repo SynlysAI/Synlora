@@ -84,7 +84,7 @@ export interface Skill {
   builtin: boolean
 }
 
-/** 插件配置字段 schema（对应后端 app/plugins/loader.py 的 config_schema）。 */
+/** 插件配置字段 schema（对应后端 app/catalog/loader.py 的 config_schema）。 */
 export interface PluginConfigField {
   key: string
   label: string

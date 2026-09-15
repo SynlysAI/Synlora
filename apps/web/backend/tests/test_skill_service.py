@@ -76,6 +76,29 @@ def test_migrate_removes_identical_legacy_copies(tmp_path):
     assert (svc.skills_dir / "data-analysis").exists()
 
 
+def test_public_skill_with_same_name_shadows_catalog_and_warns(tmp_path, caplog):
+    """公共层同名技能（内容不同）优先于只读根，且迁移时告警提示遮蔽。"""
+    catalog_root = tmp_path / "catalog" / "skills"
+    (catalog_root / "office-doc").mkdir(parents=True)
+    (catalog_root / "office-doc" / "SKILL.md").write_text(
+        "---\nname: office-doc\ndescription: 内置新版\n---\n内置正文\n", encoding="utf-8")
+
+    svc = SkillService(tmp_path / "data", extra_roots=[catalog_root])
+    (svc.skills_dir / "office-doc").mkdir(parents=True)
+    (svc.skills_dir / "office-doc" / "SKILL.md").write_text(
+        "---\nname: office-doc\ndescription: 公共旧版\n---\n公共正文\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="app.services.skill_service"):
+        removed = svc.migrate_legacy_builtin_copies(catalog_root)
+    assert removed == []                      # 内容不同 → 不删
+    assert any("遮蔽" in r.getMessage() for r in caplog.records)
+
+    # 公共层优先：读到的是公共层版本
+    assert svc.read_body("office-doc") == "公共正文"
+    skills = {s["name"]: s for s in svc.list_skills()}
+    assert skills["office-doc"]["builtin"] is False
+
+
 def test_catalog_root_skills_are_readonly_and_builtin(tmp_path):
     """catalog 根作为只读技能根：可列可读、builtin=True、删不掉。"""
     catalog_root = tmp_path / "catalog" / "skills"

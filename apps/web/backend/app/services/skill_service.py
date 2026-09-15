@@ -14,11 +14,14 @@ frontmatter 刻意不声明 `tools`：权限由系统分配（jiuwen 明确禁�
 """
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 NAME_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
@@ -235,13 +238,15 @@ class SkillService:
     def migrate_legacy_builtin_copies(self, catalog_skills_root: Path) -> list[str]:
         """清理公共技能目录里与 catalog 一致的旧内置副本（播种遗留）。
 
-        只删「同名且 SKILL.md 字节完全一致」的目录——内容不同说明管理员改过，保留。
+        只删「同名且 SKILL.md 字节完全一致」的目录——内容不同保留（可能是管理员改过，
+        也可能是更早的播种残留），保留时记一条 warning：它同时因「公共层优先」
+        一直遮蔽内置版本，需人工核对后决定去留。
 
         Args:
             catalog_skills_root: catalog 技能根（其下每个子目录是一个内置技能）。
 
         Returns:
-            被清理的技能名列表。
+            被清理的技能名列表（内容不同而保留的不在其中）。
         """
         removed: list[str] = []
         if not catalog_skills_root.is_dir():
@@ -253,7 +258,10 @@ class SkillService:
                 continue
             try:
                 if src_md.read_bytes() != legacy_md.read_bytes():
-                    continue  # 内容不同：管理员改过，保留
+                    logger.warning(
+                        "公共层技能 %s 与内置版本同名但内容不同，会遮蔽内置版（若为旧播种残留，"
+                        "请人工删除 %s 以改用内置版）", src.name, self.skills_dir / src.name)
+                    continue  # 内容不同：可能是管理员改过，保留
             except OSError:
                 continue
             shutil.rmtree(self.skills_dir / src.name, ignore_errors=True)

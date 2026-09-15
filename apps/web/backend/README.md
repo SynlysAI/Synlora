@@ -175,7 +175,7 @@ tags: [文档, 报告]
 
 **只读根 vs 公共层**：`catalog/skills/` 作为**只读技能根**直接提供给 `SkillService`（不再播种拷贝到 `{data_dir}/skills`），其技能标记 `builtin=True`、不可删（删除返回 404）；`{data_dir}/skills/` 退回**可写公共层**（管理员自建 / 导入技能，始终可见），两者同名时**公共层优先**。`builtin` 标记语义 = 「来自只读根」。
 
-**旧副本迁移**：启动时清理 `{data_dir}/skills` 里与 `catalog/skills` 同名且 `SKILL.md` **字节一致**的旧播种副本；字节不同 = 管理员改过，保留。
+**旧副本迁移**：启动时清理 `{data_dir}/skills` 里与 `catalog/skills` 同名且 `SKILL.md` **字节一致**的旧播种副本；**字节不同 → 保留并告警**（可能是管理员改过，也可能是旧播种残留，需人工核对；保留期间它会因「公共层优先」遮蔽内置版本）。
 
 **专家种子**：`app/catalog/seed.py::seed_experts` 按 `_id` 幂等（已存在跳过、不覆盖管理员改动，缺失补种），内置专家由 `catalog/experts` 驱动，原先的 `SEED_ASSISTANTS` 与 `BUILTIN_SKILL_NAMES` 两个硬编码已删除。
 
