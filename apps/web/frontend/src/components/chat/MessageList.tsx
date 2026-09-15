@@ -96,7 +96,7 @@ function TurnHeader({ name, platformDefault, active }: {
     <div className="flex items-center gap-2">
       <BrandMark size={24} />
       {platformDefault ? (
-        <BrandWordmark height={19} className="text-[var(--sa-alias-label-primary)]" />
+        <BrandWordmark height={19} />
       ) : (
         <span className="text-[14px] font-semibold text-[var(--sa-alias-label-primary)]">{name}</span>
       )}

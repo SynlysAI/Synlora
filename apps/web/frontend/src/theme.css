@@ -134,6 +134,10 @@ body {
   --sa-specific-input-major: var(--sa-static-neutral-bluish-00);
   --sa-specific-selector: var(--sa-static-neutral-bluish-60);
   --sa-specific-tooltip: var(--sa-static-neutral-bluish-850);
+  /* 品牌字标渐变（与图标 S 缎带同源：#2563EB→#18B7D8→#4AD9B5）；
+     浅色底取深蓝→青两档保证可读，暗色底取青→薄荷绿保证亮度 */
+  --sa-specific-brand-wordmark-from: #2563EB;
+  --sa-specific-brand-wordmark-to: #18B7D8;
 }
 
 body[data-sa-dark-theme] {
@@ -147,6 +151,8 @@ body[data-sa-dark-theme] {
   --sa-specific-input-major: var(--sa-static-neutral-bluish-850);
   --sa-specific-selector: var(--sa-static-neutral-bluish-800);
   --sa-specific-tooltip: var(--sa-static-neutral-bluish-750);
+  --sa-specific-brand-wordmark-from: #18B7D8;
+  --sa-specific-brand-wordmark-to: #4AD9B5;
 }
 
 /* ---------------------------------------------------------------------
