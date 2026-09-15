@@ -428,10 +428,14 @@ async def list_session_tree(request: Request, sid: str, path: str = Query(""),
                             repos=Depends(get_repos)) -> list[dict]:
     """列出无工作区会话目录内某路径的一级条目（右栏目录树，path 空表示会话根）。
 
+    会话工作区（sessions/{sid}/workspace）在首条消息落盘时才创建：尚未创建时
+    返回空列表而不是 404——前端树挂在会话上即请求，若报错会缓存失败态，
+    空列表让首屏显示空树、回答结束后自动刷新即可看到目录。
+
     Args:
         request: FastAPI 请求。
         sid: 会话 id。
-        path: 相对会话根的目录路径。
+        path: 相对工作区根的目录路径。
         user: 当前登录用户。
         repos: repo 集中访问对象。
 
@@ -443,11 +447,11 @@ async def list_session_tree(request: Request, sid: str, path: str = Query(""),
     """
     await _own_session_doc(sid, user, repos)
     settings = request.app.state.settings
-    # 与 ProjectService.list_dir 同口径先 resolve：data_root 可能是相对路径，
-    # 未解析时 relative_to 必抛 ValueError
-    root = _session_files_dir(settings.data_root, user["sub"], sid).resolve()
+    root = _session_files_dir(settings.data_root, user["sub"], sid)
+    if not root.is_dir():
+        return []
     try:
-        return request.app.state.project_service.list_dir_under(root, path)
+        return request.app.state.project_service.list_dir_under(root.resolve(), path)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
 

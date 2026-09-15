@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FileDoc, UploadResponse } from '@/types'
 import { api } from '@/api/client'
+import { useChatStore } from '@/stores/chat'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
@@ -49,6 +50,16 @@ export default function WorkspacePanel() {
   const [uploading, setUploading] = useState(false)
   /** 目录树刷新信号：上传/删除成功后递增，FileTree 收到后重取已展开的层。 */
   const [refresh, setRefresh] = useState(0)
+
+  // 一轮回答结束（streaming 落沿）自动刷新：agent 可能刚建了会话工作区或写入
+  // 产物（output/ 文件），不刷新则树停留在请求时的旧态（新会话首条消息瞬间
+  // 工作区还没建，树是空的，回答完这里补一次重取就能看到 files/output/tmp）
+  const streaming = useChatStore((s) => s.streaming)
+  const wasStreaming = useRef(false)
+  useEffect(() => {
+    if (wasStreaming.current && !streaming) setRefresh((v) => v + 1)
+    wasStreaming.current = streaming
+  }, [streaming])
   /** 文件记录快照（连目标 key 一起存，见下方为何不裸存列表）。 */
   const [records, setRecords] = useState<{ targetKey: string; files: FileDoc[] } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)

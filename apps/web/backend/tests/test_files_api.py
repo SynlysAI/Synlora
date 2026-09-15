@@ -618,6 +618,18 @@ async def test_session_files_lifecycle(app, client, user_headers):
     assert not (ws_dir / "files" / "a.txt").exists()
 
 
+async def test_session_tree_before_first_message_is_empty(app, client, user_headers):
+    """会话工作区在首条消息落盘时才建：未建时树返回空列表而非 404。
+
+    前端树挂在会话上即请求，报错会被缓存成失败态；空列表让首屏显示空树，
+    回答结束后前端自动刷新即可看到 workspace 目录。
+    """
+    sid = await _make_plain_session(client, user_headers)
+    r = await client.get(f"/api/v1/sessions/{sid}/tree", headers=user_headers)
+    assert r.status_code == 200, r.text
+    assert r.json() == []
+
+
 async def test_session_files_require_own_session(app, client, admin_headers,
                                                   user_headers):
     """会话文件端点校验归属：他人的会话上传/列表/树一律 404，不落任何磁盘文件。"""
