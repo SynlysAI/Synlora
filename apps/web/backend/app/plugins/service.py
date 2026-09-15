@@ -198,12 +198,15 @@ class PluginService:
             logger.warning("插件 %s 专家播种失败（重启后自愈）: %s", plugin_id, exc)
         return self.state(plugin_id)
 
-    async def update_config(self, plugin_id: str, values: dict) -> dict:
+    async def update_config(self, plugin_id: str, values: dict,
+                            clear_secrets: list[str] | None = None) -> dict:
         """更新已安装插件的配置。
 
         Args:
             plugin_id: 插件 id。
             values: 页面提交的配置值（敏感字段留空 = 保持原值）。
+            clear_secrets: 要清除的敏感字段名列表（None/空 = 不动已存值）；
+                同一字段既清除又给新值时**新值生效**（见 PluginConfigStore.save）。
 
         Returns:
             更新后的状态（不含敏感值）。
@@ -217,14 +220,19 @@ class PluginService:
             raise ValueError(f"插件未安装: {plugin_id}")
         self._installed.add(plugin_id)
         current = await self._config_store.resolved(plugin_id)
-        # 校验必须基于"保存后实际生效的配置"：敏感字段留空保持原值，非敏感字段以提交值为准
+        # 校验必须基于"保存后实际生效的配置"：敏感字段留空保持原值（显式带新值或本次
+        # 被清除除外），非敏感字段以提交值为准。
         effective = dict(current)
         for key, value in values.items():
             if _is_secret(package, key) and not str(value or "").strip():
                 continue  # 敏感字段留空 = 保持原值
             effective[key] = value
+        for key in clear_secrets or ():
+            if _is_secret(package, key) and not str(values.get(key) or "").strip():
+                effective.pop(key, None)  # 本次清除且未给新值 → 保存后该字段不存在
         self._validate(package, effective)
-        await self._config_store.save(plugin_id, values, package.config_schema)
+        await self._config_store.save(plugin_id, values, package.config_schema,
+                                      clear_secrets=clear_secrets)
         self._configs[plugin_id] = await self._config_store.resolved(plugin_id)
         return self.state(plugin_id)
 

@@ -99,6 +99,19 @@ async def test_update_config_keeps_secret_when_blank(app, client, admin_headers)
         "spec_agent": {"base_url": "http://b", "token": "tok-1"}}
 
 
+async def test_clear_credential_via_api(app, client, admin_headers):
+    """管理员可通过 API 清除已存凭证（模拟"想改成按用户代签"的场景）。"""
+    await client.post("/api/v1/plugins/spec_agent/install",
+                      json={"config": {"base_url": "http://x", "token": "tok"}},
+                      headers=admin_headers)
+    resp = await client.put("/api/v1/plugins/spec_agent/config",
+                            json={"config": {"base_url": "http://x"}, "clear_secrets": ["token"]},
+                            headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["secrets_set"] == {"token": False}
+    assert app.state.plugin_service.context_extra()["spec_agent"].get("token") in (None, "")
+
+
 async def test_put_config_before_install_409(client, admin_headers):
     """未安装就更新配置 → 409。"""
     resp = await client.put("/api/v1/plugins/spec_agent/config",

@@ -36,6 +36,8 @@ class PluginConfigBody(BaseModel):
     """插件配置请求体（字段由插件 schema 定义）。"""
 
     config: dict[str, Any] = {}
+    # 待清除的敏感字段名（仅 PUT /config 使用；install 无"已存值"可清，传了也忽略）
+    clear_secrets: list[str] = []
 
 
 @router.get("")
@@ -69,13 +71,14 @@ async def install_plugin(plugin_id: str, body: PluginConfigBody,
 async def update_plugin_config(plugin_id: str, body: PluginConfigBody,
                                user=Depends(require_admin),
                                service=Depends(get_plugin_service)) -> dict:
-    """更新已安装插件的配置（敏感字段留空 = 保持原值）。
+    """更新已安装插件的配置（敏感字段留空 = 保持原值，clear_secrets = 显式清除）。
 
     Raises:
         HTTPException: 插件不存在（404）、未安装（409）、解密失败（409）、必填缺失（422）。
     """
     try:
-        return await service.update_config(plugin_id, body.config)
+        return await service.update_config(plugin_id, body.config,
+                                           clear_secrets=body.clear_secrets)
     except KeyError:
         raise HTTPException(404, f"插件不存在: {plugin_id}")
     except ValueError as exc:

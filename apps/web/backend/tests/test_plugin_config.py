@@ -144,6 +144,34 @@ async def test_malformed_secret_item_is_skipped(store, fernet_key):
     assert await cs.resolved("demo") == {"base_url": "http://x"}
 
 
+async def test_clear_secret_removes_stored_value(store, fernet_key):
+    """clear_secrets 删除已存凭证：之后 resolved 不再返回该字段。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"base_url": "http://x", "token": "tok-1"}, SCHEMA)
+    assert (await cs.resolved("demo"))["token"] == "tok-1"
+
+    await cs.save("demo", {"base_url": "http://x"}, SCHEMA, clear_secrets=["token"])
+    assert "token" not in await cs.resolved("demo")
+    doc = await store.get(CONFIG_COLLECTION, "demo")
+    assert doc["secrets"] == {} and doc["config"]["base_url"] == "http://x"
+
+
+async def test_clear_then_value_wins(store, fernet_key):
+    """同一字段既 clear 又给新值 → 新值生效（显式输入优先）。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"base_url": "http://x", "token": "old"}, SCHEMA)
+    await cs.save("demo", {"token": "new"}, SCHEMA, clear_secrets=["token"])
+    assert (await cs.resolved("demo"))["token"] == "new"
+
+
+async def test_clear_undeclared_key_ignored(store, fernet_key):
+    """clear_secrets 里出现非敏感字段名时忽略（不误删非敏感数据）。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"base_url": "http://x", "token": "t"}, SCHEMA)
+    await cs.save("demo", {"base_url": "http://y"}, SCHEMA, clear_secrets=["base_url"])
+    assert (await cs.resolved("demo")) == {"base_url": "http://y", "token": "t"}
+
+
 async def test_installed_ids_excludes_user_docs(store, fernet_key):
     """installed_ids 只统计公共配置，用户维度文档不算"插件已安装"。"""
     cs = PluginConfigStore(store, fernet_key)

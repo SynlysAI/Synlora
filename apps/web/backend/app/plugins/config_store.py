@@ -1,4 +1,4 @@
-"""插件配置落库（敏感字段 Fernet 加密，留空表示保持原值）。
+"""插件配置落库（敏感字段 Fernet 加密：留空表示保持原值，clear_secrets 表示显式清除）。
 
 存储形态（集合 plugin_configs）：
     {
@@ -165,18 +165,24 @@ class PluginConfigStore:
         return out
 
     async def save(self, plugin_id: str, values: dict, schema: list[dict],
-                   user_id: str | None = None) -> dict:
+                   user_id: str | None = None, clear_secrets: list[str] | None = None) -> dict:
         """保存配置：按 schema 声明的 key 白名单过滤后写入。
 
         未在 schema 中声明的 key 一律忽略（记 warning），避免 UI 传参差异被升级为 500；
         这同时是敏感字段的唯一护栏——漏传 schema 时敏感值被丢弃而非明文落库（fail-closed）。
-        敏感字段留空（含纯空白）表示保持原值；当前不提供清除路径，需清除时直接删插件配置记录。
+
+        敏感字段的两种写法：留空（含纯空白）表示保持原值；要清掉已存值则显式传
+        `clear_secrets`（前端「清除」入口 → 保存后该字段从库里删除）。执行顺序是
+        **先清除再写 values**，所以同一个 key 既在 `clear_secrets` 里又带新值时，
+        **新值生效**（显式输入优先于清除），不会出现"填了却被清掉"。
 
         Args:
             plugin_id: 插件 id（首次保存即视为安装）。
             values: 页面提交的字段值。
             schema: 插件配置 schema（既是字段白名单，也决定哪些字段是敏感的）。
             user_id: 用户 sub；None = 公共配置（现状），否则写用户维度的个人配置。
+            clear_secrets: 要清除的敏感字段名列表；None/空 = 不动已存值。
+                只接受 schema 声明为 secret 的 key，其余（未声明或非敏感）记 warning 后忽略。
 
         Returns:
             保存后的原始文档。
@@ -187,6 +193,12 @@ class PluginConfigStore:
         doc = await self.get_doc(doc_id) or {}
         config = dict(doc.get("config") or {})
         secrets = dict(doc.get("secrets") or {})
+        for key in clear_secrets or ():
+            if key not in secret_keys:
+                # 非敏感字段（或 schema 未声明）不得借此路径删除：清除只对敏感字段开
+                logger.warning("插件 %s 收到非敏感字段 %s 的清除请求，已忽略", plugin_id, key)
+                continue
+            secrets.pop(key, None)
         for key, value in values.items():
             if key not in declared:
                 logger.warning("插件 %s 收到 schema 未声明的字段 %s，已忽略", plugin_id, key)

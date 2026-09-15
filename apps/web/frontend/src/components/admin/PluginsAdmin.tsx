@@ -32,7 +32,8 @@ function StatusBadge({ plugin }: { plugin: PluginInfo }) {
  * 安装/配置共用模态表单：字段完全由 plugin.config_schema 驱动。
  *
  * 初值：已安装时用 plugin.config 回填非敏感字段（敏感字段不回传，永远留空）；
- * 未安装时空对象。提交时敏感字段留空 = 保持原值（由后端判定）。
+ * 未安装时空对象。提交时敏感字段留空 = 保持原值（由后端判定）；
+ * 已配置的敏感字段可点「清除」标记，保存时随 `clear_secrets` 一起提交（显式清除）。
  */
 function PluginFormModal({
   plugin,
@@ -49,6 +50,21 @@ function PluginFormModal({
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  /** 待清除的敏感字段名（本地标记，保存时才提交；成功后随模态关闭重置）。 */
+  const [clearing, setClearing] = useState<string[]>([])
+
+  /** 标记/撤销某敏感字段的「待清除」（只改本地状态，不发请求）。 */
+  const toggleClear = (key: string, next: boolean) => {
+    setClearing((list) =>
+      next ? (list.includes(key) ? list : [...list, key]) : list.filter((k) => k !== key),
+    )
+  }
+
+  /** 字段输入变化：填了新值即撤销该字段的「待清除」（新值优先，与后端语义一致）。 */
+  const handleChange = (key: string, value: string) => {
+    setForm((f) => ({ ...f, [key]: value }))
+    if (value.trim()) setClearing((list) => list.filter((k) => k !== key))
+  }
 
   /** 提交：未安装 POST /install，已安装 PUT /config（422 缺必填等 detail 内联展示）。 */
   const handleSubmit = async (e: FormEvent) => {
@@ -62,10 +78,14 @@ function PluginFormModal({
     )
     try {
       if (plugin.installed) {
+        // 无待清除项时不带该字段（保持请求体与旧版本一致）
+        const body: Record<string, unknown> = { config }
+        if (clearing.length > 0) body.clear_secrets = clearing
         await api(`/api/v1/plugins/${plugin.id}/config`, {
           method: 'PUT',
-          body: { config },
+          body,
         })
+        setClearing([])
         onDone(`已更新 ${plugin.name}`)
       } else {
         await api(`/api/v1/plugins/${plugin.id}/install`, {
@@ -83,29 +103,72 @@ function PluginFormModal({
   return (
     <Modal title={plugin.installed ? `配置 ${plugin.name}` : `安装 ${plugin.name}`} onClose={onClose}>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        {plugin.config_schema.map((field, index) => (
-          <label key={field.key} className={labelClass}>
-            {field.label}
-            <input
-              type={field.type === 'password' ? 'password' : 'text'}
-              value={form[field.key] ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, [field.key]: e.target.value }))}
-              placeholder={
-                field.secret && plugin.secrets_set[field.key]
-                  ? '留空保持不变'
-                  : (field.placeholder ?? '')
-              }
-              // 原生必填校验；敏感字段留空表示保持原值，不加 required
-              required={Boolean(field.required) && !field.secret}
-              autoFocus={index === 0}
-              autoComplete={field.type === 'password' ? 'new-password' : 'off'}
-              className={inputClass}
-            />
-            {field.description ? (
-              <span className="text-xs text-[var(--sa-alias-label-caption)]">{field.description}</span>
-            ) : null}
-          </label>
-        ))}
+        {plugin.config_schema.map((field, index) => {
+          // 仅「已配置的敏感字段」才有清除入口（未配置时无事可做）
+          const clearable = Boolean(field.secret) && Boolean(plugin.secrets_set[field.key])
+          const marked = clearable && clearing.includes(field.key)
+          return (
+            <label key={field.key} className={labelClass}>
+              {field.label}
+              <input
+                type={field.type === 'password' ? 'password' : 'text'}
+                value={form[field.key] ?? ''}
+                onChange={(e) => handleChange(field.key, e.target.value)}
+                placeholder={
+                  marked
+                    ? '保存后将清除'
+                    : field.secret && plugin.secrets_set[field.key]
+                      ? '留空保持不变'
+                      : (field.placeholder ?? '')
+                }
+                // 原生必填校验；敏感字段留空表示保持原值，不加 required
+                required={Boolean(field.required) && !field.secret}
+                autoFocus={index === 0}
+                autoComplete={field.type === 'password' ? 'new-password' : 'off'}
+                // 待清除时禁用输入框：避免"又填又清"的歧义（想改就点撤销或直接输入）
+                disabled={marked}
+                className={`${inputClass} disabled:opacity-60`}
+              />
+              {field.description ? (
+                <span className="text-xs text-[var(--sa-alias-label-caption)]">{field.description}</span>
+              ) : null}
+              {clearable ? (
+                <span className="text-xs text-[var(--sa-alias-label-caption)]">
+                  {marked ? (
+                    <>
+                      将清除（保存后生效） ·{' '}
+                      <button
+                        type="button"
+                        // 阻止 label 把点击转给输入框
+                        onClick={(e) => {
+                          e.preventDefault()
+                          toggleClear(field.key, false)
+                        }}
+                        className="text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+                      >
+                        撤销
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      已配置 ·{' '}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          toggleClear(field.key, true)
+                        }}
+                        className="text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+                      >
+                        清除
+                      </button>
+                    </>
+                  )}
+                </span>
+              ) : null}
+            </label>
+          )
+        })}
 
         {error && <FormError>{error}</FormError>}
 
