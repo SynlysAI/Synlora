@@ -254,6 +254,9 @@ class SkillService:
     def list_skills(self, user_id: str | None = None) -> list[dict]:
         """扫描全部技能（用户根 → 公共层 → 只读根，前者同名优先）。
 
+        用户根优先是为了处理"管理员在用户之后新增了同名公共技能"这一可达场景：
+        用户写入时有同名拒绝把关，但管理员后加的同名技能不该把用户自己那份顶掉。
+
         每个根内按目录名排序；单个技能解析失败（缺 frontmatter / 名不合法 /
         YAML 语法错误）只跳过该目录，不影响其余技能。
 
@@ -278,6 +281,9 @@ class SkillService:
 
     def read_body(self, name: str, user_id: str | None = None) -> str | None:
         """读技能正文（用户根优先于公共层与只读根；不含 frontmatter）。
+
+        用户根优先是为了处理"管理员在用户之后新增了同名公共技能"这一可达场景：
+        用户写入时有同名拒绝把关，但管理员后加的同名技能不该把用户自己那份顶掉。
 
         Args:
             name: 技能名（即目录名）。

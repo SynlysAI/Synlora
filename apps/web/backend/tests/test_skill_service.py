@@ -271,12 +271,20 @@ def test_user_skills_are_scoped_to_owner(tmp_path):
     assert (tmp_path / "users" / "u1" / "skills" / "mine" / "SKILL.md").is_file()
 
 
-def test_user_skill_takes_precedence_over_public(tmp_path):
+def test_user_skill_shadows_public_when_both_exist(tmp_path):
+    """同名时用户根遮蔽公共层：用户先建，之后管理员才加了同名公共技能。
+
+    顺序不能反：先有公共层同名技能时 write_user_skill 会抛 SkillNameTaken，
+    所以"两边同名"只可能由管理员事后补加产生——这正是优先级规则的作用场景。
+    """
     svc = SkillService(tmp_path)
-    svc.write_skill(name="dup", description="公共", content="## 目标\n公共")
-    svc.write_user_skill("u1", name="dup2", description="我的", content="## 目标\n我的")
-    names = [s["name"] for s in svc.list_skills(user_id="u1")]
-    assert "dup" in names and "dup2" in names
+    svc.write_user_skill("u1", name="shared", description="我的", content="## 目标\n我的正文")
+    svc.write_skill(name="shared", description="公共", content="## 目标\n公共正文")
+
+    assert svc.read_body("shared", user_id="u1") == "## 目标\n我的正文"   # 用户根优先
+    assert svc.read_body("shared") == "## 目标\n公共正文"                 # 不传 user_id 时不并入用户根
+    rows = [s for s in svc.list_skills(user_id="u1") if s["name"] == "shared"]
+    assert len(rows) == 1 and rows[0]["description"] == "我的"    # 列表里也只有一个，且是用户那份
 
 
 def test_write_user_skill_rejects_taken_name(tmp_path):
@@ -291,10 +299,3 @@ def test_delete_user_skill_only_affects_own(tmp_path):
     svc.write_user_skill("u1", name="mine", description="d", content="c")
     assert svc.delete_user_skill("u2", "mine") is False
     assert svc.delete_user_skill("u1", "mine") is True
-
-
-def test_read_body_prefers_user_copy(tmp_path):
-    svc = SkillService(tmp_path)
-    svc.write_skill(name="shared", description="公共", content="## 目标\n公共正文")
-    svc.write_user_skill("u1", name="mine", description="我的", content="## 目标\n我的正文")
-    assert "我的正文" in svc.read_body("mine", user_id="u1")
