@@ -167,6 +167,13 @@ async def test_user_project_cannot_take_default_dir_name(tmp_path, store):
     assert (user_dir / "default").is_dir()
 
 
+async def test_case_variant_of_default_does_not_take_default_dir(tmp_path, store):
+    """Windows 大小写不敏感：Default/DEFAULT 与 default 同目录，同样必须避让。"""
+    service = ProjectService(store, tmp_path)
+    project = await service.create_project("u1", "Default")
+    assert project["dir_name"].casefold() != "default"
+
+
 async def test_rename_to_default_name_does_not_take_default_dir(tmp_path, store):
     """把用户项目改名为 default 时同样不能占用 default 目录（改名的 create 路径）。"""
     service = ProjectService(store, tmp_path)

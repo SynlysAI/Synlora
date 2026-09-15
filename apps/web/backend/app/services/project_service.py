@@ -89,6 +89,9 @@ class ProjectService:
         user_dir = self._user_workspaces_dir(user_id)
         taken = await self._repo.used_dir_names(user_id)
         taken.add(workspace.DEFAULT_PROJECT_DIR)  # default 恒留给默认工作区
+        if base.casefold() == workspace.DEFAULT_PROJECT_DIR:
+            # 大小写变体（Default/DEFAULT）在大小写不敏感盘上与 default 同目录，必须避让
+            taken.add(base)
         dir_name = workspace.free_dir_name(user_dir, base, taken)
         project = await self._repo.create(
             user_id=user_id, name=name.strip(), dir_name=dir_name)
@@ -277,6 +280,9 @@ class ProjectService:
                 taken.discard(old_dir)  # 自己不算占用，否则会被判成冲突而加后缀
                 # default 恒留给默认工作区（无条件保留：改名成 default 时该落在 default-2）
                 taken.add(workspace.DEFAULT_PROJECT_DIR)
+                if base.casefold() == workspace.DEFAULT_PROJECT_DIR:
+                    # 大小写变体（Default/DEFAULT）在大小写不敏感盘上与 default 同目录，必须避让
+                    taken.add(base)
                 new_dir = workspace.free_dir_name(user_dir, base, taken)
             if new_dir != old_dir:
                 src = user_dir / old_dir
