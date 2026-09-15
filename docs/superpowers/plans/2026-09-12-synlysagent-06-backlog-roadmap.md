@@ -37,7 +37,7 @@
 ### 5. AI⁴MS 真实工具接入（最高优先：项目立身之本）
 - [ ] 统一 Job 注册表（第一个子任务，Spec_Agent 接入的地基）：`jobs` 存储（稳定 id + 所属会话）+ 统一状态机（PENDING/RUNNING/COMPLETED/FAILED/CANCELLED，Connector 映射各系统内部状态，见集成设计稿 §12/13）+ 完成通知唤醒 agent（免轮询，参考 DSH `packages/jobs/`）
 - [ ] 「Spec_Agent 异步任务工具化」**（部分完成）**：首期**同步**核磁三件套 ✅ 0.5.0（经插件机制接入：宿主通用插件框架 + `spec_agent` 插件包 + 管理页配置）；异步部分仍待办——`/api/v1/tasks/{nmr,gpc,...}` 提交 → 建在**统一 Job 注册表**上（提交即返回 job_id，避免长阻塞占 step），5 种谱图异步任务建在其上
-- [ ] 凭证与白名单：AI⁴MS 网关地址/凭证走 settings，工具按 ctx.extra 注入
+- [x] 凭证与白名单：AI⁴MS 网关地址/凭证经**插件配置**（管理页填写、落库加密、运行期按 `ctx.extra["plugins"]` 注入），不进 settings/.env
 - [ ] SpecLabOS 设备/工作流接入（排 Spec_Agent 后；工具声明 `Permission.ASK_USER`，管线已支持强制审批）
 - [ ] 验收：对话提交一个 NMR 任务，agent 自行跟踪并在完成后整合结果
 

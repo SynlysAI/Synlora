@@ -62,7 +62,7 @@ function NoPermission() {
 interface AdminLayoutProps {
   /** 当前页签（App.tsx 按 hash 解析）。 */
   tab: AdminTab
-  /** 页签内容（ModelsAdmin / AssistantsAdmin / SkillsAdmin）。 */
+  /** 页签内容（ModelsAdmin / AssistantsAdmin / SkillsAdmin / PluginsAdmin）。 */
   children: ReactNode
 }
 

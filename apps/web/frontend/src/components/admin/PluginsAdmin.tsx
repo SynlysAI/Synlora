@@ -56,17 +56,21 @@ function PluginFormModal({
     if (saving) return
     setSaving(true)
     setError('')
+    // 文本值统一 trim（避免粘贴带入的首尾空白原样入库，运行期调用才失败）
+    const config = Object.fromEntries(
+      Object.entries(form).map(([k, v]) => [k, v.trim()]),
+    )
     try {
       if (plugin.installed) {
         await api(`/api/v1/plugins/${plugin.id}/config`, {
           method: 'PUT',
-          body: { config: form },
+          body: { config },
         })
         onDone(`已更新 ${plugin.name}`)
       } else {
         await api(`/api/v1/plugins/${plugin.id}/install`, {
           method: 'POST',
-          body: { config: form },
+          body: { config },
         })
         onDone(`已安装 ${plugin.name}`)
       }
@@ -79,19 +83,21 @@ function PluginFormModal({
   return (
     <Modal title={plugin.installed ? `配置 ${plugin.name}` : `安装 ${plugin.name}`} onClose={onClose}>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        {plugin.config_schema.map((field) => (
+        {plugin.config_schema.map((field, index) => (
           <label key={field.key} className={labelClass}>
             {field.label}
-            {field.required ? <span className="text-[var(--sa-alias-state-error-primary)]"> *</span> : null}
             <input
               type={field.type === 'password' ? 'password' : 'text'}
               value={form[field.key] ?? ''}
               onChange={(e) => setForm((f) => ({ ...f, [field.key]: e.target.value }))}
               placeholder={
-                field.type === 'password' && plugin.secrets_set[field.key]
+                field.secret && plugin.secrets_set[field.key]
                   ? '留空保持不变'
                   : (field.placeholder ?? '')
               }
+              // 原生必填校验；敏感字段留空表示保持原值，不加 required
+              required={Boolean(field.required) && !field.secret}
+              autoFocus={index === 0}
               autoComplete={field.type === 'password' ? 'new-password' : 'off'}
               className={inputClass}
             />
