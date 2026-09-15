@@ -327,8 +327,9 @@ async def test_runtime_tool_names_filtered_by_visibility(
     provider = await _make_provider(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend",
                         _NoopBackend)
-    # 模拟运行期从 PluginService 取得的工具映射（装配时注入的同一份语义）
-    app.state.capability_service.tool_names_by_plugin = {"spec_agent": set(SPEC_TOOLS)}
+    # 工具映射为 PluginService 的活引用（装配时注入方法本身），此处按挂载记录
+    # 注入本轮要断言的工具名（与 install 后 _attach 的写入同语义）
+    app.state.plugin_service._attached["spec_agent"] = set(SPEC_TOOLS)
     captured = _capture_run_args(monkeypatch)
 
     decrypted = await app.state.provider_repo.get_decrypted(provider["_id"])
@@ -363,3 +364,65 @@ async def test_runtime_tool_names_filtered_by_visibility(
     assert not (SPEC_TOOLS & hidden_tools)  # 不可见 → 插件工具被剔除
     for name in ("python.run", "file.read", "skill.list"):
         assert name in hidden_tools  # 内置工具不受可见性影响
+
+
+async def test_tool_mapping_reflects_runtime_install(app, client, admin_headers):
+    """装配期传活引用：运行期新挂载的工具即时进入映射（不再依赖启动快照）。"""
+    caps = app.state.capability_service
+    plugin_service = app.state.plugin_service
+
+    # 起点：尚未挂载任何插件，映射为空（固定快照会永远停留在此）
+    assert plugin_service.tool_names_by_plugin() == {}
+
+    # 运行期新装插件：工具在 install 时挂载，映射应即时反映
+    await _install_plugin(client, admin_headers)
+    assert "spec.nmr.forward" in caps.tool_names_by_plugin.get("spec_agent", set())
+
+    # 模拟运行期新增挂载：直接往 PluginService 的已挂载记录里加一个假工具名
+    plugin_service._attached.setdefault("spec_agent", set()).add("spec.nmr.fake")
+    try:
+        assert "spec.nmr.fake" in caps.tool_names_by_plugin["spec_agent"]
+    finally:
+        plugin_service._attached["spec_agent"].discard("spec.nmr.fake")
+    assert "spec.nmr.fake" not in caps.tool_names_by_plugin["spec_agent"]
+
+
+# ---------- 技能过滤：黑名单口径（公共技能始终可见） ----------
+
+
+async def test_public_admin_skill_stays_visible_to_users(
+        app, client, admin_headers, user_headers):
+    """管理员在公共技能目录自建的技能（非能力目录条目）对所有用户可见。"""
+    app.state.skill_service.write_skill(
+        name="team-convention", description="团队约定", content="正文内容")
+    try:
+        names = [s["name"] for s in (await client.get(
+            "/api/v1/skills", headers=user_headers)).json()]
+        assert "team-convention" in names
+    finally:
+        app.state.skill_service.delete_skill("team-convention")
+
+
+async def test_hidden_builtin_skill_invisible_to_user(
+        app, client, admin_headers, user_headers):
+    """被策略隐藏的内置技能：普通用户不可见，管理员可见。"""
+    await client.put("/api/v1/admin/catalog/skill/office-doc/policy",
+                     json={"visibility": "hidden", "default_enabled": False},
+                     headers=admin_headers)
+    user_names = [s["name"] for s in (await client.get(
+        "/api/v1/skills", headers=user_headers)).json()]
+    assert "office-doc" not in user_names
+    admin_names = [s["name"] for s in (await client.get(
+        "/api/v1/skills", headers=admin_headers)).json()]
+    assert "office-doc" in admin_names
+
+
+async def test_plugin_skill_follows_plugin_policy(app, client, admin_headers, user_headers):
+    """插件技能跟随其插件：插件被隐藏时技能也不可见。"""
+    await _install_plugin(client, admin_headers)
+    await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
+                     json={"visibility": "hidden", "default_enabled": False},
+                     headers=admin_headers)
+    names = [s["name"] for s in (await client.get(
+        "/api/v1/skills", headers=user_headers)).json()]
+    assert "spec-nmr" not in names

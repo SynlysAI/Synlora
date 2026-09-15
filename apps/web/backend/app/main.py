@@ -78,15 +78,16 @@ async def lifespan(app: FastAPI):
         assistant_repo=app.state.assistant_repo,
     )
     await app.state.plugin_service.startup()
-    # 能力目录可见性服务：须在 plugin_service.startup() 之后构造（此时
-    # tool_names_by_plugin 才有已挂载的插件工具清单）
+    # 能力目录可见性服务：须在 plugin_service.startup() 之后构造。工具映射传
+    # PluginService 的方法本身（活引用）——插件可在运行期安装，快照会漏掉启动后
+    # 新挂载的工具（可见性算不出 → 被误当不可见而过滤）。
     app.state.capability_service = CapabilityService(
         catalog=CatalogService(settings=settings,
                                skill_service=app.state.skill_service,
                                packages=packages),
         policy=CatalogPolicyRepo(store),
         installs=UserCapabilityRepo(store),
-        tool_names_by_plugin=app.state.plugin_service.tool_names_by_plugin(),
+        tool_names_by_plugin=app.state.plugin_service.tool_names_by_plugin,
     )
     # 暴露给目录 API 与运行期（插件配置校验取 schema、用户维度解析配置）
     app.state.plugin_config_store = plugin_config_store

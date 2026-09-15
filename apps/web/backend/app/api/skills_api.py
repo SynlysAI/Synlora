@@ -55,8 +55,10 @@ async def list_skills(request: Request, user=Depends(get_current_user)):
     caps = getattr(request.app.state, "capability_service", None)
     if caps is None or user.get("role") == "admin":
         return skills
-    visible = await caps.visible_skill_names(user["sub"])
-    return [s for s in skills if s["name"] in visible]
+    # 黑名单口径：只剔除策略隐藏的内置技能与不可见插件的技能；公共目录里管理员
+    # 自建/导入的技能不属能力目录条目，始终可见（否则普通用户看不到它们）
+    hidden = await caps.hidden_skill_names(user["sub"])
+    return [s for s in skills if s["name"] not in hidden]
 
 
 @router.get("/{name}/export", response_class=PlainTextResponse)

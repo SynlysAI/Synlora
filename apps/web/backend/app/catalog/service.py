@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,19 +25,35 @@ class CapabilityService:
 
     def __init__(self, catalog: "CatalogService", policy: "CatalogPolicyRepo",
                  installs: "UserCapabilityRepo",
-                 tool_names_by_plugin: dict[str, set[str]] | None = None) -> None:
+                 tool_names_by_plugin: dict[str, set[str]] | "Callable[[], dict[str, set[str]]]"
+                 | None = None) -> None:
         """保存依赖。
 
         Args:
             catalog: 内置条目枚举。
             policy: 管理员策略。
             installs: 用户安装记录。
-            tool_names_by_plugin: {插件 id: 该插件贡献的工具名}（可见性过滤工具用）。
+            tool_names_by_plugin: {插件 id: 该插件贡献的工具名}；传 dict 为固定映射，
+                传零参可调用对象则每次取用时实时求值（插件可运行期安装，装配期应传
+                `PluginService.tool_names_by_plugin` 方法本身）。
         """
         self.catalog = catalog
         self.policy = policy
         self.installs = installs
-        self.tool_names_by_plugin = tool_names_by_plugin or {}
+        if callable(tool_names_by_plugin):
+            self._tool_names_provider = tool_names_by_plugin
+        else:
+            fixed = dict(tool_names_by_plugin or {})
+            self._tool_names_provider = lambda: fixed
+
+    @property
+    def tool_names_by_plugin(self) -> dict[str, set[str]]:
+        """{插件 id: 该插件贡献的工具名}（实时求值）。
+
+        Returns:
+            映射的副本。
+        """
+        return {pid: set(names) for pid, names in self._tool_names_provider().items()}
 
     async def exists(self, kind: str, item_id: str) -> bool:
         """条目是否在目录里。
@@ -110,6 +127,28 @@ class CapabilityService:
                 names |= set(pkg.skills)
         return names
 
+    async def hidden_skill_names(self, user_id: str) -> set[str]:
+        """对某用户不可见的技能名。
+
+        规则（三层语义）：
+        - 内置技能（能力目录里的 skill 条目）→ 按技能策略；
+        - 插件技能（插件包 skills 声明）→ 跟随其插件可见性；
+        - 其它技能（公共技能目录里管理员自建/导入的）→ 不在黑名单里（始终可见）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            不可见技能名集合。
+        """
+        hidden = {i.id for i in self.catalog.list_items("skill")} \
+            - await self.visible_ids(user_id, "skill")
+        visible_plugins = await self.visible_ids(user_id, "plugin")
+        for plugin_id, pkg in self.catalog.packages.items():
+            if plugin_id not in visible_plugins:
+                hidden |= set(pkg.skills)
+        return hidden
+
     async def visible_tool_names(self, user_id: str) -> set[str]:
         """某用户可见的插件工具名（运行期工具过滤用）。
 
@@ -120,9 +159,10 @@ class CapabilityService:
             工具名集合。
         """
         visible = await self.visible_ids(user_id, "plugin")
+        mapping = self.tool_names_by_plugin  # 实时求值取一次，避免逐插件重复求值
         out: set[str] = set()
         for plugin_id in visible:
-            out |= self.tool_names_by_plugin.get(plugin_id, set())
+            out |= mapping.get(plugin_id, set())
         return out
 
     async def can_install(self, user_id: str, kind: str, item_id: str) -> bool:

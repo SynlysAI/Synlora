@@ -293,10 +293,11 @@ class AgentService:
             # 索引进提示词，正文只入 context_extra（渐进披露，由 skill.read 按需取）
             all_skills = self._skill_service.list_skills()
             if self._capability_service is not None:
-                # 技能可见性：内置技能按策略、插件技能跟随其插件可见性
-                visible_skills = await self._capability_service.visible_skill_names(
+                # 技能可见性（黑名单口径）：内置技能按策略、插件技能跟随其插件
+                # 可见性；公共目录里管理员自建/导入的技能不在黑名单里（始终可见）
+                hidden_skills = await self._capability_service.hidden_skill_names(
                     user["sub"])
-                all_skills = [s for s in all_skills if s["name"] in visible_skills]
+                all_skills = [s for s in all_skills if s["name"] not in hidden_skills]
             if requested_skills:
                 active_skills = [s for s in all_skills
                                  if s["name"] in set(requested_skills)]
