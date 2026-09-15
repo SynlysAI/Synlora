@@ -38,6 +38,33 @@ def get_capability_service(request: Request):
     return service
 
 
+async def _install_core(request: Request, service, user_id: str, kind: str,
+                        item_id: str) -> None:
+    """安装某条目的公共核心（既有的 POST 安装与新 PUT 开关共用）。
+
+    Args:
+        request: FastAPI 请求（取插件服务）。
+        service: 能力服务。
+        user_id: 用户 sub。
+        kind: 条目类型。
+        item_id: 条目 id。
+
+    Raises:
+        HTTPException: 条目不可安装（404）。
+    """
+    if not await service.can_install(user_id, kind, item_id):
+        raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
+    await service.installs.install(user_id, kind, item_id)
+    if kind == "plugin":
+        # 安装即挂载（进程级能力可用性）：插件包的工具/技能根不依赖"管理员是否
+        # 公共安装过"，否则用户自装后仍用不了（可见性由 CapabilityService 另算）
+        plugin_service = getattr(request.app.state, "plugin_service", None)
+        if plugin_service is not None:
+            plugin_service.ensure_attached(item_id)
+        else:
+            logger.warning("插件服务未就绪，用户 %s 安装 %s 后未挂载", user_id, item_id)
+
+
 class PolicyBody(BaseModel):
     """管理员策略请求体。
 
@@ -110,8 +137,6 @@ async def install_capability(kind: str, item_id: str, request: Request,
     """
     if kind not in KINDS:
         raise HTTPException(404, f"未知类型: {kind}")
-    if not await service.can_install(user["sub"], kind, item_id):
-        raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
     values = dict(body.config) if body is not None else {}
     if kind == "plugin" and values:
         packages = getattr(request.app.state, "plugin_packages", None) or {}
@@ -128,15 +153,7 @@ async def install_capability(kind: str, item_id: str, request: Request,
         if store is None:
             raise HTTPException(503, "插件配置存储未就绪")
         await store.save_for_user(user["sub"], item_id, values, package.config_schema)
-    await service.installs.install(user["sub"], kind, item_id)
-    if kind == "plugin":
-        # 安装即挂载（进程级能力可用性）：插件包的工具/技能根不依赖"管理员是否
-        # 公共安装过"，否则用户自装后仍用不了（可见性由 CapabilityService 另算）
-        plugin_service = getattr(request.app.state, "plugin_service", None)
-        if plugin_service is not None:
-            plugin_service.ensure_attached(item_id)
-        else:
-            logger.warning("插件服务未就绪，用户 %s 安装 %s 后未挂载", user["sub"], item_id)
+    await _install_core(request, service, user["sub"], kind, item_id)
     return {"kind": kind, "id": item_id, "installed": True}
 
 
@@ -224,6 +241,10 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
     `installed=true` 等价安装（先过 can_install 判定），`installed=false` 等价卸载
     （删记录）；`enabled` 只对已安装条目有效，未安装时返回 422。
 
+    注意：请求同时带 `installed=false` 时，`enabled` 一律忽略（不校验、不报错），
+    因为卸载后已无记录可改；这使 `{"installed": false, "enabled": false}` 这类
+    自洽请求不会落入 422。
+
     Args:
         kind: 条目类型。
         item_id: 条目 id。
@@ -242,13 +263,7 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
         raise HTTPException(404, f"未知类型: {kind}")
     user_id = user["sub"]
     if body.installed is True:
-        if not await service.can_install(user_id, kind, item_id):
-            raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
-        await service.installs.install(user_id, kind, item_id)
-        if kind == "plugin":
-            plugin_service = getattr(request.app.state, "plugin_service", None)
-            if plugin_service is not None:
-                plugin_service.ensure_attached(item_id)
+        await _install_core(request, service, user_id, kind, item_id)
     elif body.installed is False:
         await service.installs.uninstall(user_id, kind, item_id)
     # 卸载请求里的 enabled 一并视为无效：先卸载就没有记录可改，否则

@@ -63,6 +63,10 @@ def test_switch_uninstall_ignores_enabled_field(client):
                       json={"installed": False, "enabled": False}, headers=HEADERS)
     assert resp.status_code == 200
     assert resp.json()["installed"] is False
+    # 卸载后记录确实没了：此时再改启用态应 422（而不是静默成功）
+    again = client.put(f"/api/v1/me/capabilities/skill/{ITEM}",
+                       json={"enabled": True}, headers=HEADERS)
+    assert again.status_code == 422
 
 
 def test_switch_install_unknown_item_is_404(client):
