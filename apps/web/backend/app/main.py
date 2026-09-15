@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
     await app.state.plugin_service.startup()
     app.state.agent_service = AgentService(
         store, settings, app.state.event_repo, app.state.skill_service,
-        file_repo=app.state.file_repo)
+        file_repo=app.state.file_repo, plugin_service=app.state.plugin_service)
     await seed_assistants(store)
     yield
     await store.close()

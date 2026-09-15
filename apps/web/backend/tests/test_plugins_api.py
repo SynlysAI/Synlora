@@ -56,7 +56,7 @@ async def test_install_unknown_plugin_404(client, admin_headers):
     assert resp.status_code == 404
 
 
-async def test_install_registers_tools_and_never_returns_secret(client, admin_headers):
+async def test_install_registers_tools_and_never_returns_secret(app, client, admin_headers):
     """安装成功：工具进注册表、专家播种、技能可见、状态里不回传密钥明文。"""
     resp = await client.post(
         "/api/v1/plugins/spec_agent/install",
@@ -79,6 +79,9 @@ async def test_install_registers_tools_and_never_returns_secret(client, admin_he
     skills = await client.get("/api/v1/skills", headers=admin_headers)
     spec_skill = next(s for s in skills.json() if s["name"] == "spec-nmr")
     assert spec_skill["builtin"] is True
+
+    # 注入回路已接通：AgentService 持有同一个 PluginService（T8）
+    assert app.state.agent_service._plugin_service is app.state.plugin_service
 
 
 async def test_update_config_keeps_secret_when_blank(app, client, admin_headers):

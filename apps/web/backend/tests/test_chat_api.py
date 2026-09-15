@@ -1046,6 +1046,8 @@ async def test_skill_index_injected_and_tools_available(
     extra = captured[-1]["context_extra"]
     assert extra["skills"]["data-analysis"] == skill["content"]
     assert extra["skill_meta"]["data-analysis"] == skill["description"]
+    # 插件配置命名空间注入（未安装插件时为空 dict）
+    assert "plugins" in extra
 
     # 渐进披露：正文字符串不得出现在 system prompt 里（只有 skill.read 能取到）
     assert "## 决策规则" not in prompt

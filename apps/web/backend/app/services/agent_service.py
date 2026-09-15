@@ -79,7 +79,8 @@ class AgentService:
     """对话运行编排（单例，挂 app.state.agent_service）。"""
 
     def __init__(self, store: Any, settings: Any, event_repo: Any,
-                 skill_service: SkillService, file_repo: Any = None) -> None:
+                 skill_service: SkillService, file_repo: Any = None,
+                 plugin_service: Any = None) -> None:
         """保存依赖。
 
         Args:
@@ -88,12 +89,14 @@ class AgentService:
             event_repo: 会话事件 repo（DB 副本写入与回放）。
             skill_service: 技能服务（磁盘扫描目录 + 按名取正文）。
             file_repo: 文件 repo（file.send 登记产物供下载；None 时该工具报不支持）。
+            plugin_service: 插件服务（提供已安装插件的解密配置；None = 无插件注入）。
         """
         self._store = store
         self._settings = settings
         self._event_repo = event_repo
         self._skill_service = skill_service
         self._file_repo = file_repo
+        self._plugin_service = plugin_service
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
@@ -342,6 +345,9 @@ class AgentService:
                     "ask_user_handler": ask_handler,
                     "send_file_handler": send_file_handler,
                     "approval_handler": approval_handler,
+                    # 插件配置命名空间（已安装插件的解密配置；核心不认识任何插件专属字段）
+                    "plugins": (self._plugin_service.context_extra()
+                                if self._plugin_service is not None else {}),
                 },
             )
             active.session = session
