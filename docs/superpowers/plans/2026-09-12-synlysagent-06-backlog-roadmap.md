@@ -36,7 +36,7 @@
 
 ### 5. AI⁴MS 真实工具接入（最高优先：项目立身之本）
 - [ ] 统一 Job 注册表（第一个子任务，Spec_Agent 接入的地基）：`jobs` 存储（稳定 id + 所属会话）+ 统一状态机（PENDING/RUNNING/COMPLETED/FAILED/CANCELLED，Connector 映射各系统内部状态，见集成设计稿 §12/13）+ 完成通知唤醒 agent（免轮询，参考 DSH `packages/jobs/`）
-- [ ] Spec_Agent 异步任务工具化：`/api/v1/tasks/{nmr,gpc,...}` 提交 → 建在 Job 注册表上（提交即返回 job_id，避免长阻塞占 step）
+- [ ] 「Spec_Agent 异步任务工具化」**（部分完成）**：首期**同步**核磁三件套 ✅ 0.5.0（经插件机制接入：宿主通用插件框架 + `spec_agent` 插件包 + 管理页配置）；异步部分仍待办——`/api/v1/tasks/{nmr,gpc,...}` 提交 → 建在**统一 Job 注册表**上（提交即返回 job_id，避免长阻塞占 step），5 种谱图异步任务建在其上
 - [ ] 凭证与白名单：AI⁴MS 网关地址/凭证走 settings，工具按 ctx.extra 注入
 - [ ] SpecLabOS 设备/工作流接入（排 Spec_Agent 后；工具声明 `Permission.ASK_USER`，管线已支持强制审批）
 - [ ] 验收：对话提交一个 NMR 任务，agent 自行跟踪并在完成后整合结果
@@ -82,3 +82,4 @@
 - Office 文档生成：python-docx/python-pptx/openpyxl/pandas + 内置技能 `office-doc`（产物落工作区 output/）
 - 管线强制审批（Permission.ASK_USER）：pre-execute 打断 + approval_handler 复用 ask/user 事件与 answer 回路（fail-closed）+ 前端审批卡（允许/拒绝）；内置工具暂均 ALLOW，SpecLabOS 接入时声明即生效
 - 沙箱升级（0.4.0-beta.1）：python.run 执行器抽象（local/docker/fail-closed 三态，`SANDBOX_MODE`/`SANDBOX_STRICT` 切换）+ 临时容器强隔离（断网/资源限额/非 root/单目录挂载）+ 沙箱镜像 `docker/sandbox/` + 逃逸集成测试（详见阶段一·1）
+- 插件机制（0.5.0-beta.1，一切皆插件）：宿主通用插件框架（`plugin.json` manifest 扫描 + 配置加密落库 + 安装即注册工具/挂技能/播种专家 + 管理 API）+ 管理页「插件」页签（按 schema 动态渲染）+ 首个插件 `spec_agent`（Spec_Agent 核磁三件套）；插件配置由管理页填写落库加密，不进 settings/.env（详见 `2026-09-14-synlysagent-07-ai4ms-specagent-integration.md`）

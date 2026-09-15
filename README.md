@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。
 
-- 版本：0.4.0-beta.1（内测版）
+- 版本：0.5.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -113,6 +113,10 @@ pm2 logs synlys-agent
 
 其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
+### 插件机制（AI⁴MS 子平台接入）
+
+一切皆插件：新增子平台 = 新增 `apps/web/backend/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。首个插件 `spec_agent` 提供核磁预测三件套并自动播种「谱图解析专家」，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+
 ### Docker 沙箱（多用户/云部署）
 
 `SANDBOX_MODE=docker` 时，`python.run` 在临时容器中执行：workspace 单目录挂载（容器内 `/workspace`，目录约定不变）、断网、内存/CPU/进程数限额、非 root 用户、跑完即删；镜像需预构建（分析全家桶，与内置技能依赖对齐）：
@@ -137,7 +141,7 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 cd packages/synlys-harness
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
-# web 后端（207 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
+# web 后端（277 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
 cd apps/web/backend
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
@@ -152,7 +156,7 @@ npm run lint
 按价值与触发条件推进（详见 [docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md](docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md)）：
 
 - **~~沙箱升级（多用户部署前置）~~**（✅ 0.4.0 完成）：`python.run` 执行器抽象（local/docker 可切换），docker 形态为临时容器 + 资源限额 + 断网，探测失败按 strict 回退或拒绝
-- **AI⁴MS 工具接入（项目立身之本）**：统一 Job 注册表（异步任务状态机 + 完成通知）→ Spec_Agent 谱学任务 / Poly_Agent / SpecLabOS 设备工作流（后者经强制审批）
+- **AI⁴MS 工具接入（项目立身之本）**：首期（Spec_Agent 核磁三件套，插件化接入）✅ 0.5.0；统一 Job 注册表（异步任务状态机 + 完成通知）→ 5 种谱图解析异步任务 / Poly_Agent / SpecLabOS 设备工作流（后者经强制审批）
 - **跨会话长期记忆**：工作区级记忆抽取与注入
 - **MCP adapter**：Tool Registry 加 MCP 来源，一次投入换第三方工具生态
 - **多 Agent / SwarmFlow**：声明式 team 装配（出现并行科研场景需求时启动）

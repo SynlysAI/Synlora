@@ -45,6 +45,31 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 | `SANDBOX_MEM_LIMIT` / `SANDBOX_CPUS` / `SANDBOX_PIDS_LIMIT` | `512m` / `1.0` / `256` | docker 模式单容器资源限额 |
 | `SANDBOX_DOCKER_USER` | 空 | 容器内运行用户（空 = 镜像默认非 root 用户） |
 
+## AI⁴MS 子平台接入（插件机制）
+
+**设计原则：一切皆插件。** 新增子平台 = 新增一个插件目录，宿主与 harness 零改动；插件配置由插件自己声明（`plugin.json` 的 `config_schema`），由管理员在管理页填写后**落库加密**（敏感字段 Fernet 加密），**不写 `.env`/`settings.py`**。
+
+插件包结构：
+
+```
+apps/web/backend/plugins/<id>/
+  plugin.json              # manifest：id/name/version/tools_module/config_schema/skills/expert
+  tools.py                 # 用 harness @tool 声明的工具，配置从 ctx.extra["plugins"][id] 取
+  skills/<name>/SKILL.md   # 插件自带技能（可选）
+```
+
+**管理入口**：管理后台 →「插件」页签 → 安装（填写配置）/ 配置（敏感字段留空 = 保持原值）。
+
+**新增一个子平台的步骤**：
+
+1. 复制 `plugins/spec_agent/`，改 `plugin.json`（`id`/`name`/`config_schema`/`tools_module`/`expert`）
+2. 写 `tools.py`（`from synlys_harness import tool, ToolContext, ToolResult`，配置走 `ctx.extra["plugins"]["<id>"]`）
+3. 重启服务后在插件页安装
+
+宿主与 harness 一行不用改。
+
+**已接入**：`spec_agent`（Spec_Agent 核磁预测三件套 `spec.nmr.forward/reverse/search`；安装后自动播种「谱图解析专家」；服务端未开鉴权时凭证留空）。
+
 ## 与 AI4MS 门户对接
 
 - **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 location.hash 提取 token 后放入 `Authorization: Bearer <token>` 请求头（前端实现见 Plan 3）。token 为门户签发的 `{payload_b64}.{hmac_hex}` 格式，后端用 `AUTH_SECRET` 校验。

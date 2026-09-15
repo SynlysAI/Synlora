@@ -45,6 +45,7 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 - harness 不 import FastAPI；web 只是宿主；接入契约见 `docs/superpowers/plans/2026-09-10-synlysagent-02-web-backend.md` 文首 10 条
 - 认证与 AI⁴MS 门户逐字兼容（HMAC token + `ai4ms.users`，`#token=` 跳转）
 - python.run 执行器抽象（`tools/sandbox.py`）：local（-I 隔离/环境白名单/超时/截断，事故围栏）与 docker（临时容器：workspace 单目录挂载 /workspace、断网、资源限额、非 root、跑完即删）两实现；宿主经 `ctx.extra.code_executor` 注入、`resolve_executor()` 探测解析（不可用时 strict 拒绝或回退 local-weak 标记）；镜像构建见 `docker/sandbox/`
+- 一切皆插件：子平台接入 = `apps/web/backend/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板）；宿主通用框架 `app/plugins/`（loader 扫描 + config_store 加密落库 + PluginService 编排 + api 管理端点）；插件配置经管理页填写落库（不进 settings.py/.env），运行期按命名空间注入 `ctx.extra["plugins"]`；插件技能经 SkillService 额外技能根提供；新增插件不改主框架与 harness
 - 工具强制审批：`Permission.ASK_USER` 在管线 pre-execute 打断，宿主 `approval_handler` 复用 ask/user 事件与 answer 回路，fail-closed（SpecLabOS 类工具声明即生效）
 - 插话（steering）双语义：模型还有 step 则下个边界注入本轮；turn 正常结束时残留插话经 `take_queued_turn()` 自动转为下一轮续跑（取消/失败路径丢弃）
 - 运行时（ActiveRun/SSE 队列/ask future）为单进程内存态：uvicorn 必须 workers=1 单实例部署，多副本会破坏 steer/answer/cancel
@@ -60,4 +61,4 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 
 对齐 backlog 文档 `docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md`（含各项触发条件）：
 
-沙箱 Docker 化 ✅（0.4.0，`SANDBOX_MODE=docker`）→ AI⁴MS 工具接入（统一 Job 注册表先行：异步状态机 + 完成通知；Spec_Agent → SpecLabOS 经强制审批）→ 跨会话长期记忆 → 工具结果 spill → MCP adapter → 多 Agent/SwarmFlow（参考 jiuwenswarm agents/swarm 声明式装配）→ 动态技能市场 / headless 运行时（用量驱动，暂缓）
+沙箱 Docker 化 ✅（0.4.0，`SANDBOX_MODE=docker`）→ AI⁴MS 工具接入 ✅ 首期（Spec_Agent 核磁三件套，插件化）→ 统一 Job 注册表 + 5 种谱图异步任务 → SpecLabOS 经强制审批 → 跨会话长期记忆 → 工具结果 spill → MCP adapter → 多 Agent/SwarmFlow（参考 jiuwenswarm agents/swarm 声明式装配）→ 动态技能市场 / headless 运行时（用量驱动，暂缓）
