@@ -57,6 +57,11 @@
 - [ ] 统一 Job 注册表（第一个子任务，Spec_Agent 接入的地基）：`jobs` 存储（稳定 id + 所属会话）+ 统一状态机（PENDING/RUNNING/COMPLETED/FAILED/CANCELLED，Connector 映射各系统内部状态，见集成设计稿 §12/13）+ 完成通知唤醒 agent（免轮询，参考 DSH `packages/jobs/`）
 - [ ] 「Spec_Agent 异步任务工具化」**（部分完成）**：首期**同步**核磁三件套 ✅ 0.5.0（经插件机制接入：宿主通用插件框架 + `spec_agent` 插件包 + 管理页配置）；异步部分仍待办——`/api/v1/tasks/{nmr,gpc,...}` 提交 → 建在**统一 Job 注册表**上（提交即返回 job_id，避免长阻塞占 step），5 种谱图异步任务建在其上
 - [x] 凭证与白名单：AI⁴MS 网关地址/凭证经**插件配置**（管理页填写、落库加密、运行期按 `ctx.extra["plugins"]` 注入），不进 settings/.env
+- [ ] **按用户身份调用 AI⁴MS（异步任务开工前的必做前置）**：现状所有用户共用插件配置里的**服务 token**（平台级身份），预测类无用户态语义尚可，但异步任务会按用户归属（Spec_Agent 上游有 `/get_tasks_info_by_user`），共用服务账号会导致任务串号/越权可见。做法：
+  - **服务端代签**（推荐，而非透传用户 token）：宿主在调用插件前，用当前用户的 `ai4ms users.user_id` 现场签一个**短效** token（`sub=<user_id>`、exp 1h）注入 `ctx.extra`；插件 token 取「动态 token 优先，配置里的服务 token 兜底」（用户没有 AI⁴MS 账号时回落平台身份）
+  - 不动 Synlora 的用户主键（`sub` 现为 Mongo `_id`，被 workspaces/会话/项目/`user_capabilities` 依赖，改动等于数据迁移），也不改 Spec_Agent
+  - **前置条件**：① `AUTH_SECRET` 一致 —— **生产环境已满足**（实测：用生产 .env 的 secret 签 token 打生产 Spec_Agent 返回 422 鉴权通过）；本地/dev 两边 secret 不同，故 dev 环境继续走服务 token；② 登录时把 `ai4ms users.user_id` 记入会话/用户资料（mongodb 模式可取；sqlite 开发模式无此字段 → 自动回落服务 token）
+  - 服务 token 的签发与轮换：`docker/spec-agent/mint_token.py`（用 Spec_Agent 自己的 secret 为某 active 账号签长期 token；缺 token 表现为工具返回 401）
 - [ ] SpecLabOS 设备/工作流接入（排 Spec_Agent 后；工具声明 `Permission.ASK_USER`，管线已支持强制审批）
 - [ ] 验收：对话提交一个 NMR 任务，agent 自行跟踪并在完成后整合结果
 
