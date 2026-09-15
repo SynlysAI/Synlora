@@ -79,7 +79,11 @@ class PluginService:
         return self._packages[plugin_id]
 
     async def startup(self) -> None:
-        """启动装配：恢复已安装插件的工具、技能根、配置缓存与专家。"""
+        """启动装配：恢复已安装插件的工具、技能根、配置缓存与专家。
+
+        专家播种失败只告警不阻断启动（与 install() 的降级策略对齐，避免单个
+        非关键操作让 lifespan 失败、应用起不来）；下次启动或安装时重试。
+        """
         installed_ids = await self._config_store.installed_ids()
         self._installed = set(installed_ids)
         for plugin_id in installed_ids:
@@ -88,7 +92,10 @@ class PluginService:
                 logger.warning("插件配置存在但插件包缺失，已忽略: %s", plugin_id)
                 continue
             self._attach(package)
-            await self._seed_expert(package)  # 自愈：专家被误删则重启补种
+            try:
+                await self._seed_expert(package)  # 自愈：专家被误删则重启补种
+            except Exception as exc:  # 播种失败不阻断启动（下次启动或安装时重试）
+                logger.warning("插件 %s 启动期专家播种失败: %s", plugin_id, exc)
         # 只缓存有插件包的插件配置：包缺失的插件工具未注册，注入其配置无意义且可能外泄凭证。
         self._configs = {
             pid: cfg for pid, cfg in (await self._config_store.all_resolved()).items()

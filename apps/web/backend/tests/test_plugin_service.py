@@ -155,6 +155,26 @@ async def test_startup_restores_installed_plugin(store, packages, tmp_path):
     assert await AssistantRepo(store).get("asst-plugin-demo") is not None
 
 
+async def test_startup_survives_expert_seeding_failure(store, packages, tmp_path, monkeypatch):
+    """启动期专家播种失败不阻断 startup：工具/技能/配置照常恢复。"""
+    service, _, _ = _service(store, packages, tmp_path)
+    await service.startup()
+    await service.install("demo", {"base_url": "http://x"})
+
+    service2, registry2, skill_service2 = _service(store, packages, tmp_path)
+
+    async def _boom(package):
+        raise RuntimeError("启动期播种炸了")
+
+    monkeypatch.setattr(service2, "_seed_expert", _boom)
+    await service2.startup()  # 不得抛异常
+
+    assert "demo.hello" in registry2.names
+    assert [s["name"] for s in skill_service2.list_skills()] == ["demo-skill"]
+    assert service2.context_extra()["demo"]["base_url"] == "http://x"
+    assert service2.state("demo")["installed"] is True
+
+
 async def test_startup_ignores_config_without_package(store, packages, tmp_path):
     """配置存在但插件包缺失：告警跳过，不抛异常。"""
     service, _, _ = _service(store, packages, tmp_path)
