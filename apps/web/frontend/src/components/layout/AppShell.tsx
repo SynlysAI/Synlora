@@ -258,7 +258,10 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
           </IconButton>
         )}
         <BrandMark />
-        <BrandWordmark height={32} />
+        <BrandWordmark
+          height={32}
+          className="text-[var(--sa-alias-label-primary)]"
+        />
       </div>
       {/* 中部：新会话/助手/会话列表 */}
       <div className="min-h-0 flex-1">

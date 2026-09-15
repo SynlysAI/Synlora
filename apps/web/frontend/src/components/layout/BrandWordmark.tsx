@@ -1,14 +1,11 @@
 /**
  * 品牌字标「synlora」，照抄 DSH `ui-primitives/BrandWordmark.tsx` 的形态：
- * 一个内联 SVG（非图片、非字体），由 `height` 决定大小、宽度按 viewBox 比例自适应。
+ * 一个内联 SVG（非图片、非字体），`stroke="currentColor"` 跟随明暗主题，
+ * 由 `height` 决定大小、宽度按 viewBox 比例自适应。
  *
  * 与 DSH 的差别：DSH 是实心轮廓（filled outline，笔画有粗细变化），这里是
  * **等线几何**（monoline，统一描边宽度 + 圆头圆角），用圆弧与直线拼出字母，
  * 没有手绘轮廓那种光学修正，所以风格更"几何/冷淡"一些。
- *
- * 描边为**品牌渐变**（--sa-specific-brand-wordmark-from/to，明暗各一档，
- * 与图标 S 缎带同源配色）——此前跟随主题前景色的墨色字标与彩色图标
- * "无彩色 vs 高饱和渐变"割裂，品牌色从图标延伸到字标。
  *
  * 度量（viewBox 0 0 65 28）：基线 y=20，大写 S 顶 y=6，
  * x-height 顶 y=12，升部顶 y=5（l），降部底 y=23（y）；描边 2.8。
@@ -17,8 +14,6 @@
  * 字距：字母间隙统一约 1.0-1.4（描边 2.8 下不挤）；n 的宽度约为 o 的
  * 77%（几何无衬线的正常比例，最初 4.2 vs o 7.8 过窄已修正）。
  */
-import { useId } from 'react'
-
 const WORDMARK_STROKE_WIDTH = 2.8
 
 /** 字标各字母的路径（S y n l o r a）。 */
@@ -52,17 +47,15 @@ interface BrandWordmarkProps {
   className?: string
 }
 
-/** 品牌字标（几何等线 SVG，品牌渐变描边）。 */
+/** 品牌字标（几何等线 SVG）。 */
 export default function BrandWordmark({ height = 24, className }: BrandWordmarkProps) {
-  // 渐变 id 按实例唯一：字标在侧栏与消息流头部同时在场，重复 id 会互相串引用
-  const gradId = `synlora-wordmark-grad-${useId().replace(/[^a-zA-Z0-9-]/g, '')}`
   return (
     <svg
       width={(height * 65) / 28}
       height={height}
       viewBox="0 0 65 28"
       fill="none"
-      stroke={`url(#${gradId})`}
+      stroke="currentColor"
       strokeWidth={WORDMARK_STROKE_WIDTH}
       strokeLinecap="round"
       strokeLinejoin="round"
@@ -70,12 +63,6 @@ export default function BrandWordmark({ height = 24, className }: BrandWordmarkP
       role="img"
       aria-label="Synlora"
     >
-      <defs>
-        <linearGradient id={gradId} x1="0" y1="0" x2="65" y2="0" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="var(--sa-specific-brand-wordmark-from)" />
-          <stop offset="1" stopColor="var(--sa-specific-brand-wordmark-to)" />
-        </linearGradient>
-      </defs>
       {GLYPHS.map((d) => (
         <path key={d} d={d} />
       ))}
