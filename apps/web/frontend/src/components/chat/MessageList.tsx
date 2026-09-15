@@ -9,10 +9,12 @@
  * - 流式进行中：过程直接实时展示（各组件自带折叠与扫光）
  * - **只有本轮的最终回答**在 chip 之后文档流展示，并带尾部时间/复制/用量；
  *   间距：组内紧（gap-1）、turn 之间松（mt-6）
+ * - 交互问答卡：**待作答**的那张由 InteractionSlot 吸到输入框上方（过程区过滤
+ *   掉不重复渲染），**作答后**仍与其他过程条目一样收进「任务用时」chip
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatItem } from '@/stores/chat'
-import { useChatStore } from '@/stores/chat'
+import { pickPendingAsk, useChatStore } from '@/stores/chat'
 import AskUserCard from './AskUserCard'
 import AssistantMessage, { formatElapsed } from './AssistantMessage'
 import FileSendCard from './FileSendCard'
@@ -190,16 +192,22 @@ interface TurnBlockProps {
   assistantName: string
   /** 未选专家（头部渲染平台字标而非专家名）。 */
   platformDefault: boolean
+  /** 正吸附在输入框上方等待作答的 ask_user callId（此处不重复渲染）。 */
+  pendingAskId: string | null
 }
 
-/** 单个 turn 渲染：头部 → [chip 折叠的 process 区 | 流式 process 区] → 最终回答。 */
-function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockProps) {
+/** 单个 turn 渲染：头部 → [chip 折叠的 process 区 | 流式 process 区] → 最终回答 → 产物卡。 */
+function TurnBlock({ turn, active, assistantName, platformDefault, pendingAskId }: TurnBlockProps) {
   const [workOpen, setWorkOpen] = useState(false)
   const answer = turn.answer
   const elapsedMs = answer?.elapsedMs
   const failed = turn.process.some((w) => w.kind === 'tool' && w.result && !w.result.ok)
   const done = !active && elapsedMs != null
   const hasHeader = turn.user != null
+  // 待作答的交互卡已被 InteractionSlot 吸到输入框上方，过程区过滤掉避免重复渲染
+  const process = pendingAskId
+    ? turn.process.filter((w) => !(w.kind === 'ask_user' && w.callId === pendingAskId))
+    : turn.process
 
   return (
     <section className="mt-6 first:mt-0">
@@ -208,8 +216,8 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
         {hasHeader && (
           <TurnHeader name={assistantName} platformDefault={platformDefault} active={active} />
         )}
-        {/* 过程区（思考/工具/中间解说）：完成后收进 chip，流式中直接展示 */}
-        {turn.process.length > 0 && (
+        {/* 过程区（思考/工具/中间解说/问答回路卡）：完成后收进 chip，流式中直接展示 */}
+        {process.length > 0 && (
           <>
             {done ? (
               <>
@@ -221,7 +229,7 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
                 />
                 {workOpen && (
                   <div className="flex flex-col gap-1 pl-1">
-                    {turn.process.map((w, i) => (
+                    {process.map((w, i) => (
                       <WorkItem key={i} item={w} />
                     ))}
                   </div>
@@ -229,7 +237,7 @@ function TurnBlock({ turn, active, assistantName, platformDefault }: TurnBlockPr
               </>
             ) : (
               <div className="flex flex-col gap-1 pl-1">
-                {turn.process.map((w, i) => (
+                {process.map((w, i) => (
                   <WorkItem key={i} item={w} />
                 ))}
               </div>
@@ -298,6 +306,7 @@ export default function MessageList({ assistantName, platformDefault }: MessageL
   }
 
   const turns = useMemo(() => groupTurns(messages), [messages])
+  const pendingAsk = pickPendingAsk(messages, streaming)
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -310,6 +319,7 @@ export default function MessageList({ assistantName, platformDefault }: MessageL
               active={streaming && i === turns.length - 1}
               assistantName={assistantName}
               platformDefault={platformDefault}
+              pendingAskId={pendingAsk?.callId ?? null}
             />
           ))}
           {/* 流式区（头部已由最后一个 TurnBlock 渲染，此处只接内容） */}

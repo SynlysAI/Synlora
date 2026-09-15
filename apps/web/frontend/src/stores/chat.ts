@@ -61,6 +61,30 @@ export type ChatItem =
       note?: string
     }
 
+/**
+ * 摘出「待作答」的交互卡（问答 / 管线审批），供吸附槽渲染。
+ *
+ * 问答严格串行（上一张作答后才会发下一张），故只可能是最后一条 ask_user；
+ * 未在运行（回放中断轮次 / 已结束）时返回 null——这类卡片没有可回传的 run，
+ * 留在消息流里按只读态展示。
+ *
+ * @param items 投影后的聊天条目。
+ * @param streaming 是否正在接收一轮回复。
+ * @returns 待作答的 ask_user 条目（无则 null）。
+ */
+export function pickPendingAsk(
+  items: ChatItem[],
+  streaming: boolean,
+): Extract<ChatItem, { kind: 'ask_user' }> | null {
+  if (!streaming) return null
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]
+    if (it.kind !== 'ask_user') continue
+    return it.answer == null ? it : null
+  }
+  return null
+}
+
 /** reducer 工作状态：条目列表 + 流式正文/思考累积 + 本轮起始时间。 */
 export interface ChatProjection {
   items: ChatItem[]

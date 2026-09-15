@@ -8,6 +8,7 @@
 import { isValidElement, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { copyText } from '@/utils/clipboard'
 
 /** 递归提取 React 子树的纯文本（代码块内容还原）。 */
 function nodeText(node: ReactNode): string {
@@ -32,13 +33,9 @@ function extractLang(children: ReactNode): string {
 function CodeHeader({ lang, text }: { lang: string; text: string }) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1600)
-    } catch {
-      /* 剪贴板不可用（非安全上下文）时静默 */
-    }
+    if (!(await copyText(text))) return
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1600)
   }
   return (
     <div className="flex items-center justify-between bg-[var(--sa-alias-markdown-code-block-banner)] pl-3 pr-1.5 py-1">
@@ -172,13 +169,9 @@ export default function AssistantMessage({
 }: AssistantMessageProps) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(content)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1600)
-    } catch {
-      /* 剪贴板不可用时静默 */
-    }
+    if (!(await copyText(content))) return
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1600)
   }
 
   return (

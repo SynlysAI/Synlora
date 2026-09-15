@@ -71,6 +71,16 @@ interface AttachmentDraft {
   fileId: string
 }
 
+/**
+ * 附件草稿键的自增序号。
+ *
+ * 不用 `crypto.randomUUID()`：该 API 只在安全上下文（HTTPS / localhost）存在，
+ * 外部用户经 `http://<局域网 IP>:8005` 访问时它是 undefined，抛错会被
+ * `void handleFiles(...)` 吞成未处理的 promise rejection——表现为「选完文件
+ * 没反应，也没有任何提示」。草稿键只需在本次会话内唯一，自增序号足够。
+ */
+let attachSeq = 0
+
 /** 文件大小格式化（与 FileSendCard 同口径）。 */
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -131,7 +141,7 @@ export default function Composer({ empty }: ComposerProps) {
     }
     // 先挂「上传中」占位 chips，完成/失败后逐项更新
     const drafts = list.map((f) => ({
-      key: `${f.name}-${f.size}-${crypto.randomUUID()}`,
+      key: `${f.name}-${f.size}-${++attachSeq}`,
       status: 'uploading' as const,
       filename: f.name,
       size: f.size,

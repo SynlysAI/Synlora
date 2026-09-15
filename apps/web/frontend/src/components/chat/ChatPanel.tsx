@@ -11,6 +11,7 @@ import { useChatStore } from '@/stores/chat'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import Composer from './Composer'
+import InteractionSlot from './InteractionSlot'
 import MessageList from './MessageList'
 
 /** 聊天面板组件（AppShell 中间列）。 */
@@ -67,6 +68,8 @@ export default function ChatPanel() {
   return (
     <div className="flex h-full flex-col">
       <MessageList assistantName={assistantName} platformDefault={platformDefault} />
+      {/* 交互吸附槽：待作答的 ask_user 卡浮在输入框正上方，不占消息流 */}
+      <InteractionSlot />
       <Composer empty={empty} />
     </div>
   )

@@ -396,6 +396,16 @@ body {
   100% { background-position: -120% 0; }
 }
 
+/* 交互吸附槽浮出（照 Jiuwen interaction-slot-rise：从输入框上方上浮出现） */
+@keyframes sa-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.sa-rise {
+  animation: sa-rise var(--sa-duration-base) var(--sa-ease-in-out) both;
+}
+
 /* 思考/工具折叠的 grid 高度过渡（Jiuwen 式平滑下拉） */
 .sa-collapse {
   display: grid;

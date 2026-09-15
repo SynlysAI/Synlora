@@ -25,7 +25,7 @@
 | 工具调用行（`ToolCallCard.tsx`） | Jiuwen `ChatPanel/ToolGroupDisplay.tsx` 的 tool-tree-item + `index.css` 1944-2037 行（单行分类图标+动作描述、hover 箭头、行内下拉详情卡） |
 | 左栏会话列表/新会话按钮、底部输入框（模型选择内嵌/蓝色圆形发送） | DSH 左栏与 Composer 实际界面（描边新会话按钮、单行会话项+右对齐时间、"展开其余 N 个会话"折叠） |
 | 回复尾部操作（复制/任务用时/token 用量） | Jiuwen 消息尾部元信息行（`N in / N out / total` 格式） |
-| 问答卡（`AskUserCard.tsx`，勾选+多题翻页） | Jiuwen `InteractionSlot/InteractionPrompt.tsx`（勾选不即发、取消/跳过/下一步、Other 自由输入、答案拼文本回传） |
+| 问答卡（`AskUserCard.tsx`，勾选+多题翻页） | Jiuwen `InteractionSlot/InteractionPrompt.tsx`（勾选不即发、取消/跳过/下一步、Other 自由输入、答案拼文本回传）；**位置**另照 `InteractionSlot/index.tsx`：待作答由 `InteractionSlot.tsx` 吸附在输入框正上方（不占消息流），作答后仍留过程区随「任务用时」chip 折叠 |
 | 审批卡（ASK_USER 强制审批，复用问答回路） | Jiuwen `permission_interrupt` rail 模式（执行前打断 + 审批 payload 人工确认） |
 | 文件交付卡（`FileSendCard.tsx`，图片内联预览） | Jiuwen `ChatPanel/MessageItem.tsx` 的 FileDownloadList isImage 分支（卡内 img、鉴权 blob→objectURL） |
 | harness 工具管线/事件会话/loop | DSH `core/tools`（四段管线）、`core/session`（事件→消息投影）、pi `packages/agent/src/agent.ts`（steering/钩子） |

@@ -7,7 +7,9 @@
  *   多选题与纯输入题常驻自由输入行；
  * - 答案回传为拼接文本（多题「n. 题干：答案」逐行），经 answer API 回流工具；
  * - 已回答（tool/result 回填 answer）后整卡只读；回放（非流式）同样只读；
- * - 审批模式（approval，管线 Permission.ASK_USER）不走勾选流程：允许/拒绝两按钮。
+ * - 审批模式（approval，管线 Permission.ASK_USER）不走勾选流程：允许/拒绝两按钮；
+ * - 位置（照 jiuwen InteractionSlot）：**待作答**时由吸附槽浮在输入框上方（不占
+ *   消息流），**作答后**仍作为过程条目留在消息流、随「任务用时」chip 折叠。
  */
 import { useState } from 'react'
 import { useChatStore } from '@/stores/chat'
@@ -43,10 +45,19 @@ interface AskUserCardProps {
   approval?: { tool: string; argsPreview?: string }
   /** 已回答（live 由 tool/result 回填；回放同样来自事件投影）。 */
   answer?: string
+  /** 浮层形态（吸附槽内）：加投影与消息流内联卡区分。 */
+  floating?: boolean
 }
 
-/** ask_user 问题卡组件（对话流内联）。 */
-export default function AskUserCard({ callId, query, options, questions, approval, answer }: AskUserCardProps) {
+/**
+ * ask_user 问题卡组件。
+ *
+ * 两种形态共用同一份内容：待作答时由吸附槽以浮层形态渲染（`floating`，输入框
+ * 正上方），作答后的回显由消息流常驻渲染。
+ *
+ * @param props 见 AskUserCardProps。
+ */
+export default function AskUserCard({ callId, query, options, questions, approval, answer, floating }: AskUserCardProps) {
   const streaming = useChatStore((s) => s.streaming)
   const answerAsk = useChatStore((s) => s.answerAsk)
   const qs: Q[] = questions?.length ? questions : [{ question: query, options }]
@@ -114,6 +125,11 @@ export default function AskUserCard({ callId, query, options, questions, approva
     void submit(lines.join('\n'))
   }
 
+  /** 卡片根样式（两种模式共用；浮层形态加投影，照 jiuwen `.ix-prompt` 浮卡）。 */
+  const rootClass =
+    'my-1 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3.5 py-3' +
+    (floating ? ' shadow-md' : '')
+
   // ---- 审批模式：不走勾选流程 ----
   const approvalView = approval && (
     <>
@@ -150,7 +166,7 @@ export default function AskUserCard({ callId, query, options, questions, approva
   )
   if (approval) {
     return (
-      <div className="my-1 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3.5 py-3" data-call-id={callId}>
+      <div className={rootClass} data-call-id={callId}>
         <div className="flex items-start gap-2 pb-2">
           <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[var(--sa-alias-label-tertiary)]" aria-hidden="true">
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -279,7 +295,7 @@ export default function AskUserCard({ callId, query, options, questions, approva
   )
 
   return (
-    <div className="my-1 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3.5 py-3" data-call-id={callId}>
+    <div className={rootClass} data-call-id={callId}>
       {/* 头部行：图标 + 标题（多题优先 header）+ 翻页器 */}
       <div className="flex items-center gap-2 pb-2">
         <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[var(--sa-alias-label-tertiary)]" aria-hidden="true">

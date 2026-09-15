@@ -10,6 +10,7 @@
 import { create } from 'zustand'
 import type { AuthUser, LoginResponse, MeResponse } from '@/types'
 import { api, getToken, setToken, UNAUTHORIZED_EVENT } from '@/api/client'
+import { useRouterStore } from '@/routing/router'
 import { useSessionsStore } from './sessions'
 import { useProjectsStore } from './projects'
 import { useChatStore } from './chat'
@@ -119,8 +120,24 @@ export const useAuthStore = create<AuthState>((set) => ({
     setToken(null)
     set({ token: null, user: null })
     resetWorkspaceStores()
+    resetAccountRoute()
   },
 }))
+
+/**
+ * 登出时把「与账号绑定」的 URL 归位到新对话。
+ *
+ * 会话 id 属账号私有数据：停留在 `/chat/<id>` 登出后换号登录，该 id 对新账号
+ * 不存在，工作台会加载失败报「对话不存在」；`/admin/<tab>` 则受角色门禁，换
+ * 非管理员登录会进到无权限页面。故用 replaceState 抹掉这两类旧路径。
+ * `/capabilities` 任意登录用户可访问，保持原路径。
+ */
+function resetAccountRoute() {
+  const router = useRouterStore.getState()
+  if (router.route.kind === 'chat-session' || router.route.kind === 'admin') {
+    router.navigate({ kind: 'chat-new' }, { replace: true })
+  }
+}
 
 /** 清空与会话相关的 store（切换账号时防止上一账号的会话/项目被新账号引用）。 */
 function resetWorkspaceStores() {
