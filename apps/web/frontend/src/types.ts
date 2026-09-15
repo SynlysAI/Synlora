@@ -84,6 +84,33 @@ export interface Skill {
   builtin: boolean
 }
 
+/** 插件配置字段 schema（对应后端 app/plugins/loader.py 的 config_schema）。 */
+export interface PluginConfigField {
+  key: string
+  label: string
+  type: 'text' | 'password'
+  required?: boolean
+  secret?: boolean
+  placeholder?: string
+  description?: string
+}
+
+/** 插件状态（对应后端 app/plugins/api.py 的 GET /api/v1/plugins）。 */
+export interface PluginInfo {
+  id: string
+  name: string
+  version: string
+  description: string
+  config_schema: PluginConfigField[]
+  installed: boolean
+  configured: boolean
+  missing: string[]
+  /** 非敏感字段的当前值（敏感字段不回传） */
+  config: Record<string, string>
+  /** 敏感字段是否已配置（true 时输入框留空表示保持不变） */
+  secrets_set: Record<string, boolean>
+}
+
 /** 会话元数据文档。 */
 export interface Session {
   _id: string

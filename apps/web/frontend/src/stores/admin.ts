@@ -6,7 +6,7 @@
  * 助手变更后同时刷新工作台的 assistants store，返回工作台即时可见。
  */
 import { create } from 'zustand'
-import type { Assistant, ModelProvider, Skill } from '@/types'
+import type { Assistant, ModelProvider, PluginInfo, Skill } from '@/types'
 import { api } from '@/api/client'
 import { useAssistantsStore } from './assistants'
 
@@ -25,12 +25,18 @@ interface AdminState {
   skills: Skill[]
   /** skills 是否完成首次成功加载。 */
   skillsLoaded: boolean
+  /** 插件列表（含配置 schema 与安装状态）。 */
+  plugins: PluginInfo[]
+  /** plugins 是否完成首次成功加载。 */
+  pluginsLoaded: boolean
   /** 拉取全部模型服务（含停用项）。 */
   loadProviders: () => Promise<void>
   /** 拉取助手列表与 enabled 模型，并同步工作台助手 store。 */
   loadAssistants: () => Promise<void>
   /** 拉取全局技能列表。 */
   loadSkills: () => Promise<void>
+  /** 拉取插件列表（含配置 schema 与安装状态）。 */
+  loadPlugins: () => Promise<void>
 }
 
 export const useAdminStore = create<AdminState>((set) => ({
@@ -41,6 +47,8 @@ export const useAdminStore = create<AdminState>((set) => ({
   assistantsLoaded: false,
   skills: [],
   skillsLoaded: false,
+  plugins: [],
+  pluginsLoaded: false,
 
   loadProviders: async () => {
     const providers = await api<ModelProvider[]>('/api/v1/models?all=true')
@@ -60,5 +68,10 @@ export const useAdminStore = create<AdminState>((set) => ({
   loadSkills: async () => {
     const skills = await api<Skill[]>('/api/v1/skills')
     set({ skills, skillsLoaded: true })
+  },
+
+  loadPlugins: async () => {
+    const plugins = await api<PluginInfo[]>('/api/v1/plugins')
+    set({ plugins, pluginsLoaded: true })
   },
 }))

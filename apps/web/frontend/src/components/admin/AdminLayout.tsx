@@ -1,7 +1,7 @@
 /**
  * 管理页布局：顶栏（返回工作台 + 页签切换 + 主题切换 + 用户名）+ 内容区。
  *
- * 路径路由 /admin/models | /admin/assistants | /admin/skills
+ * 路径路由 /admin/models | /admin/assistants | /admin/skills | /admin/plugins
  * 由 App.tsx 解析后传入 tab；
  * 非 admin 渲染无权限页（菜单入口已隐藏，此处为直链访问兜底）。
  */
@@ -17,6 +17,7 @@ const TABS: Array<{ key: AdminTab; label: string }> = [
   { key: 'models', label: '模型服务' },
   { key: 'assistants', label: '助手管理' },
   { key: 'skills', label: '技能管理' },
+  { key: 'plugins', label: '插件' },
 ]
 
 /** 无权限页：仅管理员可访问的直链兜底。 */
