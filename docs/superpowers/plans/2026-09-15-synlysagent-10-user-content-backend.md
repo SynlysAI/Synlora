@@ -945,7 +945,9 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
                 plugin_service.ensure_attached(item_id)
     elif body.installed is False:
         await service.installs.uninstall(user_id, kind, item_id)
-    if body.enabled is not None:
+    # 卸载请求里的 enabled 一并视为无效：先卸载就没有记录可改，否则
+    # {"installed": false, "enabled": false} 这种自洽请求会被误判成 422
+    if body.enabled is not None and body.installed is not False:
         if not await service.installs.set_enabled(user_id, kind, item_id, body.enabled):
             raise HTTPException(422, f"未安装，无法设置启用态: {kind}:{item_id}")
     return {
@@ -2086,7 +2088,8 @@ Expected: PASS。若有失败，先修到全绿再继续（不跳过、不 xfail
 **顺带订正路径口径过时的注释与文档**（T1–T4 迁移后遗留，逐条 grep 确认后改）：
 `app/api/skills_api.py` 里「写 `{data_root}/skills/<name>/SKILL.md`」→ `public/skills/...`；
 `app/catalog/items.py` 的「数据目录根 `{data_dir}/catalog/`」→ `{data_dir}/public/catalog/`；
-`apps/web/backend/README.md` 与仓库根 `README.md` 里 `{data_dir}/skills`、`workspaces/` 等旧口径；
+`apps/web/backend/README.md` 与仓库根 `README.md` 里 `{data_dir}/skills`、`workspaces/` 等旧口径，
+以及 README 中 `user_capabilities` 集合的 schema 行（补 `enabled` 字段）；
 `CLAUDE.md` 中「内置内容统一在宿主 `catalog/`…」一节按 Task 15 Step 2 补用户分层与安装模型说明。
 
 把"内置内容统一在宿主 catalog/ …"一节中的路径描述补上用户层：
