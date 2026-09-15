@@ -1,13 +1,15 @@
 /**
  * 用户侧「能力中心」整页（/capabilities，任意登录用户可见）。
  *
- * 平台内置能力（专家 / 技能 / 插件）的市场视图：列表来自 `GET /api/v1/market/{kind}`
+ * 顶层两栏页签（照 jiuwen SkillPanel 的 activeTab）：「市场」= 平台内置能力
+ * （专家 / 技能 / 插件）的可安装视图，列表来自 `GET /api/v1/market/{kind}`
  * （只返回当前用户可见的条目，即不含 hidden），按三类分组展示；每行按状态给动作——
- * 默认启用（所有人可用）只显示徽标、已安装显示「卸载」、未安装显示「安装」。
+ * 未安装显示「安装」、已安装显示启停徽标 +「启用/停用」+「卸载」。
+ * 「我的」= 已拥有的能力（自建 + 已安装），见 MinePanel。
  *
  * 结构与交互照 PluginsAdmin（行卡片列表 + 模态表单 + toast + 成功后刷新）：
  * 插件行带 config_schema 时先开表单弹窗填个人配置，再 POST `{config}` 安装；
- * 无 schema 的条目直接 POST `{}`。
+ * 无 schema 的条目直接 PUT 安装。
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { PageTopBar, ToastHost } from '@/components/layout'
@@ -109,6 +111,9 @@ export default function CapabilityCenter() {
   const loadMarket = useCatalogStore((s) => s.loadMarket)
   const install = useCatalogStore((s) => s.install)
   const uninstall = useCatalogStore((s) => s.uninstall)
+  const setEnabled = useCatalogStore((s) => s.setEnabled)
+  /** 顶层视角：市场（可安装的源）/ 我的（已拥有）。 */
+  const [tab, setTab] = useState<'market' | 'mine'>('market')
   /** 需要先填配置再安装的插件（null 关闭）。 */
   const [configuring, setConfiguring] = useState<CatalogItem | null>(null)
 
@@ -141,6 +146,16 @@ export default function CapabilityCenter() {
     }
   }
 
+  /** 启用/停用：改 user_capabilities.enabled，成功后 store 重拉。 */
+  const handleToggle = async (item: CatalogItem) => {
+    try {
+      await setEnabled(item.kind, item.id, !item.enabled)
+      toast('success', item.enabled ? `已停用 ${item.name}` : `已启用 ${item.name}`)
+    } catch (err) {
+      toast('error', errorText(err))
+    }
+  }
+
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
       <PageTopBar title="能力中心" />
@@ -156,8 +171,26 @@ export default function CapabilityCenter() {
               </p>
             </div>
 
-            {/* 三个分组：专家 / 技能 / 插件 */}
-            {GROUPS.map((group) => {
+            {/* 顶层两栏：市场 / 我的（照 jiuwen SkillPanel 的 activeTab） */}
+            <div className="flex items-center gap-1">
+              {([['market', '市场'], ['mine', '我的']] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setTab(key)}
+                  className={
+                    tab === key
+                      ? 'rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-[5px] text-[13px] font-medium text-[var(--sa-alias-label-primary)]'
+                      : 'rounded-[var(--sa-radius-md)] border border-transparent px-3 py-[5px] text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]'
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* 市场：三个分组（专家 / 技能 / 插件） */}
+            {tab === 'market' && GROUPS.map((group) => {
               const rows = byKind[group.kind]
               return (
                 <section key={group.kind} className="flex flex-col gap-2">
@@ -174,7 +207,6 @@ export default function CapabilityCenter() {
                           <div className="flex items-center gap-2">
                             <span className="truncate font-mono text-[14px] font-medium">{item.name}</span>
                             <GrayBadge>内置</GrayBadge>
-                            {item.installed && !item.default_enabled && <GrayBadge>已安装</GrayBadge>}
                           </div>
                           <div
                             className="truncate text-[13px] text-[var(--sa-alias-label-secondary)]"
@@ -184,16 +216,24 @@ export default function CapabilityCenter() {
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2.5">
-                          {item.default_enabled ? (
-                            <GrayBadge>默认可用</GrayBadge>
-                          ) : item.installed ? (
-                            <button
-                              type="button"
-                              onClick={() => void handleUninstall(item)}
-                              className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
-                            >
-                              卸载
-                            </button>
+                          {item.installed ? (
+                            <>
+                              {item.enabled ? <GrayBadge>已启用</GrayBadge> : <GrayBadge>已停用</GrayBadge>}
+                              <button
+                                type="button"
+                                onClick={() => void handleToggle(item)}
+                                className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+                              >
+                                {item.enabled ? '停用' : '启用'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleUninstall(item)}
+                                className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+                              >
+                                卸载
+                              </button>
+                            </>
                           ) : (
                             <button
                               type="button"
