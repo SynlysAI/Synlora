@@ -22,6 +22,7 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "local_users": ["username"],
     "plugin_configs": [],  # 插件配置：仅按 _id 读写与全量列举，无需提取索引列
     "catalog_policy": [],
+    "user_capabilities": ["user_id"],  # 安装记录：按 user_id 过滤列举
 }
 
 
