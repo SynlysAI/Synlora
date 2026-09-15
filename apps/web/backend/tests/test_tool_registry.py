@@ -4,11 +4,12 @@ from __future__ import annotations
 
 def test_shared_registry_singleton():
     """两侧取到同一实例，且含内置工具。"""
-    from app.api import assistants_api
+    # 校验侧挂在校验函数所在的 deps 上（assistants_api / me_api 都复用它）
+    from app.api import deps
     from app.services import agent_service
     from app.services.tool_registry import PIPELINE, REGISTRY
 
-    assert assistants_api._REGISTRY is REGISTRY
+    assert deps._REGISTRY is REGISTRY
     assert agent_service._REGISTRY is REGISTRY
     assert agent_service._PIPELINE is PIPELINE
     assert PIPELINE._registry is REGISTRY

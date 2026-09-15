@@ -4,24 +4,15 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
-from app.api.deps import Repos, get_current_user, get_repos, require_admin
-from app.services.tool_registry import REGISTRY as _REGISTRY
+from app.api.deps import (
+    Repos,
+    get_current_user,
+    get_repos,
+    require_admin,
+    validate_tool_whitelist,
+)
 
 router = APIRouter(prefix="/api/v1/assistants", tags=["assistants"])
-
-
-def _validate_tool_whitelist(whitelist: list[str]) -> None:
-    """校验工具白名单是内置工具名集合的子集。
-
-    Args:
-        whitelist: 请求提供的工具名列表。
-
-    Raises:
-        HTTPException: 含未注册工具名（422，detail 列出非法项）。
-    """
-    invalid = sorted(set(whitelist) - set(_REGISTRY.names))
-    if invalid:
-        raise HTTPException(422, f"未注册的工具名: {', '.join(invalid)}")
 
 
 async def _validate_provider(provider_id: str, repos: Repos) -> None:
@@ -143,7 +134,7 @@ async def create_assistant(body: AssistantCreateBody, user=Depends(require_admin
     Raises:
         HTTPException: 工具白名单/模型服务引用非法（422）。
     """
-    _validate_tool_whitelist(body.tool_whitelist)
+    validate_tool_whitelist(body.tool_whitelist)
     if body.model_provider_id:
         await _validate_provider(body.model_provider_id, repos)
     return await repos.assistant.create({
@@ -183,7 +174,7 @@ async def update_assistant(assistant_id: str, body: AssistantUpdateBody,
         if not fields["system_prompt"]:
             raise HTTPException(422, "system_prompt 不能为空")
     if body.tool_whitelist is not None:
-        _validate_tool_whitelist(body.tool_whitelist)
+        validate_tool_whitelist(body.tool_whitelist)
         fields["tool_whitelist"] = body.tool_whitelist
     if body.model_provider_id is not None:
         await _validate_provider(body.model_provider_id, repos)

@@ -142,3 +142,15 @@ def test_update_my_expert(client):
 def test_cannot_update_others_expert(client):
     assert client.patch("/api/v1/me/experts/u-other:chem", json=EXPERT,
                         headers=HEADERS).status_code == 404
+
+
+def test_my_expert_rejects_unknown_tool(client):
+    """未注册的工具名必须 422，否则专家会静默失去全部工具。"""
+    bad = {**EXPERT, "tool_whitelist": ["python.runx"]}
+    assert client.post("/api/v1/me/experts", json=bad, headers=HEADERS).status_code == 422
+
+
+def test_my_expert_accepts_registered_tool(client):
+    """合法工具名仍可建（防"一律 422"的假修复）。"""
+    ok = {**EXPERT, "tool_whitelist": ["python.run"]}
+    assert client.post("/api/v1/me/experts", json=ok, headers=HEADERS).status_code == 201

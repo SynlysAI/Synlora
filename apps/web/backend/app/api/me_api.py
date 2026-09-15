@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, validate_tool_whitelist
 from app.catalog.api import get_capability_service
 from app.services.skill_service import SkillNameTaken, SkillNotFound
 
@@ -252,9 +252,12 @@ async def create_my_expert(request: Request, body: MyExpertBody,
         {"id": 专家 id, "name": 显示名}。
 
     Raises:
-        HTTPException: 422 名字不合法（sanitize 后为空）。
+        HTTPException: 422 名字不合法（sanitize 后为空）或工具白名单含未注册工具名。
     """
     svc = _expert_service(request)
+    # 自建专家与管理员助手共用同一份工具白名单校验：白名单是替换语义，
+    # 未注册的工具名会被运行期静默丢弃，最终专家一个工具都没有
+    validate_tool_whitelist(body.tool_whitelist)
     try:
         expert = await svc.write(
             user["sub"], dir_name=body.name, name=body.name, avatar=body.avatar,
@@ -280,13 +283,14 @@ async def update_my_expert(request: Request, expert_id: str, body: MyExpertBody,
         {"id": 专家 id, "name": 显示名}。
 
     Raises:
-        HTTPException: 404 不是自建专家；422 名字不合法。
+        HTTPException: 404 不是自建专家；422 名字不合法或工具白名单含未注册工具名。
     """
     svc = _expert_service(request)
     user_id = user["sub"]
     current = await svc.get_own(user_id, expert_id)
     if current is None:
         raise HTTPException(404, "专家不存在或不可编辑")
+    validate_tool_whitelist(body.tool_whitelist)
     try:
         expert = await svc.write(
             user_id, dir_name=current["dir_name"], name=body.name,

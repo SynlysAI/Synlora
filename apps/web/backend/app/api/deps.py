@@ -1,4 +1,4 @@
-"""FastAPI 依赖：认证 + repo 集中访问。"""
+"""FastAPI 依赖：认证 + repo 集中访问 + 跨端点共用的请求校验。"""
 import hmac
 from dataclasses import dataclass
 from typing import Any
@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Request
 
 from app.core.auth import parse_token
 from app.core.settings import Settings
+from app.services.tool_registry import REGISTRY as _REGISTRY
 
 
 @dataclass(frozen=True)
@@ -83,3 +84,21 @@ async def require_admin(user=Depends(get_current_user)) -> dict:
     if user.get("role") != "admin":
         raise HTTPException(403, "需要管理员权限")
     return user
+
+
+def validate_tool_whitelist(whitelist: list[str]) -> None:
+    """校验工具白名单是已注册工具名集合的子集。
+
+    管理员端点（assistants_api）与用户自建专家端点（me_api）共用，两处口径
+    必须一致：白名单是「替换」语义（非空即不回落全量内置工具），放行未注册
+    名字会让该助手运行期一个工具都拿不到，且界面上无任何提示。
+
+    Args:
+        whitelist: 请求提供的工具名列表。
+
+    Raises:
+        HTTPException: 含未注册工具名（422，detail 列出非法项）。
+    """
+    invalid = sorted(set(whitelist) - set(_REGISTRY.names))
+    if invalid:
+        raise HTTPException(422, f"未注册的工具名: {', '.join(invalid)}")
