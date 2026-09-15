@@ -2,10 +2,12 @@
  * 用户侧能力中心-市场 store：按类型拉取可安装条目 + 安装/启用/停用/卸载。
  *
  * 走 `/api/v1/market/{kind}`（普通用户视角，不出现 hidden 条目）；安装与开关统一
- * 走 `PUT /api/v1/me/capabilities/{kind}/{id}`。插件带个人配置时改走既有
+ * 走 `PUT /api/v1/me/capabilities/{kind}/{id}`。插件只要声明了配置 schema 就改走既有
  * `POST /api/v1/catalog/plugin/{id}/install`——它按 schema 先校验必填再落安装记录
  * （原子），避免"先装后写配置失败"留下半装状态。
- * 任何写操作成功后重拉市场列表（不做乐观更新，与 PluginsAdmin 策略开关一致）。
+ * 拉取逐类容错：某类失败不影响其余两类，三类全失败才抛错。
+ * 任何写操作成功后重拉市场列表（不做乐观更新，与 PluginsAdmin 策略开关一致），
+ * 且重拉失败不算写失败（写已落库，下次加载自愈）。
  */
 import { create } from 'zustand'
 import type { CatalogItem } from '@/types'
@@ -37,24 +39,35 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
   loaded: false,
 
   loadMarket: async () => {
-    const lists = await Promise.all(
+    // 逐类容错：某一类拉取失败不应连累其余两类（旧实现任一失败整批失败，
+    // 页面三组全空、连空态文案都不出）。失败的类型保留上一次的数据。
+    const settled = await Promise.allSettled(
       KINDS.map((kind) => api<CatalogItem[]>(`/api/v1/market/${kind}`)),
     )
-    const byKind = { ...EMPTY }
-    KINDS.forEach((kind, index) => {
-      byKind[kind] = lists[index]
+    const byKind = { ...get().byKind }
+    let failed = 0
+    settled.forEach((res, index) => {
+      const kind = KINDS[index]
+      if (res.status === 'fulfilled') byKind[kind] = res.value
+      else failed += 1
     })
+    // 三类全部失败：抛第一个错误，让上层能提示；否则至少有一类成功即可标记已加载。
+    if (failed === KINDS.length) {
+      throw (settled[0] as PromiseRejectedResult).reason
+    }
     set({ byKind, loaded: true })
   },
 
   install: async (kind, itemId, config) => {
-    // 插件带个人配置时走既有 POST：它按 schema 先校验必填、通过后才落安装记录（原子）。
-    // 若改成"先 PUT 装、再补 POST 写配置"，POST 校验失败时会留下"已装但无配置"的
-    // 半装状态——PUT 已 200、前端无从回滚，运行期插件工具只会报"未配置"。
-    if (kind === 'plugin' && config && Object.keys(config).length > 0) {
+    // 插件只要有配置 schema 就走既有 POST：它按 schema 先校验必填、通过后才落安装记录（原子）。
+    // 不能按"config 是否非空"判断——required+secret 字段允许空提交，那样会绕过校验留下半装状态。
+    const plugin = kind === 'plugin'
+      ? get().byKind.plugin.find((p) => p.id === itemId)
+      : undefined
+    if (kind === 'plugin' && (plugin?.config_schema?.length ?? 0) > 0) {
       await api(`/api/v1/catalog/${kind}/${encodeURIComponent(itemId)}/install`, {
         method: 'POST',
-        body: { config },
+        body: { config: config ?? {} },
       })
     } else {
       await api(`/api/v1/me/capabilities/${kind}/${encodeURIComponent(itemId)}`, {
@@ -62,7 +75,8 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
         body: { installed: true },
       })
     }
-    await get().loadMarket()
+    // 写已成功；重拉失败只影响列表刷新，不应报成"安装失败"（下次加载会自愈）
+    await get().loadMarket().catch(() => undefined)
   },
 
   uninstall: async (kind, itemId) => {
@@ -70,7 +84,8 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
       method: 'PUT',
       body: { installed: false },
     })
-    await get().loadMarket()
+    // 写已成功；重拉失败只影响列表刷新，不应报成"卸载失败"（下次加载会自愈）
+    await get().loadMarket().catch(() => undefined)
   },
 
   setEnabled: async (kind, itemId, enabled) => {
@@ -78,6 +93,7 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
       method: 'PUT',
       body: { enabled },
     })
-    await get().loadMarket()
+    // 写已成功；重拉失败只影响列表刷新，不应报成"操作失败"（下次加载会自愈）
+    await get().loadMarket().catch(() => undefined)
   },
 }))
