@@ -50,10 +50,14 @@ class UserCapabilityRepo:
         doc_id = cap_id(user_id, kind, item_id)
         if await self._store.get(USER_CAPS_COLLECTION, doc_id) is not None:
             return
-        await self._store.insert(USER_CAPS_COLLECTION, {
-            "_id": doc_id, "user_id": user_id, "kind": kind, "item_id": item_id,
-            "installed_at": time.time(),
-        })
+        try:
+            await self._store.insert(USER_CAPS_COLLECTION, {
+                "_id": doc_id, "user_id": user_id, "kind": kind, "item_id": item_id,
+                "installed_at": time.time(),
+            })
+        except ValueError:
+            # 并发下已被他者插入：目标态（存在安装记录）已达成，保持幂等
+            return
 
     async def uninstall(self, user_id: str, kind: str, item_id: str) -> bool:
         """删除安装记录。
@@ -94,6 +98,12 @@ class UserCapabilityRepo:
         """
         docs = await self._store.list(USER_CAPS_COLLECTION,
                                      filters={"user_id": user_id})
-        keys = [f"{d['kind']}:{d['item_id']}" for d in docs
-                if kind is None or d.get("kind") == kind]
+        keys: list[str] = []
+        for d in docs:
+            kind_val = str(d.get("kind") or "")
+            item_val = str(d.get("item_id") or "")
+            if not kind_val or not item_val:
+                continue  # 脏文档（缺字段）：跳过，不抛异常
+            if kind is None or kind_val == kind:
+                keys.append(f"{kind_val}:{item_val}")
         return sorted(keys)
