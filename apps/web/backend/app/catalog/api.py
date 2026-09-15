@@ -6,6 +6,7 @@ public + 非默认 的条目要安装后才进入该用户的能力集（缺省 
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,6 +14,8 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_user, require_admin
 from app.catalog.items import KINDS
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
 
@@ -115,6 +118,14 @@ async def install_capability(kind: str, item_id: str, request: Request,
             raise HTTPException(503, "插件配置存储未就绪")
         await store.save_for_user(user["sub"], item_id, values, package.config_schema)
     await service.installs.install(user["sub"], kind, item_id)
+    if kind == "plugin":
+        # 安装即挂载（进程级能力可用性）：插件包的工具/技能根不依赖"管理员是否
+        # 公共安装过"，否则用户自装后仍用不了（可见性由 CapabilityService 另算）
+        plugin_service = getattr(request.app.state, "plugin_service", None)
+        if plugin_service is not None:
+            plugin_service.ensure_attached(item_id)
+        else:
+            logger.warning("插件服务未就绪，用户 %s 安装 %s 后未挂载", user["sub"], item_id)
     return {"kind": kind, "id": item_id, "installed": True}
 
 

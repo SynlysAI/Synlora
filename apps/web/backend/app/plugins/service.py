@@ -78,15 +78,23 @@ class PluginService:
             raise KeyError(f"插件不存在: {plugin_id}")
         return self._packages[plugin_id]
 
-    async def startup(self) -> None:
+    async def startup(self, extra_plugin_ids: "set[str] | None" = None) -> None:
         """启动装配：恢复已安装插件的工具、技能根、配置缓存与专家。
+
+        挂载范围 = 有公共配置的插件 ∪ extra_plugin_ids。注册（attach）是"能力可用性"
+        的一层（进程级，谁装都该挂），与按用户的可见性过滤解耦；`_configs` 仍是公共
+        配置缓存，只有用户个人安装的插件不进它（用户维度配置由 agent_service 另算）。
 
         专家播种失败只告警不阻断启动（与 install() 的降级策略对齐，避免单个
         非关键操作让 lifespan 失败、应用起不来）；下次启动或安装时重试。
+
+        Args:
+            extra_plugin_ids: 除公共安装外、还需挂载的插件 id（有用户个人安装的插件）。
         """
+        # 安装状态（对管理员而言的"已安装"）只认公共配置，不含用户个人安装
         installed_ids = await self._config_store.installed_ids()
         self._installed = set(installed_ids)
-        for plugin_id in installed_ids:
+        for plugin_id in sorted(set(installed_ids) | set(extra_plugin_ids or ())):
             package = self._packages.get(plugin_id)
             if package is None:
                 logger.warning("插件配置存在但插件包缺失，已忽略: %s", plugin_id)
@@ -101,6 +109,25 @@ class PluginService:
             pid: cfg for pid, cfg in (await self._config_store.all_resolved()).items()
             if pid in self._packages
         }
+
+    def ensure_attached(self, plugin_id: str) -> bool:
+        """确保插件已挂载（注册工具 + 挂技能根；幂等）。
+
+        安装路径的公开入口：用户个人安装插件时也要挂载——注册是"能力可用性"
+        （进程级，谁装都该挂），可见性过滤是另一层的事。
+
+        Args:
+            plugin_id: 插件 id。
+
+        Returns:
+            True 表示已挂载（插件包不存在时返回 False 并告警）。
+        """
+        package = self._packages.get(plugin_id)
+        if package is None:
+            logger.warning("插件包不存在，无法挂载: %s", plugin_id)
+            return False
+        self._attach(package)
+        return True
 
     def _attach(self, package: PluginPackage) -> None:
         """挂载插件资源：注册工具（幂等）+ 挂技能根。

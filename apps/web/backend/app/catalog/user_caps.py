@@ -86,6 +86,16 @@ class UserCapabilityRepo:
         doc = await self._store.get(USER_CAPS_COLLECTION, cap_id(user_id, kind, item_id))
         return doc is not None
 
+    async def installed_plugin_ids(self) -> set[str]:
+        """出现过用户安装记录的插件 id（启动装配用：只挂载不涉及可见性）。
+
+        Returns:
+            插件 id 集合（去重）。
+        """
+        docs = await self._store.list(USER_CAPS_COLLECTION)
+        return {str(d["item_id"]) for d in docs
+                if d.get("kind") == "plugin" and d.get("item_id")}
+
     async def list_for_user(self, user_id: str, kind: str | None = None) -> list[str]:
         """某用户已安装的条目键列表。
 

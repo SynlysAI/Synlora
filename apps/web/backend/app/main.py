@@ -77,7 +77,10 @@ async def lifespan(app: FastAPI):
         skill_service=app.state.skill_service,
         assistant_repo=app.state.assistant_repo,
     )
-    await app.state.plugin_service.startup()
+    # 挂载范围除公共安装外，还含"有用户个人安装记录"的插件：注册是能力可用性
+    # （进程级，谁装都该挂），可见性过滤由 CapabilityService 另行按用户计算
+    await app.state.plugin_service.startup(
+        extra_plugin_ids=await UserCapabilityRepo(store).installed_plugin_ids())
     # 能力目录可见性服务：须在 plugin_service.startup() 之后构造。工具映射传
     # PluginService 的方法本身（活引用）——插件可在运行期安装，快照会漏掉启动后
     # 新挂载的工具（可见性算不出 → 被误当不可见而过滤）。

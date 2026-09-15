@@ -387,6 +387,75 @@ async def test_tool_mapping_reflects_runtime_install(app, client, admin_headers)
     assert "spec.nmr.fake" not in caps.tool_names_by_plugin["spec_agent"]
 
 
+# ---------- 安装即挂载：能力可用性与可见性解耦 ----------
+
+
+async def test_user_install_registers_previously_uninstalled_plugin(
+        app, client, admin_headers, user_headers):
+    """用户自行安装"管理员从未公共安装"的插件：工具被注册、技能可读。
+
+    注册（attach）= 能力可用性（进程级，谁装都该挂）；可见性 = 按用户过滤
+    （CapabilityService），是另一层的事。插件在管理员侧为非默认（用户须自己
+    安装才可见），但历史缺口是：个人安装只写记录、不挂资源 ⇒ 该用户其实用不了。
+    """
+    plugin_service = app.state.plugin_service
+    assert "spec.nmr.forward" not in REGISTRY.names  # 起手未挂载（无公共配置）
+
+    # 管理员把插件设为 public + 非默认（真实场景：用户自己在能力中心安装）
+    await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
+                     json={"visibility": "public", "default_enabled": False},
+                     headers=admin_headers)
+
+    resp = await client.post("/api/v1/catalog/plugin/spec_agent/install",
+                             json={"config": {"base_url": "http://mine"}},
+                             headers=user_headers)
+    assert resp.status_code == 201
+
+    assert "spec.nmr.forward" in REGISTRY.names
+    assert plugin_service.ensure_attached("spec_agent") is True  # 幂等
+    caps = app.state.capability_service
+    assert "spec.nmr.forward" in await caps.visible_tool_names("u-user")
+    names = [s["name"] for s in (await client.get(
+        "/api/v1/skills", headers=user_headers)).json()]
+    assert "spec-nmr" in names
+    # 另一个用户仍不可见（插件非默认且未安装）
+    assert await caps.visible_tool_names("u-other") == set()
+
+
+async def test_startup_attaches_plugins_with_only_user_installs(store, tmp_path):
+    """重启装配：只有用户个人安装、无公共配置的插件也要挂载。"""
+    from cryptography.fernet import Fernet
+    from synlys_harness import ToolRegistry, register_builtin_tools
+
+    from app.catalog.user_caps import UserCapabilityRepo
+    from app.core.settings import Settings
+    from app.db.repos import AssistantRepo
+    from app.plugins.config_store import PluginConfigStore
+    from app.plugins.loader import plugin_roots, scan_plugins
+    from app.plugins.service import PluginService
+    from app.services.skill_service import SkillService
+
+    settings = Settings(data_dir=str(tmp_path), fernet_key=Fernet.generate_key().decode())
+    packages = scan_plugins(plugin_roots(settings))
+    registry = ToolRegistry()
+    register_builtin_tools(registry)
+    user_caps = UserCapabilityRepo(store)
+    await user_caps.install("u1", "plugin", "spec_agent")  # 仅个人安装，无公共配置
+
+    # 启动装配的取数口径：该插件必须出现在"额外挂载"集合里
+    assert await user_caps.installed_plugin_ids() == {"spec_agent"}
+
+    service = PluginService(
+        registry=registry, config_store=PluginConfigStore(store, settings.fernet_key),
+        packages=packages, skill_service=SkillService(tmp_path / "data"),
+        assistant_repo=AssistantRepo(store))
+    await service.startup(extra_plugin_ids=await user_caps.installed_plugin_ids())
+    assert "spec.nmr.forward" in registry.names
+    assert service.ensure_attached("spec_agent") is True  # 幂等：重复挂载不抛
+    # 无公共配置 ⇒ 不进公共配置缓存（用户维度配置由 agent_service 另算）
+    assert service.context_extra() == {}
+
+
 # ---------- 技能过滤：黑名单口径（公共技能始终可见） ----------
 
 
