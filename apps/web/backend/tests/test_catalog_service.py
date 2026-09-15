@@ -160,9 +160,14 @@ async def test_disabled_install_is_not_visible(caps, store):
 
 
 async def test_market_items_expose_enabled(caps, store):
-    """市场行暴露 enabled：已装但停用 → installed=True / enabled=False / visible=False。"""
+    """市场行暴露 enabled：已装启用 → True/True/True；停用后 → True/False/False。"""
     caps.installs = UserCapabilityRepo(store)
     await caps.installs.install("u1", "skill", "office-doc")
+    # 正例先断言：否则 enabled 写成常量 False 也能过（字段本身没被验真）
+    rows = await caps.market_items("u1", "skill")
+    row = next(r for r in rows if r["id"] == "office-doc")
+    assert row["installed"] is True and row["enabled"] is True and row["visible"] is True
+
     await caps.installs.set_enabled("u1", "skill", "office-doc", False)
     rows = await caps.market_items("u1", "skill")
     row = next(r for r in rows if r["id"] == "office-doc")
