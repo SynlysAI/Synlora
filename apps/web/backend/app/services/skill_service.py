@@ -162,8 +162,14 @@ class SkillService:
     def write_user_skill(self, user_id: str, *, name: str, description: str,
                          content: str, version: str = "1.0", author: str = "",
                          tags: list[str] | None = None,
-                         allowed_tools: list[str] | None = None) -> dict:
+                         allowed_tools: list[str] | None = None,
+                         overwrite: bool = False) -> dict:
         """写入某用户的自建技能（同名占用则拒绝）。
+
+        `overwrite=True` 用于更新**已有自建技能**：跳过全部同名拒绝检查。
+        调用方须自行确认该技能确实是该用户自建的（如先探测用户目录下的
+        SKILL.md），否则会绕过"不得与公共/内置同名"的建名保护——写入目标
+        始终是用户目录，故即便同名也碰不到 catalog 与公共层。
 
         Args:
             user_id: 用户 sub。
@@ -174,22 +180,24 @@ class SkillService:
             author: 作者。
             tags: 标签列表。
             allowed_tools: 允许的工具名列表。
+            overwrite: 是否为覆盖已有自建技能（True 时跳过同名检查）。
 
         Returns:
             写入后的技能字典（builtin 恒为 False）。
 
         Raises:
             ValueError: 技能名不是 kebab-case。
-            SkillNameTaken: 名字已被占用（自建 / 公共 / 内置）。
+            SkillNameTaken: 名字已被占用（自建 / 公共 / 内置）；overwrite=True 时不抛。
         """
         if not NAME_OK.match(name):
             raise ValueError(f"技能名必须是 kebab-case: {name!r}")
-        if (self.user_skills_dir(user_id) / name / "SKILL.md").is_file():
-            raise SkillNameTaken(f"你已有同名技能「{name}」")
-        origin = self.name_taken(name)
-        if origin is not None:
-            label = "公共技能" if origin == "public" else "内置技能"
-            raise SkillNameTaken(f"「{name}」与{label}同名，请换一个名字")
+        if not overwrite:
+            if (self.user_skills_dir(user_id) / name / "SKILL.md").is_file():
+                raise SkillNameTaken(f"你已有同名技能「{name}」")
+            origin = self.name_taken(name)
+            if origin is not None:
+                label = "公共技能" if origin == "public" else "内置技能"
+                raise SkillNameTaken(f"「{name}」与{label}同名，请换一个名字")
         skill = {"name": name, "description": description, "content": content,
                  "version": version, "author": author,
                  "tags": tags or [], "allowed_tools": allowed_tools or []}

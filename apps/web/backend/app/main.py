@@ -12,6 +12,7 @@ from app.api.auth_api import router as auth_router
 from app.api.files_api import project_router as project_files_router
 from app.api.files_api import router as files_router
 from app.api.knowledge_api import router as knowledge_router
+from app.api.me_api import router as me_router
 from app.api.models_api import router as models_router
 from app.api.projects_api import router as projects_router
 from app.api.sessions_api import router as sessions_router
@@ -137,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge_router)
     app.include_router(plugins_router)
     app.include_router(catalog_router)
+    app.include_router(me_router)
 
     @app.get("/api/health")
     async def health() -> dict:
