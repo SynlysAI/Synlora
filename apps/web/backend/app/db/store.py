@@ -21,6 +21,7 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "runs": ["session_id", "user_id", "status"],
     "local_users": ["username"],
     "plugin_configs": [],  # 插件配置：仅按 _id 读写与全量列举，无需提取索引列
+    "catalog_policy": [],
 }
 
 
