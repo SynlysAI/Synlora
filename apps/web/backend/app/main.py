@@ -27,9 +27,12 @@ from app.db.repos import (
     seed_assistants,
 )
 from app.db.store import create_store
+from app.plugins import PluginConfigStore, PluginService, plugin_roots, scan_plugins
+from app.plugins.api import router as plugins_router
 from app.services.agent_service import AgentService
 from app.services.project_service import ProjectService
 from app.services.skill_service import SkillService
+from app.services.tool_registry import REGISTRY
 from app.services.weknora_service import WeKnoraService
 from app.version import APP_VERSION, APP_VERSION_LABEL
 
@@ -56,10 +59,26 @@ async def lifespan(app: FastAPI):
     app.state.file_repo = FileRepo(store)
     app.state.event_repo = EventRepo(store)
     app.state.project_service = ProjectService(store, settings.data_root)
-    app.state.skill_service = SkillService(settings.data_root)
+    # 插件框架：扫描插件包 → 技能服务带上已安装插件的技能根 → 注册其工具
+    packages = scan_plugins(plugin_roots(settings))
+    plugin_config_store = PluginConfigStore(store, settings.fernet_key)
+    installed_ids = await plugin_config_store.installed_ids()
+    extra_roots = [
+        pkg.skills_root for pid in installed_ids
+        if (pkg := packages.get(pid)) is not None and pkg.skills_root is not None
+    ]
+    app.state.plugin_packages = packages
+    app.state.plugin_config_store = plugin_config_store
+    app.state.skill_service = SkillService(settings.data_root, extra_roots=extra_roots)
     app.state.skill_service.seed_builtins()  # 幂等：内置技能是列表能列出它们的前提
     app.state.weknora_service = WeKnoraService(
         settings.weknora_base_url, settings.weknora_api_key)
+    app.state.plugin_service = PluginService(
+        registry=REGISTRY, config_store=plugin_config_store, packages=packages,
+        skill_service=app.state.skill_service,
+        assistant_repo=app.state.assistant_repo,
+    )
+    await app.state.plugin_service.startup()
     app.state.agent_service = AgentService(
         store, settings, app.state.event_repo, app.state.skill_service,
         file_repo=app.state.file_repo)
@@ -82,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(skills_router)
     app.include_router(knowledge_router)
+    app.include_router(plugins_router)
 
     @app.get("/api/health")
     async def health() -> dict:
