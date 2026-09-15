@@ -7,33 +7,30 @@ from app.services import workspace
 
 def test_project_root_creates_subdirs(tmp_path: Path):
     root = workspace.project_root(tmp_path, "u1", "my-proj")
-    assert root == tmp_path / "workspaces" / "u1" / "my-proj"
+    assert root == tmp_path / "users" / "u1" / "workspaces" / "my-proj"
     for sub in ("files", "output", "tmp"):
         assert (root / sub).is_dir()
+
+
+def test_user_root_under_users_dir(tmp_path: Path):
+    assert workspace.user_root(tmp_path, "u1") == tmp_path / "users" / "u1"
+
+
+def test_project_root_under_users_workspaces(tmp_path: Path):
+    root = workspace.project_root(tmp_path, "u1", "default")
+    assert root == tmp_path / "users" / "u1" / "workspaces" / "default"
+    assert (root / "files").is_dir() and (root / "output").is_dir() and (root / "tmp").is_dir()
+
+
+def test_public_and_user_skill_roots(tmp_path: Path):
+    assert workspace.public_skills_root(tmp_path) == tmp_path / "public" / "skills"
+    assert workspace.user_skills_root(tmp_path, "u1") == tmp_path / "users" / "u1" / "skills"
 
 
 def test_sanitize_dir_name_rejects_escapes():
     assert workspace.sanitize_dir_name("../../etc") == "etc"
     assert workspace.sanitize_dir_name("a/b\\c") == "a_b_c"
     assert workspace.sanitize_dir_name("  ") == ""
-
-
-def test_legacy_migration_moves_subdirs(tmp_path: Path):
-    legacy = tmp_path / "workspaces" / "u1"
-    (legacy / "files").mkdir(parents=True)
-    (legacy / "files" / "a.txt").write_text("x", encoding="utf-8")
-    (legacy / "tmp").mkdir()
-    moved = workspace.migrate_legacy_layout(tmp_path, "u1")
-    assert moved is True
-    assert (legacy / "default" / "files" / "a.txt").read_text(encoding="utf-8") == "x"
-    assert (legacy / "default" / "tmp").is_dir()
-
-
-def test_legacy_migration_is_idempotent(tmp_path: Path):
-    legacy = tmp_path / "workspaces" / "u1"
-    (legacy / "files").mkdir(parents=True)
-    assert workspace.migrate_legacy_layout(tmp_path, "u1") is True
-    assert workspace.migrate_legacy_layout(tmp_path, "u1") is False
 
 
 def test_free_dir_name_suffixes_on_disk_collision(tmp_path: Path):
@@ -85,20 +82,3 @@ def test_remove_project_dir_trash_names_unique_with_same_timestamp(tmp_path: Pat
         (target / "a.txt").write_text("x", encoding="utf-8")
         assert workspace.remove_project_dir(target) is False
     assert len(list(tmp_path.glob("proj.trash-*"))) == 3
-
-
-def test_migrate_legacy_moves_partial_subdirs(tmp_path: Path):
-    legacy = tmp_path / "workspaces" / "u1"
-    (legacy / "output").mkdir(parents=True)          # 没有 files 目录
-    assert workspace.migrate_legacy_layout(tmp_path, "u1") is True
-    assert (legacy / "default" / "output").is_dir()
-
-
-def test_migrate_legacy_resumes_after_partial(tmp_path: Path):
-    legacy = tmp_path / "workspaces" / "u1"
-    (legacy / "files").mkdir(parents=True)
-    (legacy / "tmp").mkdir()
-    (legacy / "default" / "files").mkdir(parents=True)   # 模拟上次只搬了一半
-    assert workspace.migrate_legacy_layout(tmp_path, "u1") is True
-    assert (legacy / "default" / "tmp").is_dir()
-    assert (legacy / "files").is_dir()                    # 已存在冲突项保持原样

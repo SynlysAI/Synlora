@@ -1,7 +1,6 @@
 """用户工作区布局与配额。"""
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import time
@@ -16,41 +15,19 @@ PROJECT_SUBDIRS = ("files", "output", "tmp")
 
 
 def user_root(data_root: Path, user_id: str) -> Path:
-    """用户工作区根（只算路径，不创建任何目录）。
+    """用户个人数据根（只算路径，不创建任何目录）。
 
-    配额按用户整棵目录树计（含各项目目录），计量时不应在磁盘上留下副作用：
-    workspace_root 会在 {uid}/ 下重建 files/output/tmp，旧布局迁移后这等于把已被
-    搬走的旧目录又凭空建出来。
-
-    Args:
-        data_root: 数据根目录。
-        user_id: 用户 sub。
-
-    Returns:
-        {data_root}/workspaces/{user_id} 路径（可能不存在）。
-    """
-    return data_root / "workspaces" / user_id
-
-
-def workspace_root(data_root: Path, user_id: str) -> Path:
-    """用户工作区根（自动创建 files/output/tmp）——**旧路径兼容用，新代码勿用**。
-
-    废弃说明：新代码请用 user_root（只算路径不建目录）或项目作用域的
-    project_root(...)/ProjectService.root_for(...)。本函数会在 {uid}/ 下重建
-    files/output/tmp，而旧布局迁移已把这些目录搬进 default/，调用它等于把搬走的旧
-    目录又凭空建出来（见 user_root 的说明）。保留仅为兼容历史文档/脚本里的引用。
+    配额按用户整棵目录树计（含各项目目录与会话/技能等），计量时不应在磁盘上留下
+    副作用，故本函数只拼路径。
 
     Args:
         data_root: 数据根目录。
         user_id: 用户 sub。
 
     Returns:
-        {data_root}/workspaces/{user_id} 路径。
+        {data_root}/users/{user_id} 路径（可能不存在）。
     """
-    root = user_root(data_root, user_id)
-    for sub in PROJECT_SUBDIRS:
-        (root / sub).mkdir(parents=True, exist_ok=True)
-    return root
+    return data_root / "users" / user_id
 
 
 def usage_bytes(root: Path) -> int:
@@ -138,47 +115,42 @@ def project_root(data_root: Path, user_id: str, dir_name: str) -> Path:
         dir_name: 项目目录名（须非空且不含路径分隔符）。
 
     Returns:
-        {data_root}/workspaces/{user_id}/{dir_name} 路径。
+        {data_root}/users/{user_id}/workspaces/{dir_name} 路径。
 
     Raises:
         ValueError: dir_name 为空、为 . / .. 或含路径分隔符（防止越界写出用户目录）。
     """
     if not dir_name or dir_name in {".", ".."} or "/" in dir_name or "\\" in dir_name:
         raise ValueError(f"非法项目目录名: {dir_name!r}")
-    root = data_root / "workspaces" / user_id / dir_name
+    root = data_root / "users" / user_id / "workspaces" / dir_name
     for sub in PROJECT_SUBDIRS:
         (root / sub).mkdir(parents=True, exist_ok=True)
     return root
 
 
-def migrate_legacy_layout(data_root: Path, user_id: str) -> bool:
-    """把旧版 {uid}/files|output|tmp 逐个子目录迁进 {uid}/default/（幂等）。
+def public_skills_root(data_root: Path) -> Path:
+    """公共可写技能层根（管理员自建/导入）。
 
-    逐个子目录独立判断而非整体早退：只有部分子目录存在、或上次迁移中断时，
-    仍能把剩余目录搬过去，不会永久遗弃旧数据。
+    Args:
+        data_root: 数据根目录。
+
+    Returns:
+        {data_root}/public/skills 路径（可能不存在）。
+    """
+    return data_root / "public" / "skills"
+
+
+def user_skills_root(data_root: Path, user_id: str) -> Path:
+    """用户自建技能根。
 
     Args:
         data_root: 数据根目录。
         user_id: 用户 sub。
 
     Returns:
-        True 表示本次至少搬动了一个子目录，False 表示无可迁移项。
-
-    Raises:
-        OSError: 底层文件操作失败（可能已部分迁移，下次调用会续迁剩余部分）。
+        {data_root}/users/{user_id}/skills 路径（可能不存在）。
     """
-    user_dir = data_root / "workspaces" / user_id
-    target = user_dir / DEFAULT_PROJECT_DIR
-    moved = False
-    for sub in PROJECT_SUBDIRS:
-        src = user_dir / sub
-        dst = target / sub
-        if not src.is_dir() or dst.exists():
-            continue
-        target.mkdir(parents=True, exist_ok=True)
-        os.replace(src, dst)
-        moved = True
-    return moved
+    return data_root / "users" / user_id / "skills"
 
 
 def resolve_in_project(root: Path, rel: str) -> Path:
