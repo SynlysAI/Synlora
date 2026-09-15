@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from app.catalog.loader import (
     CatalogIndex,
@@ -194,8 +195,8 @@ def test_scan_experts_skips_malformed(tmp_path):
     assert scan_catalog([tmp_path]).experts == {}
 
 
-def test_scan_experts_duplicate_id_last_wins(tmp_path):
-    """两个根出现同名专家 id：后者覆盖前者（不抛异常）。"""
+def test_scan_experts_duplicate_id_last_wins(tmp_path, caplog):
+    """两个根出现同名专家 id：后者覆盖前者，且告警（不抛异常）。"""
     root_a = tmp_path / "a"
     root_b = tmp_path / "b"
     root_a.mkdir()
@@ -203,8 +204,10 @@ def test_scan_experts_duplicate_id_last_wins(tmp_path):
     _make_expert(root_a, "dup", manifest={**EXPERT_MANIFEST, "name": "仓库版"})
     _make_expert(root_b, "dup", manifest={**EXPERT_MANIFEST, "name": "数据目录版"})
 
-    experts = scan_catalog([root_a, root_b]).experts
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        experts = scan_catalog([root_a, root_b]).experts
     assert experts["asst-demo"].name == "数据目录版"
+    assert "专家 id 重复" in caplog.text
 
 
 def test_scan_skills_collects_skill_md(tmp_path):
@@ -278,8 +281,8 @@ def test_scan_plugins_skips_malformed(tmp_path):
     assert scan_catalog([tmp_path]).plugins == {}
 
 
-def test_scan_plugins_duplicate_id_last_wins(tmp_path):
-    """两个根出现同名 id：后者覆盖前者（不抛异常）。"""
+def test_scan_plugins_duplicate_id_last_wins(tmp_path, caplog):
+    """两个根出现同名 id：后者覆盖前者，且告警（不抛异常）。"""
     root_a = tmp_path / "a"
     root_b = tmp_path / "b"
     root_a.mkdir()
@@ -289,8 +292,25 @@ def test_scan_plugins_duplicate_id_last_wins(tmp_path):
     _make_plugin(root_b, plugin_id="dup",
                  manifest={**MANIFEST, "id": "dup", "name": "数据目录版"})
 
-    packages = scan_catalog([root_a, root_b]).plugins
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        packages = scan_catalog([root_a, root_b]).plugins
     assert packages["dup"].name == "数据目录版"
+    assert "插件 id 重复" in caplog.text
+
+
+def test_scan_skills_duplicate_name_last_wins(tmp_path, caplog):
+    """两个根出现同名技能：后者覆盖前者，且告警（不抛异常）。"""
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_a.mkdir()
+    root_b.mkdir()
+    _make_skill(root_a, "dup")
+    d_b = _make_skill(root_b, "dup")
+
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        skills = scan_catalog([root_a, root_b]).skills
+    assert skills["dup"].directory == d_b
+    assert "技能 id 重复" in caplog.text
 
 
 def test_load_plugin_tools_collects_decorated_functions(tmp_path):

@@ -152,10 +152,24 @@ def scan_catalog(roots: list[Path]) -> CatalogIndex:
     for root in roots:
         if not root.is_dir():
             continue
-        index.experts.update(_scan_experts(root))
-        index.skills.update(_scan_skills(root))
-        index.plugins.update(_scan_plugins(root))
+        _merge(index.experts, _scan_experts(root), "专家")
+        _merge(index.skills, _scan_skills(root), "技能")
+        _merge(index.plugins, _scan_plugins(root), "插件")
     return index
+
+
+def _merge(dst: dict, src: dict, label: str) -> None:
+    """把一次扫描结果并入累计结果（同名后者覆盖前者并告警）。
+
+    Args:
+        dst: 累计结果（就地更新）。
+        src: 本次扫描结果。
+        label: 类型名（告警文案用）。
+    """
+    for key, pkg in src.items():
+        if key in dst:
+            logger.warning("%s id 重复，后者覆盖前者: %s（%s）", label, key, pkg.directory)
+        dst[key] = pkg
 
 
 def _scan_experts(root: Path) -> dict[str, ExpertPackage]:
@@ -191,8 +205,6 @@ def _scan_experts(root: Path) -> dict[str, ExpertPackage]:
         if missing:
             logger.warning("专家 manifest 缺字段 %s，已跳过 %s", missing, entry.name)
             continue
-        if expert_id in out:
-            logger.warning("专家 id 重复，后者覆盖前者: %s（%s）", expert_id, entry)
         out[expert_id] = ExpertPackage(
             id=expert_id,
             name=str(data["name"]),
@@ -221,8 +233,6 @@ def _scan_skills(root: Path) -> dict[str, SkillPackage]:
     for entry in sorted(skills_dir.iterdir()):
         if not (entry / SKILL_FILE).is_file():
             continue  # 放错位置/不完整的目录：静默跳过（技能元数据在 frontmatter 里，此处不解析）
-        if entry.name in out:
-            logger.warning("技能名重复，后者覆盖前者: %s（%s）", entry.name, entry)
         out[entry.name] = SkillPackage(name=entry.name, directory=entry)
     return out
 
@@ -266,8 +276,6 @@ def _scan_plugins(root: Path) -> dict[str, PluginPackage]:
                 for f in schema):
             logger.warning("插件 manifest 的 config_schema 非法（缺 key），已跳过 %s", entry.name)
             continue
-        if plugin_id in packages:
-            logger.warning("插件 id 重复，后者覆盖前者: %s（%s）", plugin_id, entry)
         packages[plugin_id] = PluginPackage(
             id=plugin_id,
             name=str(data["name"]),
