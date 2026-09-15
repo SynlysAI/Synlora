@@ -107,3 +107,62 @@ def test_read_body_rejects_path_traversal(tmp_path):
     svc = SkillService(tmp_path)
     for bad in ("../outside", "../../outside", "a/b", "", ".", ".."):
         assert svc.read_body(bad) is None
+
+
+def test_extra_roots_are_listed_and_readable(tmp_path):
+    """插件技能根：列在技能表里（builtin=True），正文可读，且不可删除。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    plugin_skills = tmp_path / "plugin" / "skills"
+    (plugin_skills / "spec-nmr").mkdir(parents=True)
+    (plugin_skills / "spec-nmr" / "SKILL.md").write_text(
+        "---\nname: spec-nmr\ndescription: 核磁谱图解析\n---\n正文内容\n",
+        encoding="utf-8")
+
+    svc = SkillService(data_root, extra_roots=[plugin_skills])
+    skills = {s["name"]: s for s in svc.list_skills()}
+    assert skills["spec-nmr"]["builtin"] is True
+    assert svc.read_body("spec-nmr") == "正文内容"
+
+    # 插件技能不落用户技能目录，删除只作用于用户目录（返回 False 而非删掉插件技能）
+    assert svc.delete_skill("spec-nmr") is False
+    assert (plugin_skills / "spec-nmr" / "SKILL.md").exists()
+
+
+def test_extra_root_added_at_runtime(tmp_path):
+    """add_root：运行期安装插件后新技能立即可见。"""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    svc = SkillService(data_root)
+    assert [s["name"] for s in svc.list_skills()] == []
+
+    plugin_skills = tmp_path / "plugin" / "skills"
+    (plugin_skills / "spec-nmr").mkdir(parents=True)
+    (plugin_skills / "spec-nmr" / "SKILL.md").write_text(
+        "---\nname: spec-nmr\ndescription: 核磁谱图解析\n---\n正文\n", encoding="utf-8")
+    svc.add_root(plugin_skills)
+    assert [s["name"] for s in svc.list_skills()] == ["spec-nmr"]
+
+
+def test_user_skill_shadows_plugin_skill(tmp_path):
+    """同名时用户技能优先（插件技能不覆盖用户目录里的同名技能）。"""
+    data_root = tmp_path / "data"
+    user_dir = data_root / "skills" / "spec-nmr"
+    user_dir.mkdir(parents=True)
+    (user_dir / "SKILL.md").write_text(
+        "---\nname: spec-nmr\ndescription: 用户版本\n---\n用户正文\n", encoding="utf-8")
+    plugin_skills = tmp_path / "plugin" / "skills"
+    (plugin_skills / "spec-nmr").mkdir(parents=True)
+    (plugin_skills / "spec-nmr" / "SKILL.md").write_text(
+        "---\nname: spec-nmr\ndescription: 插件版本\n---\n插件正文\n", encoding="utf-8")
+
+    svc = SkillService(data_root, extra_roots=[plugin_skills])
+    assert svc.read_body("spec-nmr") == "用户正文"
+    assert len([s for s in svc.list_skills() if s["name"] == "spec-nmr"]) == 1
+
+
+def test_extra_root_missing_dir_is_fine(tmp_path):
+    """额外根目录不存在时不报错（插件包无 skills/ 目录）。"""
+    svc = SkillService(tmp_path / "data", extra_roots=[tmp_path / "nope"])
+    assert svc.list_skills() == []
+    assert svc.read_body("anything") is None

@@ -81,13 +81,15 @@ def render_skill_md(skill: dict) -> str:
 class SkillService:
     """{data_root}/skills 下的技能读写与扫描。"""
 
-    def __init__(self, data_root: Path) -> None:
-        """保存数据根。
+    def __init__(self, data_root: Path, extra_roots: list[Path] | None = None) -> None:
+        """保存数据根与额外技能根。
 
         Args:
             data_root: 应用数据根目录。
+            extra_roots: 额外技能根（插件包的 skills/ 目录；同名时用户目录优先）。
         """
         self._data_root = data_root
+        self._extra_roots: list[Path] = list(extra_roots or [])
 
     @property
     def skills_dir(self) -> Path:
@@ -100,17 +102,29 @@ class SkillService:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def list_skills(self) -> list[dict]:
-        """扫描全部技能。
+    def add_root(self, root: Path) -> None:
+        """追加一个额外技能根（插件安装时调用；重复追加幂等）。
 
-        按目录名排序；单个技能解析失败（缺 frontmatter / 名不合法 / YAML 语法
-        错误）只跳过该目录，不影响其余技能。
+        Args:
+            root: 技能根目录（其下每个子目录是一个技能）。
+        """
+        if root not in self._extra_roots:
+            self._extra_roots.append(root)
+
+    def _scan_root(self, root: Path, *, builtin: bool) -> list[dict]:
+        """扫描单个技能根目录。
+
+        Args:
+            root: 技能根目录（不存在时返回空列表）。
+            builtin: 该根的技能是否标记为内置（插件技能为 True，不可删）。
 
         Returns:
-            技能字典列表，每项在解析结果上追加 `builtin` 标记。
+            技能字典列表。
         """
         out: list[dict] = []
-        for entry in sorted(self.skills_dir.iterdir()):
+        if not root.is_dir():
+            return out
+        for entry in sorted(root.iterdir()):
             md = entry / "SKILL.md"
             if not md.is_file():
                 continue
@@ -118,12 +132,30 @@ class SkillService:
                 skill = parse_skill_md(md.read_text(encoding="utf-8"))
             except (ValueError, yaml.YAMLError):
                 continue
-            skill["builtin"] = skill["name"] in BUILTIN_SKILL_NAMES
+            skill["builtin"] = builtin or skill["name"] in BUILTIN_SKILL_NAMES
             out.append(skill)
         return out
 
+    def list_skills(self) -> list[dict]:
+        """扫描全部技能（用户目录 + 额外根；同名用户目录优先）。
+
+        每个根内按目录名排序；单个技能解析失败（缺 frontmatter / 名不合法 /
+        YAML 语法错误）只跳过该目录，不影响其余技能。
+
+        Returns:
+            技能字典列表，每项含 `builtin` 标记。
+        """
+        out = self._scan_root(self.skills_dir, builtin=False)
+        seen = {s["name"] for s in out}
+        for root in self._extra_roots:
+            for skill in self._scan_root(root, builtin=True):
+                if skill["name"] not in seen:
+                    seen.add(skill["name"])
+                    out.append(skill)
+        return out
+
     def read_body(self, name: str) -> str | None:
-        """读技能正文（不含 frontmatter）。
+        """读技能正文（不含 frontmatter；用户目录优先于额外根）。
 
         Args:
             name: 技能名（即目录名）。
@@ -133,13 +165,15 @@ class SkillService:
         """
         if not NAME_OK.match(name):
             return None
-        md = self.skills_dir / name / "SKILL.md"
-        if not md.is_file():
-            return None
-        try:
-            return parse_skill_md(md.read_text(encoding="utf-8"))["content"]
-        except (ValueError, yaml.YAMLError):
-            return None
+        for root in [self.skills_dir, *self._extra_roots]:
+            md = root / name / "SKILL.md"
+            if not md.is_file():
+                continue
+            try:
+                return parse_skill_md(md.read_text(encoding="utf-8"))["content"]
+            except (ValueError, yaml.YAMLError):
+                return None
+        return None
 
     def write_skill(self, *, name: str, description: str, content: str,
                     version: str = "1.0", author: str = "",
