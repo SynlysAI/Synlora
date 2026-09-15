@@ -55,6 +55,13 @@ class InstallBody(BaseModel):
     config: dict[str, Any] = {}
 
 
+class CapabilitySwitchBody(BaseModel):
+    """能力开关请求体（两个字段都可选，缺省表示不改）。"""
+
+    installed: bool | None = None
+    enabled: bool | None = None
+
+
 @router.get("/catalog")
 async def list_catalog(kind: str | None = None,
                        user=Depends(get_current_user),
@@ -205,3 +212,52 @@ async def set_catalog_policy(kind: str, item_id: str, body: PolicyBody,
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"kind": kind, "id": item_id, **policy}
+
+
+@router.put("/me/capabilities/{kind}/{item_id}")
+async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
+                            request: Request,
+                            user=Depends(get_current_user),
+                            service=Depends(get_capability_service)) -> dict:
+    """安装/卸载/启用/停用某条目（用户维度）。
+
+    `installed=true` 等价安装（先过 can_install 判定），`installed=false` 等价卸载
+    （删记录）；`enabled` 只对已安装条目有效，未安装时返回 422。
+
+    Args:
+        kind: 条目类型。
+        item_id: 条目 id。
+        body: 开关请求体。
+        request: FastAPI 请求。
+        user: 当前用户。
+        service: 能力服务。
+
+    Returns:
+        {"kind", "id", "installed", "enabled"}。
+
+    Raises:
+        HTTPException: 类型非法或条目不可安装（404）、未安装却要改启用态（422）。
+    """
+    if kind not in KINDS:
+        raise HTTPException(404, f"未知类型: {kind}")
+    user_id = user["sub"]
+    if body.installed is True:
+        if not await service.can_install(user_id, kind, item_id):
+            raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
+        await service.installs.install(user_id, kind, item_id)
+        if kind == "plugin":
+            plugin_service = getattr(request.app.state, "plugin_service", None)
+            if plugin_service is not None:
+                plugin_service.ensure_attached(item_id)
+    elif body.installed is False:
+        await service.installs.uninstall(user_id, kind, item_id)
+    # 卸载请求里的 enabled 一并视为无效：先卸载就没有记录可改，否则
+    # {"installed": false, "enabled": false} 这种自洽请求会被误判成 422
+    if body.enabled is not None and body.installed is not False:
+        if not await service.installs.set_enabled(user_id, kind, item_id, body.enabled):
+            raise HTTPException(422, f"未安装，无法设置启用态: {kind}:{item_id}")
+    return {
+        "kind": kind, "id": item_id,
+        "installed": await service.installs.is_installed(user_id, kind, item_id),
+        "enabled": await service.installs.is_enabled(user_id, kind, item_id),
+    }
