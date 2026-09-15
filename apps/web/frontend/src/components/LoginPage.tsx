@@ -7,6 +7,7 @@
 import { useState, type FormEvent } from 'react'
 import { ApiError } from '@/api/client'
 import { VersionTag } from '@/components/layout'
+import BrandMark from '@/components/layout/BrandMark'
 import { useAuthStore } from '@/stores/auth'
 
 /** dev 模式 token（.env 的 VITE_DEV_TOKEN 或默认 devtok，须与后端 DEV_AUTH_TOKEN 一致）。 */
@@ -14,22 +15,6 @@ const DEV_TOKEN = import.meta.env.VITE_DEV_TOKEN || 'devtok'
 
 /** dev 快捷按钮是否展示（显式置 "0" 时隐藏）。 */
 const SHOW_DEV_ENTRY = import.meta.env.VITE_DEV_TOKEN !== '0'
-
-/** Logo 标记：与 AppShell 顶栏一致的黑色圆角方块 + S 弧线。 */
-function LogoMark() {
-  return (
-    <svg width="28" height="28" viewBox="0 0 20 20" aria-hidden="true">
-      <rect x="1" y="1" width="18" height="18" rx="5" fill="var(--sa-alias-button-primary-fill)" />
-      <path
-        d="M12.9 6.3a4 4 0 1 0 1.3 5.2"
-        stroke="var(--sa-alias-label-primary-foreground)"
-        strokeWidth="1.8"
-        fill="none"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
 
 /** 错误归一为用户可读文案。 */
 function toMessage(err: unknown): string {
@@ -90,7 +75,7 @@ export default function LoginPage() {
     <div className="flex min-h-dvh items-center justify-center bg-[var(--sa-alias-bg-base)] px-4">
       <div className="w-full max-w-[380px] rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-8 shadow-sm">
         <div className="flex flex-col items-center gap-2 pb-6">
-          <LogoMark />
+          <BrandMark size={40} />
           <h1 className="text-[18px] font-medium tracking-tight text-[var(--sa-alias-label-primary)]">
             登录 Synlora
           </h1>
