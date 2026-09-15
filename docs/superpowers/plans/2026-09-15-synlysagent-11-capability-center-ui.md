@@ -189,6 +189,8 @@ git commit -m "refactor: 市场 store 改走 market 端点并支持启用态"
 
 ### Task 2: 我的能力 store
 
+> ✅ **已完成**（`e7cb73a`）。动手前核对了后端 `/me/skills`、`/me/experts` 行形状与 store 类型一致；因 Task 1 已同步改名，本任务构建时**没有**计划预期中的「CapabilityCenter.tsx 既有报错」，直接全绿。
+
 **Files:**
 - Create: `apps/web/frontend/src/stores/myCapabilities.ts`
 
@@ -356,6 +358,8 @@ git commit -m "feat: 新增我的能力 store（自建 ∪ 已装）"
 
 ### Task 3: 市场栏（页签 + 动作改造）
 
+> ✅ **已完成**（`3cd2d45`）。组件顶部注释随行为同步更新（原注释描述的「默认可用徽标」分支已删）；`useEffect`/分组渲染的改名在 Task 1 已完成，本任务只做页签、动作区与 `handleToggle`。
+
 **Files:**
 - Modify: `apps/web/frontend/src/components/catalog/CapabilityCenter.tsx`
 
@@ -472,6 +476,8 @@ git commit -m "feat: 能力中心加市场/我的页签，市场行支持启用�
 ---
 
 ### Task 4: 我的栏（子页签 + 自建技能/专家表单）
+
+> ✅ **已完成**（`9f98d0e`）。MinePanel 不进 `catalog/index.ts` barrel（整页组件才导出，子面板走相对 import）。Step 4 真机自测清单待用户执行。
 
 **Files:**
 - Create: `apps/web/frontend/src/components/catalog/MinePanel.tsx`
@@ -865,6 +871,13 @@ git commit -m "feat: 我的能力面板（子页签 + 自建技能/专家增删�
 ---
 
 ### Task 5: 清理旧端点用法与文档同步
+
+> ✅ **已完成**（`8c49c25`）。与初始计划的差异：
+> - 删除 `GET /api/v1/catalog` 需同步迁移**测试引用**（计划未提）：`test_catalog_api.py` 1 处、`test_capability_enforcement.py` 3 处改走 `/api/v1/market/{kind}`；`DELETE /catalog/{kind}/{id}/install` 仍有测试覆盖且与 POST install 对称，保留未删
+> - 文档同步范围扩大：backend README 端点表删该行 + 「两栏语义」段落改为已上线描述；根 README 的「当前状态」段与 backlog 行同步 ✅ 0.9.0
+> - 版本升至 **0.9.0-beta.1**（`version.py` + `package.json` 同步，向下兼容新功能升次版本）
+>
+> 后端全量 411 passed / 117 skipped，前端 `npm run build` 通过。
 
 **Files:**
 - Modify: `apps/web/backend/app/catalog/api.py`（删除已无调用方的 `GET /api/v1/catalog`）
