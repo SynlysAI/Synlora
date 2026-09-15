@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from app.catalog.items import CatalogItem, CatalogService
+from app.catalog.loader import catalog_roots, scan_catalog
 from app.core.settings import Settings
-from app.plugins.loader import plugin_roots, scan_plugins
 from app.services.skill_service import SkillService
 
 
@@ -20,7 +20,7 @@ def _service(settings: Settings, skill_service: SkillService) -> CatalogService:
     return CatalogService(
         settings=settings,
         skill_service=skill_service,
-        packages=scan_plugins(plugin_roots(settings)),
+        index=scan_catalog(catalog_roots(settings)),
     )
 
 

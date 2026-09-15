@@ -125,7 +125,7 @@ class CapabilityService:
         """
         names = await self.visible_ids(user_id, "skill")
         for plugin_id in await self.visible_ids(user_id, "plugin"):
-            pkg = self.catalog.packages.get(plugin_id)
+            pkg = self.catalog.plugins.get(plugin_id)
             if pkg is not None:
                 names |= set(pkg.skills)
         return names
@@ -147,7 +147,7 @@ class CapabilityService:
         hidden = {i.id for i in self.catalog.list_items("skill")} \
             - await self.visible_ids(user_id, "skill")
         visible_plugins = await self.visible_ids(user_id, "plugin")
-        for plugin_id, pkg in self.catalog.packages.items():
+        for plugin_id, pkg in self.catalog.plugins.items():
             if plugin_id not in visible_plugins:
                 hidden |= set(pkg.skills)
         return hidden
@@ -216,7 +216,7 @@ class CapabilityService:
             # 插件行补配置 schema：用户侧市场据此渲染"安装时填配置"的表单；
             # 非插件条目无此概念，不加该字段（避免前端误判）
             if kind == "plugin":
-                pkg = self.catalog.packages.get(item.id)
+                pkg = self.catalog.plugins.get(item.id)
                 row["config_schema"] = list(pkg.config_schema) if pkg is not None else []
             rows.append(row)
         return rows

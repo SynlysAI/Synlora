@@ -5,11 +5,11 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.catalog.items import CatalogService
+from app.catalog.loader import catalog_roots, scan_catalog
 from app.catalog.policy import CatalogPolicyRepo
 from app.catalog.service import CapabilityService
 from app.catalog.user_caps import UserCapabilityRepo
 from app.core.settings import Settings
-from app.plugins.loader import plugin_roots, scan_plugins
 from app.services.skill_service import SkillService
 
 SPEC_TOOLS = {"spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"}
@@ -23,7 +23,7 @@ def caps(store, tmp_path) -> CapabilityService:
     skill_service.seed_builtins()
     return CapabilityService(
         catalog=CatalogService(settings=settings, skill_service=skill_service,
-                               packages=scan_plugins(plugin_roots(settings))),
+                               index=scan_catalog(catalog_roots(settings))),
         policy=CatalogPolicyRepo(store),
         installs=UserCapabilityRepo(store),
         tool_names_by_plugin={"spec_agent": set(SPEC_TOOLS)},

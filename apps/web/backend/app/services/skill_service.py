@@ -13,13 +13,13 @@ import re
 import shutil
 from pathlib import Path
 
-import synlys_harness
 import yaml
 
 NAME_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
 BUILTIN_SKILL_NAMES = frozenset({"data-analysis", "pdf-extraction", "office-doc"})
-RESOURCE_SKILLS = Path(synlys_harness.__file__).resolve().parent / "resources" / "skills"
+# 内置技能源目录（随仓库内容：apps/web/backend/catalog/skills）
+CATALOG_SKILLS_ROOT = Path(__file__).resolve().parents[2] / "catalog" / "skills"
 
 
 def parse_skill_md(text: str) -> dict:
@@ -231,10 +231,10 @@ class SkillService:
         return True
 
     def seed_builtins(self) -> None:
-        """把随包发布的内置技能拷到用户技能目录（幂等，不覆盖已有目录）。"""
-        if not RESOURCE_SKILLS.is_dir():
+        """把随仓库内容的内置技能拷到用户技能目录（幂等，不覆盖已有目录）。"""
+        if not CATALOG_SKILLS_ROOT.is_dir():
             return
-        for src in RESOURCE_SKILLS.iterdir():
+        for src in CATALOG_SKILLS_ROOT.iterdir():
             dst = self.skills_dir / src.name
             if not dst.exists():
                 shutil.copytree(src, dst)

@@ -2,8 +2,8 @@
 
 内置项只有三个来源，全部只读（首期不支持用户自建）：
 - 专家：代码种子 SEED_ASSISTANTS（插件播种的 asst-plugin-* 跟随其插件，不算独立条目）；
-- 技能：随包播种到技能目录的内置技能（名字在 skill_service.BUILTIN_SKILL_NAMES 中）；
-- 插件：扫描到的插件包（随仓库 plugins/ + 数据目录 plugins/）。
+- 技能：随仓库播种到技能目录的内置技能（名字在 skill_service.BUILTIN_SKILL_NAMES 中）；
+- 插件：扫描到的插件包（随仓库 catalog/plugins/ + 数据目录 catalog/plugins/）。
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from app.db.repos import SEED_ASSISTANTS
 from app.services.skill_service import BUILTIN_SKILL_NAMES
 
 if TYPE_CHECKING:
+    from app.catalog.loader import CatalogIndex, PluginPackage
     from app.core.settings import Settings
-    from app.plugins.loader import PluginPackage
     from app.services.skill_service import SkillService
 
 KINDS = ("expert", "skill", "plugin")
@@ -45,26 +45,26 @@ class CatalogService:
     """内置条目的只读枚举。"""
 
     def __init__(self, settings: "Settings", skill_service: "SkillService",
-                 packages: dict[str, "PluginPackage"]) -> None:
+                 index: "CatalogIndex") -> None:
         """保存依赖。
 
         Args:
             settings: 应用配置。
             skill_service: 技能服务（枚举已播种的内置技能）。
-            packages: 扫描到的插件包（{id: PluginPackage}）。
+            index: catalog 扫描结果（本类只用到其中的插件包）。
         """
         self._settings = settings
         self._skill_service = skill_service
-        self._packages = packages
+        self._index = index
 
     @property
-    def packages(self) -> dict[str, "PluginPackage"]:
+    def plugins(self) -> dict[str, "PluginPackage"]:
         """扫描到的插件包（{id: PluginPackage}）。
 
         Returns:
             插件包映射（只读用途；调用方不得就地修改）。
         """
-        return self._packages
+        return self._index.plugins
 
     def list_items(self, kind: str) -> list[CatalogItem]:
         """枚举某类内置条目。
@@ -140,7 +140,7 @@ class CatalogService:
                     kind="plugin", id=pkg.id,
                     name=pkg.name, description=pkg.description,
                 )
-                for pkg in self._packages.values()
+                for pkg in self._index.plugins.values()
             ),
             key=lambda i: i.id,
         )

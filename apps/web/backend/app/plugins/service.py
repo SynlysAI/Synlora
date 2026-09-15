@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.plugins.loader import PluginPackage, load_plugin_tools
+from app.catalog.loader import PluginPackage, load_plugin_tools
 
 if TYPE_CHECKING:
     from synlys_harness import ToolRegistry

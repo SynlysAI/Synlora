@@ -7,9 +7,9 @@ import pytest
 from cryptography.fernet import Fernet
 from synlys_harness import ToolRegistry, register_builtin_tools
 
+from app.catalog.loader import scan_catalog
 from app.db.repos import AssistantRepo
 from app.plugins.config_store import PluginConfigStore
-from app.plugins.loader import scan_plugins
 from app.plugins.service import PluginService
 from app.services.skill_service import SkillService
 
@@ -54,7 +54,7 @@ def packages(tmp_path) -> dict:
     (pkg_dir / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
     (pkg_dir / "skills" / "demo-skill" / "SKILL.md").write_text(
         "---\nname: demo-skill\ndescription: 示例技能\n---\n正文\n", encoding="utf-8")
-    return scan_plugins([tmp_path / "plugins"])
+    return scan_catalog([tmp_path]).plugins
 
 
 def _service(store, packages, tmp_path) -> tuple[PluginService, ToolRegistry, SkillService]:
@@ -216,7 +216,7 @@ async def test_state_installed_survives_decryption_failure(store, packages, tmp_
     """密钥轮换导致配置不可解时：仍报"已安装"（库事实），但 configured=False。"""
     await PluginConfigStore(store, Fernet.generate_key().decode()).save(
         "demo", {"base_url": "http://x", "token": "t"},
-        scan_plugins([tmp_path / "plugins"])["demo"].config_schema)
+        scan_catalog([tmp_path]).plugins["demo"].config_schema)
 
     # 用另一把 key 组装服务（模拟 FERNET_KEY 轮换）
     service, registry, _ = _service(store, packages, tmp_path)

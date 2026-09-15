@@ -9,9 +9,10 @@ import httpx
 
 from synlys_harness import ToolContext
 
-from app.plugins.loader import load_plugin_tools, scan_plugins
+from app.catalog.loader import load_plugin_tools, scan_catalog
 
-REPO_PLUGINS = Path(__file__).resolve().parents[1] / "plugins"
+REPO_CATALOG = Path(__file__).resolve().parents[1] / "catalog"
+REPO_PLUGINS = REPO_CATALOG / "plugins"
 
 
 _TOOLS_CACHE: tuple | None = None
@@ -26,7 +27,7 @@ def _load_tools() -> tuple:
     """
     global _TOOLS_CACHE
     if _TOOLS_CACHE is None:
-        packages = scan_plugins([REPO_PLUGINS])
+        packages = scan_catalog([REPO_CATALOG]).plugins
         module_name = "synlora_plugin_spec_agent"
         tools = load_plugin_tools(packages["spec_agent"])
         module = sys.modules[module_name]  # load_plugin_tools 已写入
@@ -36,7 +37,7 @@ def _load_tools() -> tuple:
 
 def test_manifest_is_valid_and_complete():
     """manifest 可解析，schema/技能/专家模板齐备。"""
-    pkg = scan_plugins([REPO_PLUGINS])["spec_agent"]
+    pkg = scan_catalog([REPO_CATALOG]).plugins["spec_agent"]
     assert pkg.name and pkg.version == "1.0.0"
     assert [f["key"] for f in pkg.config_schema] == ["base_url", "token"]
     assert pkg.config_schema[0]["required"] is True

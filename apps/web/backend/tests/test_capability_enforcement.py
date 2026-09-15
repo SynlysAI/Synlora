@@ -427,16 +427,16 @@ async def test_startup_attaches_plugins_with_only_user_installs(store, tmp_path)
     from cryptography.fernet import Fernet
     from synlys_harness import ToolRegistry, register_builtin_tools
 
+    from app.catalog.loader import catalog_roots, scan_catalog
     from app.catalog.user_caps import UserCapabilityRepo
     from app.core.settings import Settings
     from app.db.repos import AssistantRepo
     from app.plugins.config_store import PluginConfigStore
-    from app.plugins.loader import plugin_roots, scan_plugins
     from app.plugins.service import PluginService
     from app.services.skill_service import SkillService
 
     settings = Settings(data_dir=str(tmp_path), fernet_key=Fernet.generate_key().decode())
-    packages = scan_plugins(plugin_roots(settings))
+    packages = scan_catalog(catalog_roots(settings)).plugins
     registry = ToolRegistry()
     register_builtin_tools(registry)
     user_caps = UserCapabilityRepo(store)

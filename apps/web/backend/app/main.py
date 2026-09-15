@@ -18,6 +18,7 @@ from app.api.sessions_api import router as sessions_router
 from app.api.skills_api import router as skills_router
 from app.catalog.api import router as catalog_router
 from app.catalog.items import CatalogService
+from app.catalog.loader import catalog_roots, scan_catalog
 from app.catalog.policy import CatalogPolicyRepo
 from app.catalog.service import CapabilityService
 from app.catalog.user_caps import UserCapabilityRepo
@@ -32,7 +33,7 @@ from app.db.repos import (
     seed_assistants,
 )
 from app.db.store import create_store
-from app.plugins import PluginConfigStore, PluginService, plugin_roots, scan_plugins
+from app.plugins import PluginConfigStore, PluginService
 from app.plugins.api import router as plugins_router
 from app.services.agent_service import AgentService
 from app.services.project_service import ProjectService
@@ -64,16 +65,17 @@ async def lifespan(app: FastAPI):
     app.state.file_repo = FileRepo(store)
     app.state.event_repo = EventRepo(store)
     app.state.project_service = ProjectService(store, settings.data_root)
-    # 插件框架：扫描插件包 → 建技能服务 → 注册已安装插件的工具与技能根
-    # （插件技能根由 plugin_service.startup() 挂载，先于 AgentService 构造完成）
-    packages = scan_plugins(plugin_roots(settings))
+    # 插件框架：扫描内置内容（专家/技能/插件） → 建技能服务 →
+    # 注册已安装插件的工具与技能根（插件技能根由 plugin_service.startup()
+    # 挂载，先于 AgentService 构造完成）
+    index = scan_catalog(catalog_roots(settings))
     plugin_config_store = PluginConfigStore(store, settings.fernet_key)
     app.state.skill_service = SkillService(settings.data_root)
     app.state.skill_service.seed_builtins()  # 幂等：内置技能是列表能列出它们的前提
     app.state.weknora_service = WeKnoraService(
         settings.weknora_base_url, settings.weknora_api_key)
     app.state.plugin_service = PluginService(
-        registry=REGISTRY, config_store=plugin_config_store, packages=packages,
+        registry=REGISTRY, config_store=plugin_config_store, packages=index.plugins,
         skill_service=app.state.skill_service,
         assistant_repo=app.state.assistant_repo,
     )
@@ -87,14 +89,14 @@ async def lifespan(app: FastAPI):
     app.state.capability_service = CapabilityService(
         catalog=CatalogService(settings=settings,
                                skill_service=app.state.skill_service,
-                               packages=packages),
+                               index=index),
         policy=CatalogPolicyRepo(store),
         installs=UserCapabilityRepo(store),
         tool_names_by_plugin=app.state.plugin_service.tool_names_by_plugin,
     )
     # 暴露给目录 API 与运行期（插件配置校验取 schema、用户维度解析配置）
     app.state.plugin_config_store = plugin_config_store
-    app.state.plugin_packages = packages
+    app.state.plugin_packages = index.plugins
     app.state.agent_service = AgentService(
         store, settings, app.state.event_repo, app.state.skill_service,
         file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
