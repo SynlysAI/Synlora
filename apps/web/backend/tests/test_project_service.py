@@ -1,4 +1,4 @@
-"""ProjectService 单测（迁移/建目录/目录树/删除/并发）。"""
+"""ProjectService 单测（默认工作区/建目录/目录树/删除/并发）。"""
 import asyncio
 import shutil
 from pathlib import Path
@@ -8,20 +8,11 @@ import pytest
 from app.services.project_service import ProjectNameTaken, ProjectService
 
 
-async def test_list_ensures_default_project_on_legacy(tmp_path, store):
-    (tmp_path / "workspaces" / "u1" / "files").mkdir(parents=True)
-    (tmp_path / "workspaces" / "u1" / "files" / "a.txt").write_text("x", encoding="utf-8")
-    svc = ProjectService(store, tmp_path)
-    projects = await svc.list_projects("u1")
-    assert [p["dir_name"] for p in projects] == ["default"]
-    assert (tmp_path / "workspaces" / "u1" / "default" / "files" / "a.txt").exists()
-
-
 async def test_list_returns_empty_for_brand_new_user(tmp_path, store):
     svc = ProjectService(store, tmp_path)
     assert await svc.list_projects("u2") == []
-    # 全新用户只读列表，不应顺手落下 default 目录（迁移/补种无副作用）
-    assert not (tmp_path / "workspaces" / "u2" / "default").exists()
+    # 全新用户只读列表，不应顺手落下 default 目录（补种无副作用）
+    assert not (tmp_path / "users" / "u2" / "workspaces" / "default").exists()
 
 
 async def test_tree_lists_one_level(tmp_path, store):
@@ -99,7 +90,7 @@ async def test_delete_frees_name_for_recreate(tmp_path, store):
     assert await svc.delete_project("u1", a["_id"]) is True
     b = await svc.create_project("u1", "实验一")
     assert b["dir_name"] == "实验一"
-    assert (tmp_path / "workspaces" / "u1" / "实验一").is_dir()
+    assert (tmp_path / "users" / "u1" / "workspaces" / "实验一").is_dir()
 
 
 async def test_delete_missing_project_returns_false(tmp_path, store):
@@ -126,7 +117,7 @@ async def test_delete_falls_back_to_trash_and_drops_record(tmp_path, store, monk
     monkeypatch.setattr(shutil, "rmtree", _boom)
     removed = await svc.delete_project("u1", p["_id"])
     assert removed is True
-    user_dir = tmp_path / "workspaces" / "u1"
+    user_dir = tmp_path / "users" / "u1" / "workspaces"
     assert not (user_dir / "实验一").exists()
     assert len(list(user_dir.glob("实验一.trash-*"))) == 1
     assert p["_id"] not in [x["_id"] for x in await svc.list_projects("u1")]
@@ -149,10 +140,36 @@ async def test_concurrent_create_same_name_only_one_wins(tmp_path, store):
     assert [p["name"] for p in await svc.list_projects("u1")] == ["实验一"]
 
 
-async def test_concurrent_list_seeds_single_default_project(tmp_path, store):
-    """并发首次加载只补种一条默认项目（迁移也在锁内）。"""
-    (tmp_path / "workspaces" / "u1" / "files").mkdir(parents=True)
-    svc = ProjectService(store, tmp_path)
-    await asyncio.gather(svc.list_projects("u1"), svc.list_projects("u1"))
-    projects = await svc.list_projects("u1")
-    assert [p["dir_name"] for p in projects] == ["default"]
+async def test_concurrent_first_message_creates_single_default_project(tmp_path, store):
+    """并发首条消息只建一个默认工作区，且目录名恒为 default（不因避让变成 default-2）。"""
+    service = ProjectService(store, tmp_path)
+    results = await asyncio.gather(*[service.resolve_active_project("u1", None) for _ in range(5)])
+    assert {r["_id"] for r in results} == {results[0]["_id"]}
+    assert results[0]["dir_name"] == "default"
+    assert (tmp_path / "users" / "u1" / "workspaces" / "default").is_dir()
+
+
+async def test_user_project_cannot_take_default_dir_name(tmp_path, store):
+    """用户自建工作区永不占用 default 这个名字，default 恒留给默认工作区。
+
+    先建用户项目（此时还没有默认工作区，占用集合里一条记录都没有）：不把 default
+    钉成已占用，用户项目就会直接拿走它，默认工作区只能退成 default-2。
+    """
+    service = ProjectService(store, tmp_path)
+    project = await service.create_project("u1", "default")
+    assert project["dir_name"] != "default"
+    user_dir = tmp_path / "users" / "u1" / "workspaces"
+    assert not (user_dir / "default").exists()  # default 没被用户项目吃掉
+    # 该用户已无项目时创建默认工作区，仍拿得到 default（未被避让成 default-2）
+    assert await service.delete_project("u1", project["_id"]) is True
+    default_project = await service.resolve_active_project("u1", None)
+    assert default_project["dir_name"] == "default"
+    assert (user_dir / "default").is_dir()
+
+
+async def test_default_project_reuses_orphan_default_dir(tmp_path, store):
+    """磁盘残留 default 孤儿目录（DB 无记录）时直接复用，不另造 default-2。"""
+    (tmp_path / "users" / "u1" / "workspaces" / "default").mkdir(parents=True)
+    service = ProjectService(store, tmp_path)
+    project = await service.resolve_active_project("u1", None)
+    assert project["dir_name"] == "default"

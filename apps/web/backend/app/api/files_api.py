@@ -1,6 +1,6 @@
 """文件 API：multipart 上传（逐项校验/配额）、列表、下载与删除，按项目作用域隔离。
 
-文件一律落在**所属项目**的 files/（{data_root}/workspaces/{uid}/{项目目录}/files），
+文件一律落在**所属项目**的 files/（{data_root}/users/{uid}/workspaces/{项目目录}/files），
 记录里的 stored_path 始终是「相对项目根」的路径（如 files/a.txt）。
 
 归属以**磁盘实际位置**为权威（_resolve_file_project）：记录带 project_id 时只认那个
@@ -80,10 +80,9 @@ async def _resolve_file_project(service: ProjectService, user_id: str,
     带 project_id 的记录只认那个项目，取不到即 None（调用方按 404 处理）：同名文件
     在不同项目里很常见，回落到别处会张冠李戴。没有 project_id 的历史记录（C6 之前
     上传）逐个比对各项目 files/ 下是否存在该文件，命中谁就归谁——按物理位置判定，
-    天然不受「活跃项目 = projects[0]」漂移影响（旧布局迁移正是把 {uid}/files 搬进
-    默认项目，故迁移后仍能命中）。
+    天然不受「活跃项目 = projects[0]」漂移影响。
 
-    只读：走 ProjectService.list_projects_readonly，不触发旧布局迁移/补种默认项目。
+    只读：走 ProjectService.list_projects_readonly，不补种默认工作区。
 
     Args:
         service: ProjectService 实例。
@@ -329,7 +328,7 @@ async def list_files(request: Request, user=Depends(get_current_user),
     GET /api/v1/projects/{pid}/files 按项目取数。
 
     活跃项目的解析保留 resolve_active_project（legacy 上传要有落点，故这里也允许
-    迁移/补种默认项目）；文档归属过滤与项目作用域列表同口径，走 _docs_of_project：
+    按需补种默认工作区）；文档归属过滤与项目作用域列表同口径，走 _docs_of_project：
     无 project_id 的历史记录按磁盘实际位置归属，不再一律挂在活跃项目上。
 
     Args:

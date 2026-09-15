@@ -1,4 +1,4 @@
-"""项目服务：项目 CRUD 编排、目录树懒加载、旧数据迁移。"""
+"""项目服务：项目 CRUD 编排、目录树懒加载。"""
 from __future__ import annotations
 
 import asyncio
@@ -8,10 +8,8 @@ from pathlib import Path
 from app.db.repos import ProjectRepo
 from app.services import workspace
 
-# 默认项目的显示名（磁盘目录名仍固定为 workspace.DEFAULT_PROJECT_DIR）。
+# 默认项目的显示名（磁盘目录名恒为 workspace.DEFAULT_PROJECT_DIR）。
 DEFAULT_PROJECT_NAME = "默认工作区"
-# 早期版本的默认项目名，仅供一次性订正使用。
-LEGACY_DEFAULT_PROJECT_NAME = "默认项目"
 
 
 class ProjectNameTaken(ValueError):
@@ -53,7 +51,7 @@ class ProjectService:
         return self._user_locks.setdefault(user_id, asyncio.Lock())
 
     async def _list_locked(self, user_id: str) -> list[dict]:
-        """锁内列出项目（迁移旧布局 + 按需补种默认项目）。
+        """锁内列出项目。
 
         调用方必须已持有该用户的锁（asyncio.Lock 不可重入，故不能直接调
         list_projects）。
@@ -64,20 +62,18 @@ class ProjectService:
         Returns:
             未归档项目文档列表（updated_at 倒序）。
         """
-        migrated = workspace.migrate_legacy_layout(self._data_root, user_id)
-        if migrated:
-            await self._repo.create(
-                user_id=user_id, name=DEFAULT_PROJECT_NAME,
-                dir_name=workspace.DEFAULT_PROJECT_DIR,
-            )
-        # 旧默认项目名一次性订正：早期叫「默认项目」，现已统一为「默认工作区」。
-        # 只订正这一个已知旧名（不做强制改名），目录名原样传回即不动磁盘。
-        for doc in await self._repo.list_for_user(user_id):
-            if (doc["dir_name"] == workspace.DEFAULT_PROJECT_DIR
-                    and doc["name"] == LEGACY_DEFAULT_PROJECT_NAME):
-                await self._repo.rename(
-                    doc["_id"], name=DEFAULT_PROJECT_NAME, dir_name=doc["dir_name"])
         return await self._repo.list_for_user(user_id)
+
+    def _user_workspaces_dir(self, user_id: str) -> Path:
+        """该用户的工作区目录（{data_root}/users/{user_id}/workspaces）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            工作区目录路径（可能不存在）。
+        """
+        return self._data_root / "users" / user_id / "workspaces"
 
     async def _create_locked(self, user_id: str, name: str, base: str) -> dict:
         """锁内新建项目（调用方必须已持有该用户的锁）。
@@ -90,16 +86,37 @@ class ProjectService:
         Returns:
             新建的项目文档。
         """
-        user_dir = self._data_root / "workspaces" / user_id
+        user_dir = self._user_workspaces_dir(user_id)
         taken = await self._repo.used_dir_names(user_id)
+        taken.add(workspace.DEFAULT_PROJECT_DIR)  # default 恒留给默认工作区
         dir_name = workspace.free_dir_name(user_dir, base, taken)
         project = await self._repo.create(
             user_id=user_id, name=name.strip(), dir_name=dir_name)
         workspace.project_root(self._data_root, user_id, dir_name)
         return project
 
+    async def _ensure_default_locked(self, user_id: str) -> dict:
+        """锁内确保该用户的默认工作区存在（目录名恒为 default，不参与避让）。
+
+        磁盘上残留同名孤儿目录时直接复用（mkdir exist_ok），避免又造出 default-2。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            默认工作区文档。
+        """
+        for doc in await self._repo.list_for_user(user_id):
+            if doc["dir_name"] == workspace.DEFAULT_PROJECT_DIR:
+                return doc
+        project = await self._repo.create(
+            user_id=user_id, name=DEFAULT_PROJECT_NAME,
+            dir_name=workspace.DEFAULT_PROJECT_DIR)
+        workspace.project_root(self._data_root, user_id, workspace.DEFAULT_PROJECT_DIR)
+        return project
+
     async def list_projects(self, user_id: str) -> list[dict]:
-        """列出项目（首次访问时执行旧布局迁移并补种默认项目）。
+        """列出项目（**不补种**默认工作区，默认工作区由 resolve_active_project 按需创建）。
 
         Args:
             user_id: 用户 sub。
@@ -107,17 +124,16 @@ class ProjectService:
         Returns:
             未归档项目文档列表（updated_at 倒序）。
         """
-        # 迁移 + 补种也在锁内：并发首次加载（React 双 effect / 两个标签页）
-        # 否则会补种出两条同名 default 项目
+        # 走锁只为与建项目串行，避免读到「正建到一半」的中间态
         async with self._lock_for(user_id):
             return await self._list_locked(user_id)
 
     async def list_projects_readonly(self, user_id: str) -> list[dict]:
-        """列出项目（**只读**：不迁移旧布局、不补种默认项目、不加锁）。
+        """列出项目（**只读**：不补种默认工作区、不加锁）。
 
         与 list_projects 的区别只在副作用：files API 解析历史文件（无 project_id）
-        的归属时要遍历各项目根，这发生在下载/列表这类只读请求里，不该顺手迁移旧布局
-        （os.replace 搬目录）或补种默认项目（写 projects 集合）。
+        的归属时要遍历各项目根，这发生在下载/列表这类只读请求里，不该顺手补种默认
+        工作区（写 projects 集合）。
 
         Args:
             user_id: 用户 sub。
@@ -171,10 +187,10 @@ class ProjectService:
     async def resolve_active_project(self, user_id: str, project_id: str | None) -> dict:
         """解析会话当前应用的项目（并发安全）。
 
-        命中绑定项目则直接用它；否则用该用户的第一个项目；一个都没有则建默认项目。
-        「查列表 → 视情况新建」整体在 per-user 锁内，避免并发首条消息（双击发送 /
-        双标签页 / 两条会话同时首条）各自查空后各建一个默认项目（默认项目、
-        默认项目-2 两条记录 + 两个磁盘目录）。
+        命中绑定项目则直接用它；否则用该用户的第一个项目；一个都没有则建默认工作区
+        （目录名恒为 default）。「查列表 → 视情况新建」整体在 per-user 锁内，避免并发
+        首条消息（双击发送 / 双标签页 / 两条会话同时首条）各自查空后各建一个默认
+        工作区（两条记录 + 两个磁盘目录）。
 
         Args:
             user_id: 用户 sub。
@@ -187,14 +203,13 @@ class ProjectService:
             project = await self.get(user_id, project_id)
             if project is not None:
                 return project
-        # 回落也走 _list_locked：未消费项目列表时旧布局（{uid}/files 等）仍可能未迁移，
-        # 聊天路径得自己补上，否则 python.run 会在新项目目录里找不到已上传的文件
+        # 回落在锁内：并发首条消息（双击发送 / 双标签页 / 两条会话同时首条）不会
+        # 各建一个默认工作区
         async with self._lock_for(user_id):
             projects = await self._list_locked(user_id)
             if projects:
                 return projects[0]
-            return await self._create_locked(
-                user_id, name=DEFAULT_PROJECT_NAME, base=workspace.DEFAULT_PROJECT_DIR)
+            return await self._ensure_default_locked(user_id)
 
     async def delete_project(self, user_id: str, project_id: str) -> bool:
         """删除项目记录与磁盘目录。
@@ -246,7 +261,7 @@ class ProjectService:
         project = await self.get(user_id, project_id)
         if project is None:
             raise ValueError("项目不存在")
-        user_dir = self._data_root / "workspaces" / user_id
+        user_dir = self._user_workspaces_dir(user_id)
         old_dir = project["dir_name"]
         async with self._lock_for(user_id):
             await self._ensure_name_free(user_id, name, exclude_id=project_id)
@@ -255,6 +270,8 @@ class ProjectService:
             else:
                 taken = await self._repo.used_dir_names(user_id)
                 taken.discard(old_dir)  # 自己不算占用，否则会被判成冲突而加后缀
+                if base != workspace.DEFAULT_PROJECT_DIR:
+                    taken.add(workspace.DEFAULT_PROJECT_DIR)  # default 留给默认工作区
                 new_dir = workspace.free_dir_name(user_dir, base, taken)
             if new_dir != old_dir:
                 src = user_dir / old_dir
@@ -282,7 +299,7 @@ class ProjectService:
             project: 项目文档。
 
         Returns:
-            {data_root}/workspaces/{user_id}/{dir_name} 路径（确保 files/output/tmp 存在）。
+            {data_root}/users/{user_id}/workspaces/{dir_name} 路径（确保 files/output/tmp 存在）。
 
         Raises:
             ValueError: dir_name 为空、为 . / .. 或含路径分隔符（workspace.project_root 抛出）。

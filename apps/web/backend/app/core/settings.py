@@ -16,7 +16,7 @@ class Settings(BaseSettings):
         auth_enabled: 关闭后匿名放行（仅开发）。
         dev_auth_token: sqlite 开发模式的固定 token。
         host/port: 监听地址。
-        data_dir: 运行数据根（workspaces/sessions）。
+        data_dir: 运行数据根（users/<uid>/workspaces、skills 等）。
         http_allowed_hosts: http.request 工具白名单（逗号分隔）。
         fernet_key: provider api_key 加密 key。
         user_quota_bytes: 每用户工作区配额。

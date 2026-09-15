@@ -1,7 +1,7 @@
 """文件 API 测试：上传/列表/下载/删除全链路、重名序号、类型与大小校验、
 配额、用户隔离、项目作用域归属与 stored_path 路径逃逸防护。
 
-文件按项目作用域落盘（{data_root}/workspaces/{uid}/{项目目录}/files），legacy
+文件按项目作用域落盘（{data_root}/users/{uid}/workspaces/{项目目录}/files），legacy
 /api/v1/files 路由解析到当前活跃项目，故本文件的磁盘断言统一取活跃项目目录。
 """
 from pathlib import Path
@@ -14,7 +14,7 @@ async def _files_dir(app) -> Path:
         app: 已初始化的 FastAPI 实例。
 
     Returns:
-        {data_root}/workspaces/u-user/{活跃项目目录}/files 路径。
+        {data_root}/users/u-user/workspaces/{活跃项目目录}/files 路径。
     """
     service = app.state.project_service
     project = await service.resolve_active_project("u-user", None)
@@ -333,17 +333,17 @@ async def test_project_scoped_files_not_visible_to_others(client, user_headers, 
 # ---------- 回归：上传 → 下载不再 404（C5 遗留） ----------
 
 
-async def test_upload_then_legacy_migration_download_not_404(app, client, user_headers):
-    """C5 回归：上传后触发旧布局迁移（{uid}/files → {uid}/default/files），下载不再 404。
+async def test_upload_then_download_not_404(app, client, user_headers):
+    """C5 回归：上传落活跃项目的 files/，下载按磁盘位置解析，不会因目录搬迁而 404。
 
-    修复前上传落 {uid}/files、下载按用户根解析，迁移搬走后磁盘文件已不在原处，
+    修复前上传落 {uid}/files、下载按用户根解析，文件搬走后磁盘文件已不在原处，
     下载必然 404（列表却仍有记录）。
     """
     r = await _upload(client, user_headers, ("mig.txt", b"payload"))
     assert r.status_code == 201, r.text
     fid = r.json()["results"][0]["file"]["_id"]
 
-    # 触发旧布局迁移（list_projects → migrate_legacy_layout + 按需补种默认项目）
+    # 列一遍项目（会补种默认工作区）：落点不受影响
     await app.state.project_service.list_projects("u-user")
 
     resp = await client.get(f"/api/v1/files/{fid}/download", headers=user_headers)
@@ -372,24 +372,24 @@ async def test_legacy_route_upload_list_download_still_work(app, client, user_he
 
 async def test_legacy_record_without_project_id_resolved_by_disk_location(app, client,
                                                                           user_headers):
-    """历史记录（无 project_id、文件在旧布局 {uid}/files/）迁移后仍可下载并在列表可见。
+    """历史记录（无 project_id）按**磁盘实际位置**归属，可下载并在列表可见。
 
     这正是线上真实数据形态（C6 之前上传的记录都没有 project_id）：记录里没有归属，
-    按**磁盘实际位置**解析——迁移把 {uid}/files 搬进 default/ 后，文件只可能命中
-    default 项目，故下载与两个列表口径一致。本用例里 default 是唯一项目
-    （也就等于活跃项目），不足以区分两种口径；漂移场景见 I2 回归用例。
+    按文件实际躺在哪个项目目录判定。本用例里 default 是唯一项目（也就等于活跃项目），
+    不足以区分两种口径；漂移场景见 I2 回归用例。
     """
-    # 手工铺旧布局数据：磁盘文件在 {uid}/files/，记录缺少 project_id
-    user_dir = app.state.settings.data_root / "workspaces" / "u-user"
-    (user_dir / "files").mkdir(parents=True, exist_ok=True)
-    (user_dir / "files" / "old.txt").write_bytes(b"old-data")
+    # 手工铺数据：磁盘文件在 default 项目的 files/ 下，记录缺少 project_id
+    files_dir = (app.state.settings.data_root / "users" / "u-user"
+                 / "workspaces" / "default" / "files")
+    files_dir.mkdir(parents=True, exist_ok=True)
+    (files_dir / "old.txt").write_bytes(b"old-data")
     await app.state.store.insert("files", {
         "_id": "fid-old", "user_id": "u-user", "filename": "old.txt",
         "stored_path": "files/old.txt", "size": len(b"old-data"),
         "mime": "text/plain", "created_at": 1.0, "updated_at": 1.0,
     })
 
-    # 触发旧布局迁移并列表：历史记录视同活跃项目，不凭空消失
+    # 列表/下载按磁盘位置解析归属，历史记录不凭空消失
     listed = (await client.get("/api/v1/files", headers=user_headers)).json()
     assert [f["_id"] for f in listed] == ["fid-old"]
 
@@ -397,10 +397,10 @@ async def test_legacy_record_without_project_id_resolved_by_disk_location(app, c
     assert resp.status_code == 200, resp.text
     assert resp.content == b"old-data"
 
-    # 磁盘确实已被迁移进活跃项目，且活跃项目的项目作用域列表与 legacy 列表口径一致
-    # （历史记录跟随活跃项目：download 与 list 用的是同一个回落口径）
+    # 磁盘位置即归属：活跃项目（default）的项目作用域列表与 legacy 列表口径一致
     service = app.state.project_service
     active = await service.resolve_active_project("u-user", None)
+    assert active["dir_name"] == "default"
     assert (service.root_for(active) / "files" / "old.txt").read_bytes() == b"old-data"
     scoped = (await client.get(f"/api/v1/projects/{active['_id']}/files",
                                headers=user_headers)).json()
@@ -434,18 +434,20 @@ async def test_legacy_record_follows_disk_not_active_project(app, client, user_h
     - 文件只出现在 default 的项目列表里、新项目列表为空（修复前恰好反过来）。
     """
     service = app.state.project_service
-    # 1) 铺旧布局历史数据：磁盘在 {uid}/files/old.txt，记录没有 project_id
-    user_dir = app.state.settings.data_root / "workspaces" / "u-user"
-    (user_dir / "files").mkdir(parents=True, exist_ok=True)
-    (user_dir / "files" / "old.txt").write_bytes(b"old-data")
+    # 1) 铺历史数据：磁盘在 default 项目的 files/old.txt，记录没有 project_id
+    files_dir = (app.state.settings.data_root / "users" / "u-user"
+                 / "workspaces" / "default" / "files")
+    files_dir.mkdir(parents=True, exist_ok=True)
+    (files_dir / "old.txt").write_bytes(b"old-data")
     await app.state.store.insert("files", {
         "_id": "fid-old", "user_id": "u-user", "filename": "old.txt",
         "stored_path": "files/old.txt", "size": len(b"old-data"),
         "mime": "text/plain", "created_at": 1.0, "updated_at": 1.0,
     })
 
-    # 2) 触发旧布局迁移 + 补种默认项目，拿到 default（文件随之搬进 default/files/）
+    # 2) 解析默认项目（复用磁盘上已有的 default 目录）
     default = await service.resolve_active_project("u-user", None)
+    assert default["dir_name"] == "default"
     assert (service.root_for(default) / "files" / "old.txt").read_bytes() == b"old-data"
 
     # 3) 新建项目 → 活跃项目漂移（projects[0] 变成新项目）

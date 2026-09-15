@@ -931,7 +931,7 @@ async def test_agent_workspace_is_project_root(app, client, admin_headers,
         return real_run_session(*args, **kwargs)
 
     monkeypatch.setattr(agent_service_mod, "RunSession", _capturing_run_session)
-    user_dir = app.state.settings.data_root / "workspaces" / "u-user"
+    user_dir = app.state.settings.data_root / "users" / "u-user" / "workspaces"
 
     # 1) 显式绑定项目 → 工作区根 = 该项目目录
     pid = await _make_project(client, user_headers, "绑项目")
@@ -1156,7 +1156,7 @@ async def test_concurrent_resolve_seeds_single_default_project(app):
     assert len(projects) == 1
     assert projects[0]["name"] == "默认工作区"      # 显示名统一为「默认工作区」
     assert projects[0]["dir_name"] == "default"     # 目录名口径统一（M-2）
-    user_dir = app.state.settings.data_root / "workspaces" / "u-first"
+    user_dir = app.state.settings.data_root / "users" / "u-first" / "workspaces"
     assert [p.name for p in user_dir.iterdir()] == ["default"]
 
 
