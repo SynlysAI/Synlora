@@ -142,3 +142,17 @@ async def test_malformed_secret_item_is_skipped(store, fernet_key):
     await store.update(CONFIG_COLLECTION, "demo", {"secrets": {"token": "legacy-plain"}})
 
     assert await cs.resolved("demo") == {"base_url": "http://x"}
+
+
+async def test_installed_ids_excludes_user_docs(store, fernet_key):
+    """installed_ids 只统计公共配置，用户维度文档不算"插件已安装"。"""
+    cs = PluginConfigStore(store, fernet_key)
+    await cs.save("demo", {"base_url": "http://public"}, SCHEMA)
+    await cs.save_for_user("u1", "demo", {"token": "mine"}, SCHEMA)
+
+    assert await cs.installed_ids() == ["demo"]
+    assert await cs.resolved_for_user("u1", "demo") == {
+        "base_url": "http://public", "token": "mine"}
+    # 只有个人配置、没有公共配置时，插件整体视为"未安装"
+    await cs.save_for_user("u1", "solo", {"token": "mine"}, SCHEMA)
+    assert await cs.installed_ids() == ["demo"]

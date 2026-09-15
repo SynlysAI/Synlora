@@ -111,6 +111,16 @@ async def test_visible_skill_names_includes_plugin_skills(caps):
     assert "data-analysis" in names_after  # 内置技能不受插件策略影响
 
 
+async def test_market_plugin_rows_include_config_schema(caps):
+    """插件行带 config_schema（用户侧市场据此渲染安装表单）。"""
+    rows = await caps.market_items("u1", "plugin")
+    spec_row = next(r for r in rows if r["id"] == "spec_agent")
+    assert [f["key"] for f in spec_row["config_schema"]] == ["base_url", "token"]
+    # 非插件行不带该字段
+    expert_rows = await caps.market_items("u1", "expert")
+    assert all("config_schema" not in r for r in expert_rows)
+
+
 async def test_visible_ids_matches_per_item_visibility(caps):
     """批量计算与逐条判定结果一致（优化不改变语义）。"""
     await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=False)

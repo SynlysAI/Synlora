@@ -112,7 +112,10 @@ class CapabilityService:
         return out
 
     async def visible_skill_names(self, user_id: str) -> set[str]:
-        """某用户可见的技能名（内置技能按策略 + 插件技能跟随其插件可见性）。
+        """某用户可见的技能名（**只读视图，供测试/诊断用**）。
+
+        注意：运行期过滤请用 hidden_skill_names（黑名单口径），
+        白名单口径会把公共技能目录里管理员自建的技能误挡。
 
         Args:
             user_id: 用户 sub。
@@ -191,7 +194,8 @@ class CapabilityService:
             admin: 管理员视角（hidden 条目也返回）。
 
         Returns:
-            条目字典列表；普通用户视角下 hidden 条目不出现。
+            条目字典列表；普通用户视角下 hidden 条目不出现。插件行额外带
+            `config_schema`（配置字段声明，供用户侧市场渲染安装表单）。
         """
         installed = set(await self.installs.list_for_user(user_id, kind=kind))
         rows: list[dict] = []
@@ -201,12 +205,18 @@ class CapabilityService:
             if hidden and not admin:
                 continue
             is_installed = f"{kind}:{item.id}" in installed
-            rows.append({
+            row = {
                 "kind": item.kind, "id": item.id, "name": item.name,
                 "description": item.description, "source": item.source,
                 "visibility": pol["visibility"],
                 "default_enabled": pol["default_enabled"],
                 "installed": is_installed,
                 "visible": (not hidden) and (pol["default_enabled"] or is_installed),
-            })
+            }
+            # 插件行补配置 schema：用户侧市场据此渲染"安装时填配置"的表单；
+            # 非插件条目无此概念，不加该字段（避免前端误判）
+            if kind == "plugin":
+                pkg = self.catalog.packages.get(item.id)
+                row["config_schema"] = list(pkg.config_schema) if pkg is not None else []
+            rows.append(row)
         return rows

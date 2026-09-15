@@ -1,13 +1,15 @@
 """插件配置落库（敏感字段 Fernet 加密，留空表示保持原值）。
 
-存储形态（集合 plugin_configs，_id = 插件 id）：
+存储形态（集合 plugin_configs）：
     {
-      "_id": "spec_agent",
+      "_id": "spec_agent",                          # 公共配置 = 插件 id
       "config": {"base_url": "http://..."},          # 非敏感字段明文
       "secrets": {"token": {"value": "<密文>", "encrypted": true}},
       "created_at": ..., "updated_at": ...,
     }
-安装状态 = 存在配置记录（jiuwen 式：只认 installed，无全局开关）。
+个人配置与公共配置同集合，_id 加 `USER_DOC_PREFIX`（`user:<uid>:<pid>`）区分。
+安装状态 = 存在公共配置记录（jiuwen 式：只认 installed，无全局开关）；用户维度
+文档是"个人安装记录"，不参与插件整体安装状态判定（见 installed_ids）。
 """
 from __future__ import annotations
 
@@ -20,6 +22,9 @@ from cryptography.fernet import InvalidToken
 from app.core.crypto import decrypt_key, encrypt_key
 
 CONFIG_COLLECTION = "plugin_configs"
+
+# 用户维度配置文档 id 的前缀（公共配置 _id = 插件 id，个人配置加此前缀同集合区分）
+USER_DOC_PREFIX = "user:"
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +39,7 @@ def user_doc_id(user_id: str, plugin_id: str) -> str:
     Returns:
         f"user:{user_id}:{plugin_id}"（与公共配置的 `_id = plugin_id` 区分）。
     """
-    return f"user:{user_id}:{plugin_id}"
+    return f"{USER_DOC_PREFIX}{user_id}:{plugin_id}"
 
 
 class PluginConfigStore:
@@ -62,13 +67,17 @@ class PluginConfigStore:
         return await self._store.get(CONFIG_COLLECTION, plugin_id)
 
     async def installed_ids(self) -> list[str]:
-        """全部已安装（有配置记录）的插件 id。
+        """全部已安装（有公共配置记录）的插件 id。
+
+        只统计公共配置：用户维度文档（`user:<uid>:<pid>`）属个人安装状态，
+        不是"插件整体是否安装"，混入会被当成插件 id 造成启动告警与状态污染。
 
         Returns:
             排序后的插件 id 列表。
         """
         docs = await self._store.list(CONFIG_COLLECTION)
-        return sorted(d["_id"] for d in docs)
+        return sorted(str(d["_id"]) for d in docs
+                      if not str(d["_id"]).startswith(USER_DOC_PREFIX))
 
     async def resolved(self, plugin_id: str) -> dict:
         """解密后的扁平配置（非敏感明文 + 敏感字段解密值）。

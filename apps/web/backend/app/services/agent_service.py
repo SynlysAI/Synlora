@@ -92,8 +92,8 @@ class AgentService:
             file_repo: 文件 repo（file.send 登记产物供下载；None 时该工具报不支持）。
             plugin_service: 插件服务（提供已安装插件的解密配置；None = 无插件注入）。
             capability_service: 能力目录可见性服务（None = 不过滤，保持旧行为）。
-            plugin_config_store: 插件配置存储（按用户维度解析插件配置；None 时回落
-                plugin_service.context_extra()）。
+            plugin_config_store: 插件配置存储（按用户维度解析插件配置）；None 时
+                fail-closed 不注入任何插件配置（工具报"未配置"）。
         """
         self._store = store
         self._settings = settings
@@ -148,14 +148,15 @@ class AgentService:
         """
         store = self._plugin_config_store
         if store is None:
-            # 无用户维度存储：回落旧的"已安装插件配置"注入路径
-            return (self._plugin_service.context_extra()
-                    if self._plugin_service is not None else {})
-        plugin_ids = (
-            await self._capability_service.visible_ids(user_id, "plugin")
-            if self._capability_service is not None
-            else set(await store.installed_ids())
-        )
+            # 无用户维度存储即无法按用户解析：fail-closed 返回空（工具报"未配置"），
+            # 绝不回落公共配置注入——那会绕过可见性与用户维度，把公共凭证给所有人
+            _LOGGER.warning("插件配置存储未注入，本轮不注入插件配置（fail-closed）")
+            return {}
+        if self._capability_service is None:
+            # 无能力服务则无从判定该用户可见哪些插件：同 fail-closed
+            _LOGGER.warning("能力服务未注入，无法按用户解析插件配置（fail-closed）")
+            return {}
+        plugin_ids = await self._capability_service.visible_ids(user_id, "plugin")
         out: dict[str, dict] = {}
         for plugin_id in sorted(plugin_ids):
             try:
