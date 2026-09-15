@@ -51,7 +51,7 @@ async def list_skills(request: Request, user=Depends(get_current_user)):
     Returns:
         技能字典列表。
     """
-    skills = request.app.state.skill_service.list_skills()
+    skills = request.app.state.skill_service.list_skills(user_id=user["sub"])
     caps = getattr(request.app.state, "capability_service", None)
     if caps is None or user.get("role") == "admin":
         return skills
@@ -76,7 +76,7 @@ async def export_skill(request: Request, name: str, user=Depends(get_current_use
     Raises:
         HTTPException: 404 表示技能不存在。
     """
-    for skill in request.app.state.skill_service.list_skills():
+    for skill in request.app.state.skill_service.list_skills(user_id=user["sub"]):
         if skill["name"] == name:
             return PlainTextResponse(render_skill_md(skill))
     raise HTTPException(status_code=404, detail="技能不存在")

@@ -15,6 +15,18 @@ async def test_list_skills_includes_seeds(client, user_headers):
     assert {"data-analysis", "pdf-extraction"} <= names
 
 
+async def test_list_skills_includes_user_own(client, user_headers):
+    """列表端点并入调用者自己的自建技能（前端技能选择器依赖它）。"""
+    created = await client.post("/api/v1/me/skills", json={
+        "name": "owner-only-skill", "description": "只属于我",
+        "content": "## 目标\n只走主人目录。"}, headers=user_headers)
+    assert created.status_code == 201
+
+    names = [s["name"] for s in (await client.get("/api/v1/skills",
+                                                 headers=user_headers)).json()]
+    assert "owner-only-skill" in names
+
+
 async def test_create_skill_requires_admin(client, user_headers):
     """普通用户新建技能 403（写操作需管理员）。"""
     r = await client.post("/api/v1/skills",
