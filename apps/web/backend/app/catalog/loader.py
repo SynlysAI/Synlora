@@ -5,7 +5,7 @@
     <root>/skills/<name>/SKILL.md       → 技能（frontmatter 即元数据，无额外 manifest）
     <root>/plugins/<id>/plugin.json     → 插件（沿用既有插件契约）
 两个根：随仓库的 `apps/web/backend/catalog/` + `{data_dir}/catalog/`（运行期安装预留）。
-非法/缺字段/放错位置的包只告警跳过，不阻断启动；同名后者覆盖前者。
+非法/缺字段/放错位置的包只告警跳过，不阻断启动；同名（同根内或跨根）后者覆盖前者并告警。
 """
 from __future__ import annotations
 
@@ -32,6 +32,11 @@ REQUIRED_FIELDS = ("id", "name", "version", "tools_module")
 EXPERT_MANIFEST = "expert.json"
 EXPERT_REQUIRED = ("id", "name", "system_prompt")
 SKILL_FILE = "SKILL.md"
+
+# 重复条目告警前缀：同根内覆盖与跨根合并共用同一口径（专家/插件按 id，技能按技能名）
+EXPERT_DUP_MSG = "专家 id 重复，后者覆盖前者"
+SKILL_DUP_MSG = "技能名重复，后者覆盖前者"
+PLUGIN_DUP_MSG = "插件 id 重复，后者覆盖前者"
 
 
 @dataclass(frozen=True)
@@ -152,23 +157,34 @@ def scan_catalog(roots: list[Path]) -> CatalogIndex:
     for root in roots:
         if not root.is_dir():
             continue
-        _merge(index.experts, _scan_experts(root), "专家")
-        _merge(index.skills, _scan_skills(root), "技能")
-        _merge(index.plugins, _scan_plugins(root), "插件")
+        _merge(index.experts, _scan_experts(root), EXPERT_DUP_MSG)
+        _merge(index.skills, _scan_skills(root), SKILL_DUP_MSG)
+        _merge(index.plugins, _scan_plugins(root), PLUGIN_DUP_MSG)
     return index
 
 
-def _merge(dst: dict, src: dict, label: str) -> None:
+def _warn_dup(phrase: str, key: str, directory: Path) -> None:
+    """重复条目告警（同根内覆盖与跨根合并共用，文案口径一致）。
+
+    Args:
+        phrase: 类型化告警前缀（如 PLUGIN_DUP_MSG）。
+        key: 重复的键（专家/插件为 id，技能为技能名）。
+        directory: 覆盖者的包目录。
+    """
+    logger.warning("%s: %s（%s）", phrase, key, directory)
+
+
+def _merge(dst: dict, src: dict, phrase: str) -> None:
     """把一次扫描结果并入累计结果（同名后者覆盖前者并告警）。
 
     Args:
         dst: 累计结果（就地更新）。
         src: 本次扫描结果。
-        label: 类型名（告警文案用）。
+        phrase: 类型化告警前缀（如 "专家 id 重复，后者覆盖前者"）。
     """
     for key, pkg in src.items():
         if key in dst:
-            logger.warning("%s id 重复，后者覆盖前者: %s（%s）", label, key, pkg.directory)
+            _warn_dup(phrase, key, pkg.directory)
         dst[key] = pkg
 
 
@@ -179,7 +195,7 @@ def _scan_experts(root: Path) -> dict[str, ExpertPackage]:
         root: catalog 根目录。
 
     Returns:
-        {专家 id: ExpertPackage}；缺必填字段的包只告警跳过。
+        {专家 id: ExpertPackage}；缺必填字段的包只告警跳过，同根重复 id 后者覆盖前者并告警。
     """
     out: dict[str, ExpertPackage] = {}
     experts_dir = root / EXPERTS_DIR
@@ -205,6 +221,8 @@ def _scan_experts(root: Path) -> dict[str, ExpertPackage]:
         if missing:
             logger.warning("专家 manifest 缺字段 %s，已跳过 %s", missing, entry.name)
             continue
+        if expert_id in out:  # 同根内重复 id（目录名 ≠ manifest id 时可能）：告警不静默
+            _warn_dup(EXPERT_DUP_MSG, expert_id, entry)
         out[expert_id] = ExpertPackage(
             id=expert_id,
             name=str(data["name"]),
@@ -224,7 +242,8 @@ def _scan_skills(root: Path) -> dict[str, SkillPackage]:
         root: catalog 根目录。
 
     Returns:
-        {技能名: SkillPackage}（技能名 = 目录名）。
+        {技能名: SkillPackage}（技能名 = 目录名，故单个根内不可能重名；
+        跨根重名由 `scan_catalog` 的 `_merge` 覆盖并告警）。
     """
     out: dict[str, SkillPackage] = {}
     skills_dir = root / SKILLS_DIR
@@ -244,7 +263,7 @@ def _scan_plugins(root: Path) -> dict[str, PluginPackage]:
         root: catalog 根目录。
 
     Returns:
-        {插件 id: PluginPackage}；非法 manifest 只告警跳过。
+        {插件 id: PluginPackage}；非法 manifest 只告警跳过，同根重复 id 后者覆盖前者并告警。
     """
     packages: dict[str, PluginPackage] = {}
     plugins_dir = root / PLUGINS_DIR
@@ -276,6 +295,8 @@ def _scan_plugins(root: Path) -> dict[str, PluginPackage]:
                 for f in schema):
             logger.warning("插件 manifest 的 config_schema 非法（缺 key），已跳过 %s", entry.name)
             continue
+        if plugin_id in packages:  # 同根内重复 id（目录名 ≠ manifest id 时可能）：告警不静默
+            _warn_dup(PLUGIN_DUP_MSG, plugin_id, entry)
         packages[plugin_id] = PluginPackage(
             id=plugin_id,
             name=str(data["name"]),

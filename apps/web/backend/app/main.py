@@ -69,6 +69,12 @@ async def lifespan(app: FastAPI):
     # 注册已安装插件的工具与技能根（插件技能根由 plugin_service.startup()
     # 挂载，先于 AgentService 构造完成）
     index = scan_catalog(catalog_roots(settings))
+    # fail-loud：catalog/ 是数据目录（非 Python 包），非 editable 部署（wheel 式安装、
+    # 只拷 app/ 等）会静默丢掉全部内置内容——此处把"静默为空"变成显眼的启动告警
+    if not (index.experts or index.skills or index.plugins):
+        logger.warning(
+            "未发现任何内置内容（catalog/ 缺失或为空）：内置专家/技能/插件均不可用。"
+            "检查部署是否遗漏 %s", catalog_roots(settings)[0])
     plugin_config_store = PluginConfigStore(store, settings.fernet_key)
     app.state.skill_service = SkillService(settings.data_root)
     app.state.skill_service.seed_builtins()  # 幂等：内置技能是列表能列出它们的前提
@@ -87,9 +93,7 @@ async def lifespan(app: FastAPI):
     # PluginService 的方法本身（活引用）——插件可在运行期安装，快照会漏掉启动后
     # 新挂载的工具（可见性算不出 → 被误当不可见而过滤）。
     app.state.capability_service = CapabilityService(
-        catalog=CatalogService(settings=settings,
-                               skill_service=app.state.skill_service,
-                               index=index),
+        catalog=CatalogService(index=index),
         policy=CatalogPolicyRepo(store),
         installs=UserCapabilityRepo(store),
         tool_names_by_plugin=app.state.plugin_service.tool_names_by_plugin,

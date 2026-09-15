@@ -141,3 +141,5 @@ pm2 logs synlys-agent   # 查看日志；pm2 save 可持久化进程列表
 ```
 
 实际执行体为 `apps/web/backend/run_uvicorn.py`（读取 `.env` 后 `uvicorn.run` 启动），崩溃自动重启（最多 10 次、间隔 3s）。
+
+**部署注意（内置内容目录）**：`apps/web/backend/catalog/`（内置专家/技能/插件）是**数据目录而非 Python 包**，`pyproject.toml` 的 `include = ["app*"]` 不含它，因此 **editable 安装之外的部署（wheel 式安装、只同步 `app/` 的发布产物等）不会自动带上它**，必须把 `catalog/` 与 `app` 包一起部署到同级位置（源码部署即 `apps/web/backend/catalog/`）。缺失时内置内容为空（能力中心看不到任何专家/技能/插件），启动日志会告警「未发现任何内置内容」。

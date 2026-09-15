@@ -310,7 +310,83 @@ def test_scan_skills_duplicate_name_last_wins(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
         skills = scan_catalog([root_a, root_b]).skills
     assert skills["dup"].directory == d_b
-    assert "技能 id 重复" in caplog.text
+    assert "技能名重复" in caplog.text
+
+
+def test_same_root_duplicate_plugin_id_warns(tmp_path, caplog):
+    """同根两个目录声明同一 plugin id：后者覆盖且**告警**（不静默）。"""
+    root = tmp_path / "catalog"
+    for dirname in ("a", "b"):
+        d = root / "plugins" / dirname
+        d.mkdir(parents=True)
+        (d / "plugin.json").write_text(json.dumps({
+            "id": "dup", "name": f"插件{dirname}", "version": "1.0.0",
+            "tools_module": "tools.py"}, ensure_ascii=False), encoding="utf-8")
+        (d / "tools.py").write_text("", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="app.catalog.loader"):
+        index = scan_catalog([root])
+    assert index.plugins["dup"].name == "插件b"
+    assert any("重复" in r.getMessage() for r in caplog.records)
+
+
+def test_same_root_duplicate_expert_id_warns(tmp_path, caplog):
+    """同根两个专家目录声明同一 expert id：后者覆盖且**告警**（不静默）。"""
+    root = tmp_path / "catalog"
+    for dirname in ("a", "b"):
+        _make_expert(root, dirname, manifest={**EXPERT_MANIFEST, "name": f"专家{dirname}"})
+
+    with caplog.at_level("WARNING", logger="app.catalog.loader"):
+        index = scan_catalog([root])
+    assert index.experts["asst-demo"].name == "专家b"
+    assert any("重复" in r.getMessage() for r in caplog.records)
+
+
+async def test_startup_warns_when_catalog_empty(tmp_path, caplog, monkeypatch):
+    """catalog 为空时启动告警（fail-loud）：模拟非 editable 部署遗漏 catalog/。"""
+    from cryptography.fernet import Fernet
+
+    from app.main import create_app
+
+    empty = tmp_path / "no-catalog"
+    empty.mkdir()
+    # 两个扫描根都指向不存在的目录 → 内置内容为空（仓库根被替换掉）
+    monkeypatch.setattr("app.main.catalog_roots", lambda settings: [empty, empty / "nope"])
+    application = create_app()
+    application.state.settings = Settings(
+        auth_secret="api-test-secret",
+        auth_enabled=True,
+        storage_backend="sqlite",
+        sqlite_path=str(tmp_path / "empty.db"),
+        data_dir=str(tmp_path / "empty-data"),
+        fernet_key=Fernet.generate_key().decode(),
+    )
+    with caplog.at_level(logging.WARNING, logger="synlys.web"):
+        async with application.router.lifespan_context(application):
+            pass
+    assert any("未发现任何内置内容" in r.getMessage() for r in caplog.records)
+
+
+async def test_startup_silent_when_catalog_present(tmp_path, caplog):
+    """catalog 有内容时不告警（避免狼来了：告警只在真的空时出现）。"""
+    from cryptography.fernet import Fernet
+
+    from app.main import create_app
+
+    # 用真实仓库根（随仓库带内置内容），仅数据目录为空
+    application = create_app()
+    application.state.settings = Settings(
+        auth_secret="api-test-secret",
+        auth_enabled=True,
+        storage_backend="sqlite",
+        sqlite_path=str(tmp_path / "full.db"),
+        data_dir=str(tmp_path / "full-data"),
+        fernet_key=Fernet.generate_key().decode(),
+    )
+    with caplog.at_level(logging.WARNING, logger="synlys.web"):
+        async with application.router.lifespan_context(application):
+            pass
+    assert not any("未发现任何内置内容" in r.getMessage() for r in caplog.records)
 
 
 def test_load_plugin_tools_collects_decorated_functions(tmp_path):
