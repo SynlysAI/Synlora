@@ -70,6 +70,15 @@ apps/web/backend/catalog/plugins/<id>/
 
 **已接入**：`spec_agent`（Spec_Agent 核磁预测三件套 `spec.nmr.forward/reverse/search`；安装后自动播种「谱图解析专家」；服务端未开鉴权时凭证留空）。
 
+**获取访问凭证（Spec_Agent 开启了鉴权时）**：Spec_Agent 的 token 是 HMAC-SHA256 自签、解析时回查 `ai4ms.users`（要求 `sub` 对应用户存在且 `active`），所以需要一个**已存在的 active 账号**来签长期 token（默认 12h 的登录 token 不适合做服务集成）。用仓库里的脚本一键签发：
+
+```bash
+conda run -n synlysagent python docker/spec-agent/mint_token.py --list          # 列出可用账号
+conda run -n synlysagent python docker/spec-agent/mint_token.py --username <账号>  # 签 365 天 token
+```
+
+脚本自动读 Spec_Agent 的 `AUTH_SECRET` / `AUTH_MONGODB_URI`（默认 `E:/github_project/Spec_Agent/backend/.env`，可用 `--env-file` 指定），Mongo 不可达时可用 `--user-id/--username/--role` 直接指定账号。签出的 token 粘进管理后台「插件」页 → Spec_Agent → 配置 → **访问凭证**（保存即生效，无需重启；轮换时重跑脚本覆盖即可）。缺 token 时的典型表现是工具返回 `401 未登录或登录已失效`。
+
 ## 能力目录与可见性（市场机制）
 
 **设计原则：内置项随仓库走，可见性由策略控制，用户安装只写记录。** 「专家 / 技能 / 插件」统一纳入能力目录（`app/catalog/`），三层模型如下（参考 jiuwen 的目录分层 + DSH 的配置分层）：
