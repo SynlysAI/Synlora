@@ -90,6 +90,9 @@ class CapabilityService:
     async def visible_ids(self, user_id: str, kind: str) -> set[str]:
         """某用户在某类下可见的全部条目 id。
 
+        判定口径为「已装且启用」：已安装但被用户停用（enabled=False）的条目
+        与未安装同等不可见，绝不进入运行期上下文或列表。
+
         Args:
             user_id: 用户 sub。
             kind: 条目类型。
@@ -100,14 +103,14 @@ class CapabilityService:
         items = self.catalog.list_items(kind)
         if not items:
             return set()
-        # 一次取回该用户的安装记录，避免逐条查询
-        installed = set(await self.installs.list_for_user(user_id, kind=kind))
+        # 一次取回该用户的启用集，避免逐条查询
+        enabled = await self.installs.enabled_item_ids(user_id, kind)
         out: set[str] = set()
         for item in items:
             pol = await self.policy.get(kind, item.id)
             if pol["visibility"] == "hidden":
                 continue
-            if pol["default_enabled"] or f"{kind}:{item.id}" in installed:
+            if pol["default_enabled"] or item.id in enabled:
                 out.add(item.id)
         return out
 
@@ -188,6 +191,12 @@ class CapabilityService:
                            *, admin: bool = False) -> list[dict]:
         """市场列表（条目 + 策略 + 安装状态）。
 
+        行的三个状态字段口径：
+        - `installed`：是否写过安装记录（与是否停用无关）；
+        - `enabled`：已装条目是否启用（未装恒 False）；
+        - `visible`：运行期是否真的对该用户可见 —— 停用视为不可见
+          （即 visible = public 且（默认启用 或 已装且启用））。
+
         Args:
             user_id: 用户 sub。
             kind: 条目类型。
@@ -198,6 +207,7 @@ class CapabilityService:
             `config_schema`（配置字段声明，供用户侧市场渲染安装表单）。
         """
         installed = set(await self.installs.list_for_user(user_id, kind=kind))
+        enabled = await self.installs.enabled_item_ids(user_id, kind)
         rows: list[dict] = []
         for item in self.catalog.list_items(kind):
             pol = await self.policy.get(kind, item.id)
@@ -205,13 +215,15 @@ class CapabilityService:
             if hidden and not admin:
                 continue
             is_installed = f"{kind}:{item.id}" in installed
+            is_enabled = item.id in enabled
             row = {
                 "kind": item.kind, "id": item.id, "name": item.name,
                 "description": item.description, "source": item.source,
                 "visibility": pol["visibility"],
                 "default_enabled": pol["default_enabled"],
                 "installed": is_installed,
-                "visible": (not hidden) and (pol["default_enabled"] or is_installed),
+                "enabled": is_enabled,
+                "visible": (not hidden) and (pol["default_enabled"] or is_enabled),
             }
             # 插件行补配置 schema：用户侧市场据此渲染"安装时填配置"的表单；
             # 非插件条目无此概念，不加该字段（避免前端误判）

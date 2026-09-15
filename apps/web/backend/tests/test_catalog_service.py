@@ -147,3 +147,23 @@ async def test_visible_ids_matches_per_item_visibility(caps):
     per_item = {i.id for i in caps.catalog.list_items("skill")
                 if await caps.is_visible("u1", "skill", i.id)}
     assert batch == per_item
+
+
+async def test_disabled_install_is_not_visible(caps, store):
+    """已装但停用 → 与未装同等不可见，并进入技能黑名单。"""
+    caps.installs = UserCapabilityRepo(store)
+    await caps.installs.install("u1", "skill", "office-doc")
+    assert "office-doc" in await caps.visible_ids("u1", "skill")
+    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
+    assert "office-doc" not in await caps.visible_ids("u1", "skill")
+    assert "office-doc" in await caps.hidden_skill_names("u1")
+
+
+async def test_market_items_expose_enabled(caps, store):
+    """市场行暴露 enabled：已装但停用 → installed=True / enabled=False / visible=False。"""
+    caps.installs = UserCapabilityRepo(store)
+    await caps.installs.install("u1", "skill", "office-doc")
+    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
+    rows = await caps.market_items("u1", "skill")
+    row = next(r for r in rows if r["id"] == "office-doc")
+    assert row["installed"] is True and row["enabled"] is False and row["visible"] is False
