@@ -52,7 +52,7 @@ Synlora/
 │   └── frontend/                # React 19 + TS + Vite 三栏工作台（npm run build 产物由后端托管）
 ├── docs/superpowers/            # 设计文档（specs/）、实施计划（plans/）、验收报告与截图（acceptance/）
 ├── ecosystem.config.cjs         # PM2 部署配置
-└── data/                        # 运行时数据（不入库）：public/{skills,catalog}（公共层）、users/<uid>/{workspaces,sessions,skills,experts}（用户层；不选工作区的会话以 sessions/{sid} 为工作区，文件与产物跟会话走）、sqlite 库
+└── data/                        # 运行时数据（不入库）：public/{skills,catalog}（公共层）、users/<uid>/{workspaces,sessions,skills,experts}（用户层；不选工作区的会话以 sessions/{sid}/workspace 为工作区，文件与产物跟会话走）、sqlite 库
 ```
 
 ## 快速开始

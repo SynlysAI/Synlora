@@ -123,9 +123,9 @@ async def _normalize_attachments(request: Request, user: dict, repos: Repos,
             continue
         # 跨根：定位原文件（按记录归属解析）并复制进本会话根 files/
         if doc.get("session_id"):
-            src = workspace.user_sessions_root(
-                request.app.state.settings.data_root, user["sub"]
-            ) / str(doc["session_id"]) / stored_path
+            src = workspace.session_root(
+                request.app.state.settings.data_root, user["sub"],
+                str(doc["session_id"])) / stored_path
         else:
             owner = None
             if doc.get("project_id"):
@@ -303,9 +303,9 @@ async def delete_session(sid: str, request: Request,
                          repos=Depends(get_repos)) -> dict:
     """删除会话：session doc + 全部事件副本 + 会话目录整树 + 会话文件记录。
 
-    会话目录（sessions/{sid}）对无工作区会话而言就是工作区（files/output/tmp 与
-    events.jsonl 都在其中），整目录移除即"会话删了产物一并删"；其下上传文件的
-    记录（session_id 归属）同步删除，不留孤儿记录。
+    会话目录（sessions/{sid}）对无工作区会话而言装着工作区（workspace/ 下的
+    files/output/tmp）与事件日志（events.jsonl），整目录移除即"会话删了产物一并
+    删"；workspace 里上传文件的记录（session_id 归属）同步删除，不留孤儿记录。
     """
     doc = await _own_session(sid, user, repos)
     for ev in await repos.event.list(filters={"session_id": sid}):

@@ -116,7 +116,10 @@ async def _resolve_file_project(service: ProjectService, user_id: str,
 
 
 def _session_files_dir(data_root: Path, user_id: str, session_id: str) -> Path:
-    """会话文件的磁盘根（纯拼路径不建目录，供下载/删除这类只读路径使用）。
+    """会话文件的磁盘根（纯拼路径不建目录，供下载/删除/树这类只读路径使用）。
+
+    与 workspace.session_root 同根（sessions/{sid}/workspace）：stored_path 相对
+    该根，events.jsonl 在上一层、不在文件视野内。
 
     Args:
         data_root: 数据根目录。
@@ -124,9 +127,10 @@ def _session_files_dir(data_root: Path, user_id: str, session_id: str) -> Path:
         session_id: 会话 id。
 
     Returns:
-        {data_root}/users/{user_id}/sessions/{session_id} 路径。
+        {data_root}/users/{user_id}/sessions/{session_id}/workspace 路径。
     """
-    return workspace.user_sessions_root(data_root, user_id) / session_id
+    return (workspace.user_sessions_root(data_root, user_id)
+            / session_id / "workspace")
 
 
 async def _file_disk_root(service: ProjectService, data_root: Path, user_id: str,

@@ -143,9 +143,12 @@ def public_skills_root(data_root: Path) -> Path:
 def session_root(data_root: Path, user_id: str, session_id: str) -> Path:
     """无工作区会话的运行根（自动创建 files/output/tmp，结构与项目目录一致）。
 
-    不选工作区的会话（project_id 为空）以 `sessions/{sid}` 自身为 agent 工作区：
-    python.run 的 cwd、沙箱挂载点、上传附件的落点都在这里；删除会话即整目录移除。
-    sid 由本系统生成（无路径成分），但仍按 project_root 同口径守卫，防脏数据越界。
+    不选工作区的会话（project_id 为空）以 `sessions/{sid}/workspace` 为 agent
+    工作区：python.run 的 cwd、沙箱挂载点、上传附件的落点都在这里。工作区下沉
+    一层是为了把 `events.jsonl`（审计日志，落在 sessions/{sid} 根）挡在模型与
+    文件树视野之外——列目录只会看到 files/output/tmp，不会诱导模型去读日志。
+    删除会话即整目录（sessions/{sid}）移除。sid 由本系统生成（无路径成分），
+    但仍按 project_root 同口径守卫，防脏数据越界。
 
     Args:
         data_root: 数据根目录。
@@ -153,7 +156,7 @@ def session_root(data_root: Path, user_id: str, session_id: str) -> Path:
         session_id: 会话 id。
 
     Returns:
-        {data_root}/users/{user_id}/sessions/{session_id} 路径。
+        {data_root}/users/{user_id}/sessions/{session_id}/workspace 路径。
 
     Raises:
         ValueError: session_id 为空、为 . / .. 或含路径分隔符（防止越界写出用户目录）。
@@ -161,7 +164,7 @@ def session_root(data_root: Path, user_id: str, session_id: str) -> Path:
     if (not session_id or session_id in {".", ".."}
             or "/" in session_id or "\\" in session_id):
         raise ValueError(f"非法会话 id: {session_id!r}")
-    root = user_sessions_root(data_root, user_id) / session_id
+    root = user_sessions_root(data_root, user_id) / session_id / "workspace"
     for sub in PROJECT_SUBDIRS:
         (root / sub).mkdir(parents=True, exist_ok=True)
     return root

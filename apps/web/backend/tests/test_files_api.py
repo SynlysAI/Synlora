@@ -592,17 +592,19 @@ async def test_session_files_lifecycle(app, client, user_headers):
     assert r.status_code == 201, r.text
     fid = r.json()["results"][0]["file"]["_id"]
 
-    # 磁盘落点：会话目录（不是任何 workspaces/）
-    sid_dir = app.state.settings.data_root / "users" / "u-user" / "sessions" / sid
-    assert (sid_dir / "files" / "a.txt").read_bytes() == b"session-a"
+    # 磁盘落点：会话工作区（sessions/{sid}/workspace，不是任何 workspaces/）
+    ws_dir = (app.state.settings.data_root / "users" / "u-user" / "sessions" / sid
+              / "workspace")
+    assert (ws_dir / "files" / "a.txt").read_bytes() == b"session-a"
 
-    # 列表与树（右栏两个数据源）
+    # 列表与树（右栏两个数据源）：树根是 workspace/，只有 files/output/tmp
+    # （events.jsonl 在会话根、不在模型与文件树视野内）
     listed = (await client.get(f"/api/v1/sessions/{sid}/files",
                                headers=user_headers)).json()
     assert [f["_id"] for f in listed] == [fid]
     tree = (await client.get(f"/api/v1/sessions/{sid}/tree",
                              headers=user_headers)).json()
-    assert [e["name"] for e in tree if e["is_dir"]] == ["files", "output", "tmp"]
+    assert [e["name"] for e in tree] == ["files", "output", "tmp"]
 
     # 下载走会话根解析；任何项目列表都不含它
     assert await _download(client, user_headers, {"_id": fid}) == b"session-a"
@@ -613,7 +615,7 @@ async def test_session_files_lifecycle(app, client, user_headers):
 
     assert (await client.delete(f"/api/v1/files/{fid}",
                                 headers=user_headers)).status_code == 200
-    assert not (sid_dir / "files" / "a.txt").exists()
+    assert not (ws_dir / "files" / "a.txt").exists()
 
 
 async def test_session_files_require_own_session(app, client, admin_headers,

@@ -915,11 +915,13 @@ async def test_session_without_project_id_compatible(app, client, admin_headers,
     assert doc.get("project_id") is None
 
     # 反向断言（普通用户视角，与上面签 admin token 的用例互补）：事件落本人目录；
-    # 会话目录同时是工作区（files/output/tmp 已建）
+    # 会话目录同时是工作区（workspace/ 下 files/output/tmp 已建；events.jsonl
+    # 在会话根，与模型可见的工作区隔离）
     data_root = app.state.settings.data_root
     sid_dir = data_root / "users" / "u-user" / "sessions" / sid
     assert (sid_dir / "events.jsonl").exists()
-    assert (sid_dir / "files").is_dir() and (sid_dir / "tmp").is_dir()
+    ws = sid_dir / "workspace"
+    assert (ws / "files").is_dir() and (ws / "tmp").is_dir()
     # 没落进他人（admin）目录
     assert not (data_root / "users" / "u-admin" / "sessions" / sid).exists()
     # 旧的扁平路径不再写入
@@ -973,9 +975,9 @@ async def test_agent_workspace_is_project_root(app, client, admin_headers,
                               json={"assistant_id": "asst-data"})).json()["_id"]
     await _chat_once(client, user_headers, sid2, "第二问")
     sessions_dir = app.state.settings.data_root / "users" / "u-user" / "sessions"
-    assert captured[-1] == sessions_dir / sid2
+    assert captured[-1] == sessions_dir / sid2 / "workspace"
     assert captured[-1] != user_dir
-    assert (captured[-1] / "tmp").is_dir()  # python.run 的 cwd 落在会话目录内
+    assert (captured[-1] / "tmp").is_dir()  # python.run 的 cwd 落在会话工作区内
 
 
 async def test_attachment_copied_into_session_root(app, client, admin_headers,
@@ -1003,7 +1005,7 @@ async def test_attachment_copied_into_session_root(app, client, admin_headers,
     att = user_ev["payload"]["attachments"][0]
     sid_dir = app.state.settings.data_root / "users" / "u-user" / "sessions" / sid
     assert att["path"] == f"files/{att['filename']}"
-    assert (sid_dir / att["path"]).read_bytes() == b"a\n1"
+    assert (sid_dir / "workspace" / att["path"]).read_bytes() == b"a\n1"
     # 副本记录带 session_id 归属；原件仍在项目里
     clone = await app.state.store.get("files", att["file_id"])
     assert clone["session_id"] == sid
@@ -1326,7 +1328,7 @@ async def test_foreign_project_id_rejected_and_fallback_stays_own(
     await _chat_once(client, user_headers, sid)
 
     sessions_dir = app.state.settings.data_root / "users" / "u-user" / "sessions"
-    assert captured[-1] == sessions_dir / sid  # 会话目录为工作区，不回落本人项目
+    assert captured[-1] == sessions_dir / sid / "workspace"  # 会话工作区，不回落本人项目
     assert "u-admin" not in captured[-1].parts  # 没跑进他人目录
     my_root = app.state.project_service.root_for(
         await app.state.project_service.get("u-user", my_pid))
@@ -1965,7 +1967,7 @@ async def test_file_send_end_to_end(app, client, admin_headers, monkeypatch):
     run_id = (await _wait_for_running_runs(app, 1))[0]
     run_doc = await app.state.store.get("runs", run_id)
     sid_dir = (app.state.settings.data_root / "users" / run_doc["user_id"]
-               / "sessions" / sid)
+               / "sessions" / sid / "workspace")
     out_dir = sid_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.md").write_text("# 报告\n测试产物", encoding="utf-8")
