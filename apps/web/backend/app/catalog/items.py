@@ -1,25 +1,31 @@
 """内置目录条目枚举。
 
-内置项只有三个来源，全部只读（首期不支持用户自建）：
-- 专家：catalog 专家包 catalog/experts/<dir>/expert.json（插件播种的 asst-plugin-*
-  专家模板跟随其插件，不算独立条目）；
-- 技能：随仓库播种到技能目录的内置技能（名字在 skill_service.BUILTIN_SKILL_NAMES 中）；
-- 插件：扫描到的插件包（随仓库 catalog/plugins/ + 数据目录 catalog/plugins/）。
+三类内置条目**一律来自** `apps/web/backend/catalog/`（按类型分目录，只读，
+首期不支持用户自建），由 `app.catalog.loader.scan_catalog()` 一次扫描得出：
+
+- 专家：`catalog/experts/<dir>/expert.json`（插件播种的 `asst-plugin-*` 专家
+  由插件运行时生成，不落在 catalog 里，天然不计入）；
+- 技能：`catalog/skills/<name>/SKILL.md`（frontmatter 即元数据，无额外 manifest）；
+- 插件：`catalog/plugins/<id>/plugin.json`（沿用既有插件契约）。
+
+另有数据目录根 `{data_dir}/catalog/`（运行期安装预留），同名后者覆盖前者。
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from app.services.skill_service import BUILTIN_SKILL_NAMES
+import yaml
+
+from app.services.skill_service import parse_skill_md
 
 if TYPE_CHECKING:
     from app.catalog.loader import CatalogIndex, PluginPackage
-    from app.core.settings import Settings
-    from app.services.skill_service import SkillService
+
+logger = logging.getLogger(__name__)
 
 KINDS = ("expert", "skill", "plugin")
-EXPERT_ID_PREFIX = "asst-plugin-"  # 插件播种专家不计入目录
 
 
 @dataclass(frozen=True)
@@ -42,19 +48,14 @@ class CatalogItem:
 
 
 class CatalogService:
-    """内置条目的只读枚举。"""
+    """内置条目的只读枚举（三类来源均为一次 catalog 扫描的结果）。"""
 
-    def __init__(self, settings: "Settings", skill_service: "SkillService",
-                 index: "CatalogIndex") -> None:
+    def __init__(self, index: "CatalogIndex") -> None:
         """保存依赖。
 
         Args:
-            settings: 应用配置。
-            skill_service: 技能服务（枚举已播种的内置技能）。
-            index: catalog 扫描结果（本类用到其中的专家包与插件包）。
+            index: 一次 catalog 扫描的结果（三类包）。
         """
-        self._settings = settings
-        self._skill_service = skill_service
         self._index = index
 
     @property
@@ -92,12 +93,11 @@ class CatalogService:
         return [item for kind in KINDS for item in self.list_items(kind)]
 
     def _experts(self) -> list[CatalogItem]:
-        """内置专家条目（catalog 专家包，排除插件播种的助手）。
+        """内置专家条目（catalog 专家包）。
 
         Returns:
-            条目列表。
+            条目列表（按 id 排序）。
         """
-        # TODO(T3): 与技能/插件统一走 CatalogIndex 的字段口径
         return sorted(
             (
                 CatalogItem(
@@ -106,34 +106,33 @@ class CatalogService:
                     description=pkg.description,
                 )
                 for pkg in self._index.experts.values()
-                if not pkg.id.startswith(EXPERT_ID_PREFIX)
             ),
             key=lambda i: i.id,
         )
 
     def _skills(self) -> list[CatalogItem]:
-        """内置技能条目（已播种到技能目录的内置技能）。
+        """内置技能条目（catalog/skills 包，描述取 SKILL.md frontmatter）。
 
         Returns:
-            条目列表。
+            条目列表（按 id 排序）。
         """
-        return sorted(
-            (
-                CatalogItem(
-                    kind="skill", id=s["name"],
-                    name=s["name"], description=str(s.get("description") or ""),
-                )
-                for s in self._skill_service.list_skills()
-                if s["name"] in BUILTIN_SKILL_NAMES
-            ),
-            key=lambda i: i.id,
-        )
+        out: list[CatalogItem] = []
+        for pkg in self._index.skills.values():
+            md = pkg.directory / "SKILL.md"
+            try:
+                meta = parse_skill_md(md.read_text(encoding="utf-8"))
+                desc = str(meta.get("description") or "")
+            except (OSError, ValueError, yaml.YAMLError):
+                logger.warning("catalog 技能 %s 的 SKILL.md 解析失败，描述留空", pkg.name)
+                desc = ""
+            out.append(CatalogItem(kind="skill", id=pkg.name, name=pkg.name, description=desc))
+        return sorted(out, key=lambda i: i.id)
 
     def _plugins(self) -> list[CatalogItem]:
         """内置插件条目（扫描到的插件包）。
 
         Returns:
-            条目列表。
+            条目列表（按 id 排序）。
         """
         return sorted(
             (

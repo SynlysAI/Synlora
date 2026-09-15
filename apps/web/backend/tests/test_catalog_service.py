@@ -10,7 +10,6 @@ from app.catalog.policy import CatalogPolicyRepo
 from app.catalog.service import CapabilityService
 from app.catalog.user_caps import UserCapabilityRepo
 from app.core.settings import Settings
-from app.services.skill_service import SkillService
 
 SPEC_TOOLS = {"spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"}
 
@@ -19,11 +18,8 @@ SPEC_TOOLS = {"spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"}
 def caps(store, tmp_path) -> CapabilityService:
     """组装 CapabilityService（真实 store + 仓库插件包 + 注入工具映射）。"""
     settings = Settings(data_dir=str(tmp_path), fernet_key=Fernet.generate_key().decode())
-    skill_service = SkillService(tmp_path)
-    skill_service.seed_builtins()
     return CapabilityService(
-        catalog=CatalogService(settings=settings, skill_service=skill_service,
-                               index=scan_catalog(catalog_roots(settings))),
+        catalog=CatalogService(index=scan_catalog(catalog_roots(settings))),
         policy=CatalogPolicyRepo(store),
         installs=UserCapabilityRepo(store),
         tool_names_by_plugin={"spec_agent": set(SPEC_TOOLS)},
