@@ -38,12 +38,10 @@ def get_capability_service(request: Request):
     return service
 
 
-async def _install_core(request: Request, service, user_id: str, kind: str,
-                        item_id: str) -> None:
-    """安装某条目的公共核心（既有的 POST 安装与新 PUT 开关共用）。
+async def _require_installable(service, user_id: str, kind: str, item_id: str) -> None:
+    """前置判定：条目不可安装则 404（新旧安装路径共用，保证文案只有一处）。
 
     Args:
-        request: FastAPI 请求（取插件服务）。
         service: 能力服务。
         user_id: 用户 sub。
         kind: 条目类型。
@@ -54,6 +52,19 @@ async def _install_core(request: Request, service, user_id: str, kind: str,
     """
     if not await service.can_install(user_id, kind, item_id):
         raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
+
+
+async def _install_core(request: Request, service, user_id: str, kind: str,
+                        item_id: str) -> None:
+    """落安装记录并挂载插件（调用方须已先过 `_require_installable`）。
+
+    Args:
+        request: FastAPI 请求（取插件服务）。
+        service: 能力服务。
+        user_id: 用户 sub。
+        kind: 条目类型。
+        item_id: 条目 id。
+    """
     await service.installs.install(user_id, kind, item_id)
     if kind == "plugin":
         # 安装即挂载（进程级能力可用性）：插件包的工具/技能根不依赖"管理员是否
@@ -137,6 +148,8 @@ async def install_capability(kind: str, item_id: str, request: Request,
     """
     if kind not in KINDS:
         raise HTTPException(404, f"未知类型: {kind}")
+    # 先判可安装再校验 config：hidden 插件必须被 404 挡住，不能借 422 回显其配置字段名
+    await _require_installable(service, user["sub"], kind, item_id)
     values = dict(body.config) if body is not None else {}
     if kind == "plugin" and values:
         packages = getattr(request.app.state, "plugin_packages", None) or {}
@@ -263,6 +276,7 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
         raise HTTPException(404, f"未知类型: {kind}")
     user_id = user["sub"]
     if body.installed is True:
+        await _require_installable(service, user_id, kind, item_id)
         await _install_core(request, service, user_id, kind, item_id)
     elif body.installed is False:
         await service.installs.uninstall(user_id, kind, item_id)
