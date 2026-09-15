@@ -64,10 +64,10 @@ data_root/
 可见性判定链（复用现有 `CapabilityService`，只加一层）：
 
 ```
-exists(条目在 catalog) → visibility != hidden → default_enabled 或 已安装
-                                                     ↓ 已安装时再加
-                                              enabled == true 才注入运行期
+exists(条目在 catalog) → visibility != hidden → 已安装 ? 启用态 : default_enabled
 ```
+
+即**用户的显式动作优先于平台默认**：装过就以他的启用/停用为准（停用即不可见，与未装同等），没装过才看 `default_enabled`。这样「默认启用」的条目被用户停用后真正失效，而不是徽标显示"已停用"却照样注入运行期。
 
 - "已装但停用"的技能名要进 `hidden_skill_names`（与"未装"同样是不可见），插件同理不进 `ctx.extra`。
 - 市场列表返回每个条目的 `installed` / `enabled`，前端据此渲染按钮态。
