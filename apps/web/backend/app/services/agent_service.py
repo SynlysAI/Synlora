@@ -80,7 +80,8 @@ class AgentService:
 
     def __init__(self, store: Any, settings: Any, event_repo: Any,
                  skill_service: SkillService, file_repo: Any = None,
-                 plugin_service: Any = None) -> None:
+                 plugin_service: Any = None, capability_service: Any = None,
+                 plugin_config_store: Any = None) -> None:
         """保存依赖。
 
         Args:
@@ -90,6 +91,9 @@ class AgentService:
             skill_service: 技能服务（磁盘扫描目录 + 按名取正文）。
             file_repo: 文件 repo（file.send 登记产物供下载；None 时该工具报不支持）。
             plugin_service: 插件服务（提供已安装插件的解密配置；None = 无插件注入）。
+            capability_service: 能力目录可见性服务（None = 不过滤，保持旧行为）。
+            plugin_config_store: 插件配置存储（按用户维度解析插件配置；None 时回落
+                plugin_service.context_extra()）。
         """
         self._store = store
         self._settings = settings
@@ -97,6 +101,8 @@ class AgentService:
         self._skill_service = skill_service
         self._file_repo = file_repo
         self._plugin_service = plugin_service
+        self._capability_service = capability_service
+        self._plugin_config_store = plugin_config_store
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
@@ -129,6 +135,35 @@ class AgentService:
                 _LOGGER.info("python.run 沙箱: %s", note)
             self._executor = executor
         return self._executor
+
+    async def _visible_plugin_configs(self, user_id: str) -> dict[str, dict]:
+        """该用户可见插件的配置（公共打底、个人覆盖）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            {插件 id: 扁平配置}；单条解密失败只跳过该插件（工具会报未配置），
+            不打挂整轮对话。
+        """
+        store = self._plugin_config_store
+        if store is None:
+            # 无用户维度存储：回落旧的"已安装插件配置"注入路径
+            return (self._plugin_service.context_extra()
+                    if self._plugin_service is not None else {})
+        plugin_ids = (
+            await self._capability_service.visible_ids(user_id, "plugin")
+            if self._capability_service is not None
+            else set(await store.installed_ids())
+        )
+        out: dict[str, dict] = {}
+        for plugin_id in sorted(plugin_ids):
+            try:
+                out[plugin_id] = await store.resolved_for_user(user_id, plugin_id)
+            except RuntimeError:
+                # 解密失败：跳过该插件（工具会报未配置），不打挂整轮
+                continue
+        return out
 
     def _jsonl_path(self, session_id: str) -> Path:
         """会话事件文件路径（父目录自动创建）。
@@ -257,6 +292,11 @@ class AgentService:
             # 技能：全局目录（磁盘扫描）+ 本会话选中项（None/空 = 全部可用）；
             # 索引进提示词，正文只入 context_extra（渐进披露，由 skill.read 按需取）
             all_skills = self._skill_service.list_skills()
+            if self._capability_service is not None:
+                # 技能可见性：内置技能按策略、插件技能跟随其插件可见性
+                visible_skills = await self._capability_service.visible_skill_names(
+                    user["sub"])
+                all_skills = [s for s in all_skills if s["name"] in visible_skills]
             if requested_skills:
                 active_skills = [s for s in all_skills
                                  if s["name"] in set(requested_skills)]
@@ -284,6 +324,18 @@ class AgentService:
                 tool_names = list(dict.fromkeys([*tool_names, "file.read_image"]))
             else:
                 tool_names = [t for t in tool_names if t != "file.read_image"]
+            # 能力目录可见性：插件贡献的工具必须对该用户可见才保留（内置工具不受影响）
+            if self._capability_service is not None:
+                caps = self._capability_service
+                all_plugin_tools = {
+                    t for names in caps.tool_names_by_plugin.values() for t in names
+                }
+                if all_plugin_tools:
+                    visible_tools = await caps.visible_tool_names(user["sub"])
+                    tool_names = [
+                        t for t in tool_names
+                        if t not in all_plugin_tools or t in visible_tools
+                    ]
 
             # ask_user：发 ask/user 事件（落盘+SSE）并等待前端回答 future
             async def ask_handler(payload: dict) -> str:
@@ -345,8 +397,9 @@ class AgentService:
                     "ask_user_handler": ask_handler,
                     "send_file_handler": send_file_handler,
                     "approval_handler": approval_handler,
-                    # 插件配置命名空间（已安装插件的解密配置；核心不认识任何插件专属字段）
-                    "plugins": (self._plugin_service.context_extra()
+                    # 插件配置命名空间（仅注入该用户可见的插件，个人配置优先；
+                    # 核心不认识任何插件专属字段）
+                    "plugins": (await self._visible_plugin_configs(user["sub"])
                                 if self._plugin_service is not None else {}),
                 },
             )

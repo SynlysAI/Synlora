@@ -42,16 +42,21 @@ class SkillImportBody(BaseModel):
 
 @router.get("")
 async def list_skills(request: Request, user=Depends(get_current_user)):
-    """列出全部技能。
+    """列出技能（普通用户按可见性过滤，管理员看全部）。
 
     Args:
-        request: FastAPI 请求（取 app.state.skill_service）。
+        request: FastAPI 请求（取 app.state.skill_service 与 capability_service）。
         user: 当前登录用户。
 
     Returns:
         技能字典列表。
     """
-    return request.app.state.skill_service.list_skills()
+    skills = request.app.state.skill_service.list_skills()
+    caps = getattr(request.app.state, "capability_service", None)
+    if caps is None or user.get("role") == "admin":
+        return skills
+    visible = await caps.visible_skill_names(user["sub"])
+    return [s for s in skills if s["name"] in visible]
 
 
 @router.get("/{name}/export", response_class=PlainTextResponse)

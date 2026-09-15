@@ -24,6 +24,19 @@ CONFIG_COLLECTION = "plugin_configs"
 logger = logging.getLogger(__name__)
 
 
+def user_doc_id(user_id: str, plugin_id: str) -> str:
+    """用户维度配置的文档 id。
+
+    Args:
+        user_id: 用户 sub。
+        plugin_id: 插件 id。
+
+    Returns:
+        f"user:{user_id}:{plugin_id}"（与公共配置的 `_id = plugin_id` 区分）。
+    """
+    return f"user:{user_id}:{plugin_id}"
+
+
 class PluginConfigStore:
     """插件配置的读写与解密。"""
 
@@ -74,6 +87,28 @@ class PluginConfigStore:
             return {}
         return self._resolve_doc(doc)
 
+    async def resolved_for_user(self, user_id: str, plugin_id: str) -> dict:
+        """用户视角的插件配置（公共配置打底 + 个人配置覆盖）。
+
+        Args:
+            user_id: 用户 sub。
+            plugin_id: 插件 id。
+
+        Returns:
+            浅合并后的扁平配置；两者都无记录时为空 dict。
+
+        Raises:
+            RuntimeError: 任一记录密文解密失败（FERNET_KEY 变更或缺失）。
+        """
+        out: dict = {}
+        public = await self.get_doc(plugin_id)
+        if public is not None:
+            out.update(self._resolve_doc(public))
+        personal = await self.get_doc(user_doc_id(user_id, plugin_id))
+        if personal is not None:
+            out.update(self._resolve_doc(personal))
+        return out
+
     async def all_resolved(self) -> dict[str, dict]:
         """全部已安装插件的解密配置（运行期注入 ctx.extra 用）。
 
@@ -120,7 +155,8 @@ class PluginConfigStore:
                     "请到插件页重新填写凭证") from exc
         return out
 
-    async def save(self, plugin_id: str, values: dict, schema: list[dict]) -> dict:
+    async def save(self, plugin_id: str, values: dict, schema: list[dict],
+                   user_id: str | None = None) -> dict:
         """保存配置：按 schema 声明的 key 白名单过滤后写入。
 
         未在 schema 中声明的 key 一律忽略（记 warning），避免 UI 传参差异被升级为 500；
@@ -131,13 +167,15 @@ class PluginConfigStore:
             plugin_id: 插件 id（首次保存即视为安装）。
             values: 页面提交的字段值。
             schema: 插件配置 schema（既是字段白名单，也决定哪些字段是敏感的）。
+            user_id: 用户 sub；None = 公共配置（现状），否则写用户维度的个人配置。
 
         Returns:
             保存后的原始文档。
         """
+        doc_id = user_doc_id(user_id, plugin_id) if user_id else plugin_id
         declared = {f["key"] for f in schema}
         secret_keys = {f["key"] for f in schema if f.get("secret")}
-        doc = await self.get_doc(plugin_id) or {}
+        doc = await self.get_doc(doc_id) or {}
         config = dict(doc.get("config") or {})
         secrets = dict(doc.get("secrets") or {})
         for key, value in values.items():
@@ -152,7 +190,22 @@ class PluginConfigStore:
                 config[key] = value
         body = {"config": config, "secrets": secrets, "updated_at": time.time()}
         if doc:
-            updated = await self._store.update(CONFIG_COLLECTION, plugin_id, body)
+            updated = await self._store.update(CONFIG_COLLECTION, doc_id, body)
             return updated or {**doc, **body}
         return await self._store.insert(
-            CONFIG_COLLECTION, {"_id": plugin_id, **body, "created_at": time.time()})
+            CONFIG_COLLECTION, {"_id": doc_id, **body, "created_at": time.time()})
+
+    async def save_for_user(self, user_id: str, plugin_id: str,
+                            values: dict, schema: list[dict]) -> dict:
+        """保存用户维度的插件配置（调用方不必自行拼 doc id）。
+
+        Args:
+            user_id: 用户 sub。
+            plugin_id: 插件 id。
+            values: 页面提交的字段值。
+            schema: 插件配置 schema。
+
+        Returns:
+            保存后的原始文档。
+        """
+        return await self.save(plugin_id, values, schema, user_id=user_id)

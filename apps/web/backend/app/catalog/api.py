@@ -1,0 +1,192 @@
+"""能力目录 API：用户侧市场（列表/安装/卸载）+ 管理员策略（列表/配置）。
+
+普通用户视角的列表与安装一律经过可见性判定：hidden 条目对用户不存在，
+public + 非默认 的条目要安装后才进入该用户的能力集（缺省 public + 默认启用，
+保证升级后行为不变）。
+"""
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+
+from app.api.deps import get_current_user, require_admin
+from app.catalog.items import KINDS
+
+router = APIRouter(prefix="/api/v1", tags=["catalog"])
+
+
+def get_capability_service(request: Request):
+    """从 app.state 取 CapabilityService。
+
+    Args:
+        request: FastAPI 请求。
+
+    Returns:
+        CapabilityService 实例。
+
+    Raises:
+        HTTPException: 未就绪（503）。
+    """
+    service = getattr(request.app.state, "capability_service", None)
+    if service is None:
+        raise HTTPException(503, "能力目录未就绪")
+    return service
+
+
+class PolicyBody(BaseModel):
+    """管理员策略请求体。"""
+
+    visibility: str = "public"
+    default_enabled: bool = True
+
+
+class InstallBody(BaseModel):
+    """安装请求体（插件可带个人配置；其它类型忽略 config）。"""
+
+    config: dict[str, Any] = {}
+
+
+@router.get("/catalog")
+async def list_catalog(kind: str | None = None,
+                       user=Depends(get_current_user),
+                       service=Depends(get_capability_service)) -> list[dict]:
+    """当前用户可见的能力目录（市场列表，普通用户视角不出现 hidden 条目）。
+
+    Args:
+        kind: 可选类型过滤（expert/skill/plugin）。
+        user: 当前用户。
+        service: 能力服务。
+
+    Returns:
+        条目列表（含 visibility/default_enabled/installed/visible）。
+    """
+    kinds = (kind,) if kind in KINDS else KINDS
+    rows: list[dict] = []
+    for k in kinds:
+        rows.extend(await service.market_items(user["sub"], k))
+    return rows
+
+
+@router.post("/catalog/{kind}/{item_id}/install", status_code=201)
+async def install_capability(kind: str, item_id: str, request: Request,
+                             body: InstallBody | None = None,
+                             user=Depends(get_current_user),
+                             service=Depends(get_capability_service)) -> dict:
+    """用户自行安装某条目（写安装记录，不复制任何文件）。
+
+    插件条目可带 `config`（个人配置）：非空时按插件 schema 校验必填，
+    通过后写用户维度配置；校验不通过不产生安装记录（fail-closed）。
+
+    Args:
+        kind: 条目类型。
+        item_id: 条目 id。
+        request: FastAPI 请求（取插件包与配置存储）。
+        body: 安装请求体（可选）。
+        user: 当前用户。
+        service: 能力服务。
+
+    Returns:
+        {"kind", "id", "installed"}。
+
+    Raises:
+        HTTPException: 类型非法/条目不可安装（404）、必填配置缺失（422）、
+            插件配置存储未就绪（503）。
+    """
+    if kind not in KINDS:
+        raise HTTPException(404, f"未知类型: {kind}")
+    if not await service.can_install(user["sub"], kind, item_id):
+        raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
+    values = dict(body.config) if body is not None else {}
+    if kind == "plugin" and values:
+        packages = getattr(request.app.state, "plugin_packages", None) or {}
+        package = packages.get(item_id)
+        if package is None:
+            raise HTTPException(404, f"插件不存在: {item_id}")
+        missing = [
+            f["key"] for f in package.config_schema
+            if f.get("required") and not str(values.get(f["key"]) or "").strip()
+        ]
+        if missing:
+            raise HTTPException(422, f"缺少必填配置: {', '.join(missing)}")
+        store = getattr(request.app.state, "plugin_config_store", None)
+        if store is None:
+            raise HTTPException(503, "插件配置存储未就绪")
+        await store.save_for_user(user["sub"], item_id, values, package.config_schema)
+    await service.installs.install(user["sub"], kind, item_id)
+    return {"kind": kind, "id": item_id, "installed": True}
+
+
+@router.delete("/catalog/{kind}/{item_id}/install")
+async def uninstall_capability(kind: str, item_id: str,
+                               user=Depends(get_current_user),
+                               service=Depends(get_capability_service)) -> dict:
+    """卸载（删除该用户的安装记录）。
+
+    Args:
+        kind: 条目类型。
+        item_id: 条目 id。
+        user: 当前用户。
+        service: 能力服务。
+
+    Returns:
+        {"kind", "id", "installed", "removed"}。
+
+    Raises:
+        HTTPException: 类型非法（404）。
+    """
+    if kind not in KINDS:
+        raise HTTPException(404, f"未知类型: {kind}")
+    removed = await service.installs.uninstall(user["sub"], kind, item_id)
+    return {"kind": kind, "id": item_id, "installed": False, "removed": removed}
+
+
+@router.get("/admin/catalog")
+async def admin_list_catalog(kind: str | None = None,
+                             user=Depends(require_admin),
+                             service=Depends(get_capability_service)) -> list[dict]:
+    """管理员视角的目录（含 hidden 条目；visible 字段仍按普通用户语义计算）。
+
+    Args:
+        kind: 可选类型过滤。
+        user: 当前用户（须为管理员）。
+        service: 能力服务。
+
+    Returns:
+        条目列表。
+    """
+    kinds = (kind,) if kind in KINDS else KINDS
+    rows: list[dict] = []
+    for k in kinds:
+        rows.extend(await service.market_items(user["sub"], k, admin=True))
+    return rows
+
+
+@router.put("/admin/catalog/{kind}/{item_id}/policy")
+async def set_catalog_policy(kind: str, item_id: str, body: PolicyBody,
+                             user=Depends(require_admin),
+                             service=Depends(get_capability_service)) -> dict:
+    """配置条目的可见性与默认启用。
+
+    Args:
+        kind: 条目类型。
+        item_id: 条目 id。
+        body: 策略请求体。
+        user: 当前用户（须为管理员）。
+        service: 能力服务。
+
+    Returns:
+        {"kind", "id", "visibility", "default_enabled"}。
+
+    Raises:
+        HTTPException: 类型非法或条目不存在（404）、visibility 非法（422）。
+    """
+    if kind not in KINDS or not await service.exists(kind, item_id):
+        raise HTTPException(404, f"条目不存在: {kind}:{item_id}")
+    try:
+        policy = await service.policy.set(kind, item_id, visibility=body.visibility,
+                                          default_enabled=body.default_enabled)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"kind": kind, "id": item_id, **policy}

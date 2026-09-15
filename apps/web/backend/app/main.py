@@ -16,6 +16,11 @@ from app.api.models_api import router as models_router
 from app.api.projects_api import router as projects_router
 from app.api.sessions_api import router as sessions_router
 from app.api.skills_api import router as skills_router
+from app.catalog.api import router as catalog_router
+from app.catalog.items import CatalogService
+from app.catalog.policy import CatalogPolicyRepo
+from app.catalog.service import CapabilityService
+from app.catalog.user_caps import UserCapabilityRepo
 from app.core.settings import Settings
 from app.db.repos import (
     AssistantRepo,
@@ -73,9 +78,24 @@ async def lifespan(app: FastAPI):
         assistant_repo=app.state.assistant_repo,
     )
     await app.state.plugin_service.startup()
+    # 能力目录可见性服务：须在 plugin_service.startup() 之后构造（此时
+    # tool_names_by_plugin 才有已挂载的插件工具清单）
+    app.state.capability_service = CapabilityService(
+        catalog=CatalogService(settings=settings,
+                               skill_service=app.state.skill_service,
+                               packages=packages),
+        policy=CatalogPolicyRepo(store),
+        installs=UserCapabilityRepo(store),
+        tool_names_by_plugin=app.state.plugin_service.tool_names_by_plugin(),
+    )
+    # 暴露给目录 API 与运行期（插件配置校验取 schema、用户维度解析配置）
+    app.state.plugin_config_store = plugin_config_store
+    app.state.plugin_packages = packages
     app.state.agent_service = AgentService(
         store, settings, app.state.event_repo, app.state.skill_service,
-        file_repo=app.state.file_repo, plugin_service=app.state.plugin_service)
+        file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
+        capability_service=app.state.capability_service,
+        plugin_config_store=plugin_config_store)
     await seed_assistants(store)
     yield
     await store.close()
@@ -96,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(skills_router)
     app.include_router(knowledge_router)
     app.include_router(plugins_router)
+    app.include_router(catalog_router)
 
     @app.get("/api/health")
     async def health() -> dict:

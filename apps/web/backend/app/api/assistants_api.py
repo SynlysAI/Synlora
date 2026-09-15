@@ -1,7 +1,7 @@
 """助手管理 API：builtin 不可删、工具白名单与 provider 引用校验、名称联查。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.api.deps import Repos, get_current_user, get_repos, require_admin
@@ -73,17 +73,54 @@ class AssistantUpdateBody(BaseModel):
     knowledge_base_ids: list[str] | None = None
 
 
+async def _visible_assistants(app_state, user: dict, docs: list[dict]) -> list[dict]:
+    """按可见性过滤助手列表（普通用户视角）。
+
+    规则：插件播种专家（有 plugin_id）跟随其插件可见性；目录内置专家按
+    expert 策略判定；其余（用户自建，builtin=False 且无 plugin_id）始终保留。
+
+    Args:
+        app_state: app.state（取 capability_service，缺失时不过滤）。
+        user: 当前用户 payload。
+        docs: 助手文档列表。
+
+    Returns:
+        过滤后的助手文档列表。
+    """
+    caps = getattr(app_state, "capability_service", None)
+    if caps is None or user.get("role") == "admin":
+        return docs
+    expert_ids = {i.id for i in caps.catalog.list_items("expert")}
+    out: list[dict] = []
+    for a in docs:
+        plugin_id = a.get("plugin_id")
+        if plugin_id:
+            if await caps.is_visible(user["sub"], "plugin", str(plugin_id)):
+                out.append(a)
+            continue
+        assistant_id = str(a.get("_id") or "")
+        if assistant_id in expert_ids:
+            if await caps.is_visible(user["sub"], "expert", assistant_id):
+                out.append(a)
+            continue
+        out.append(a)  # 用户自建助手：不属目录条目，不过滤
+    return out
+
+
 @router.get("")
-async def list_assistants(user=Depends(get_current_user),
+async def list_assistants(request: Request, user=Depends(get_current_user),
                           repos=Depends(get_repos)) -> list[dict]:
     """全部助手（含 builtin 标记），联查模型服务名。
 
     provider 停用标 "(已停用)"，已被删除标 "(已删除)"，未关联为 None。
+    普通用户视角下不可见的目录专家/插件专家被过滤，管理员不过滤。
     """
     providers = await repos.provider.list()
     by_id = {p["_id"]: p for p in providers}
+    docs = await _visible_assistants(request.app.state, user,
+                                     await repos.assistant.list())
     out: list[dict] = []
-    for a in await repos.assistant.list():
+    for a in docs:
         item = dict(a)
         pid = a.get("model_provider_id")
         if not pid:

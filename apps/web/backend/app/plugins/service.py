@@ -239,6 +239,14 @@ class PluginService:
         """
         return {pid: dict(cfg) for pid, cfg in self._configs.items()}
 
+    def tool_names_by_plugin(self) -> dict[str, set[str]]:
+        """已挂载的工具名按插件分组（可见性过滤用）。
+
+        Returns:
+            {插件 id: {工具名}} 的副本。
+        """
+        return {pid: set(names) for pid, names in self._attached.items()}
+
     def state(self, plugin_id: str) -> dict:
         """单个插件的状态（不含敏感值）。
 
