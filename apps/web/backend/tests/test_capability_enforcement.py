@@ -1,7 +1,7 @@
 """可见性在运行期与列表 API 的落地测试。
 
 覆盖：列表 API（技能/助手）按可见性过滤、用户市场安装、管理员策略写入、
-运行期工具集过滤，以及「缺省策略 = public + 默认启用 ⇒ 升级后行为不变」的兼容线。
+运行期工具集过滤，以及「缺省策略 = public + 非默认启用 ⇒ 需安装才可用」的口径。
 """
 from __future__ import annotations
 
@@ -141,27 +141,44 @@ async def _wait_run_done(app, run_id: str, timeout_s: float = 5.0) -> None:
     raise AssertionError(f"{timeout_s}s 内 run 未结束: {run_id}")
 
 
-# ---------- 缺省策略：升级后行为完全不变 ----------
+# ---------- 缺省策略：市场可见但需安装 ----------
 
 
-async def test_default_policy_keeps_previous_behavior(
+async def test_default_policy_requires_install(
         app, client, admin_headers, user_headers):
-    """不动策略时：内置技能、插件播种技能、专家、插件一律对普通用户可见。"""
+    """不动策略时：条目在市场可见，但普通用户需安装后才可用。"""
     await _install_plugin(client, admin_headers)
 
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
-    assert BUILTIN_SKILLS <= skills
-    assert "spec-nmr" in skills  # 插件技能跟随插件可见性（缺省可见）
+    assert not (BUILTIN_SKILLS & skills)
+    assert "spec-nmr" not in skills
 
     names = {a["name"] for a in
              (await client.get("/api/v1/assistants", headers=user_headers)).json()}
-    assert {"科研助手", "数据分析助手", PLUGIN_EXPERT} <= names
+    assert not ({"科研助手", "数据分析助手", PLUGIN_EXPERT} & names)
 
+    # 市场仍列出该条目（缺省 public），但 visible=False（未安装）
     catalog = (await client.get("/api/v1/catalog", headers=user_headers)).json()
     plugins = {r["id"]: r for r in catalog if r["kind"] == "plugin"}
-    assert plugins["spec_agent"]["visible"] is True
-    assert plugins["spec_agent"]["default_enabled"] is True
+    assert plugins["spec_agent"]["visible"] is False
+    assert plugins["spec_agent"]["default_enabled"] is False
+
+    # 管理员不受过滤影响（列表口径直通）
+    admin_skills = {s["name"] for s in
+                    (await client.get("/api/v1/skills", headers=admin_headers)).json()}
+    assert BUILTIN_SKILLS <= admin_skills
+
+    # 安装后对该用户可见（含插件播种的技能与专家）
+    for kind, item in (("plugin", "spec_agent"), ("skill", "data-analysis")):
+        assert (await client.post(f"/api/v1/catalog/{kind}/{item}/install",
+                                  json={}, headers=user_headers)).status_code == 201
+    skills = {s["name"] for s in
+              (await client.get("/api/v1/skills", headers=user_headers)).json()}
+    assert "data-analysis" in skills and "spec-nmr" in skills
+    names = {a["name"] for a in
+             (await client.get("/api/v1/assistants", headers=user_headers)).json()}
+    assert PLUGIN_EXPERT in names
 
 
 # ---------- 非默认插件：安装后才对该用户可见 ----------
@@ -174,6 +191,9 @@ async def test_not_default_plugin_needs_user_install(
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "public", "default_enabled": False},
                      headers=admin_headers)
+    # 缺省口径同为"需安装"：先装上内置技能，用于对照"内置技能不受插件策略影响"
+    assert (await client.post("/api/v1/catalog/skill/data-analysis/install",
+                              json={}, headers=user_headers)).status_code == 201
 
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
@@ -227,6 +247,12 @@ async def test_hidden_plugin_absent_from_user_catalog(
 async def test_skill_and_expert_policies_filter_lists(
         client, admin_headers, user_headers):
     """技能与专家列表按各自策略过滤；管理员不过滤。"""
+    # 缺省 = 非默认启用：先安装对照组条目（data-analysis / 科研助手），
+    # 它们未被改策略，应保持可见 —— 从而证明本用例的过滤来自显式策略
+    for kind, item in (("skill", "data-analysis"), ("expert", "asst-research")):
+        assert (await client.post(f"/api/v1/catalog/{kind}/{item}/install",
+                                  json={}, headers=user_headers)).status_code == 201
+
     await client.put("/api/v1/admin/catalog/skill/office-doc/policy",
                      json={"visibility": "public", "default_enabled": False},
                      headers=admin_headers)
@@ -357,8 +383,12 @@ async def test_runtime_tool_names_filtered_by_visibility(
         await _wait_run_done(app, run_id)
         return captured[-1]["config"].tool_names
 
-    default_tools = await _run_one("默认策略")
-    assert SPEC_TOOLS <= set(default_tools)  # 缺省可见 → 插件工具保留
+    # 缺省（非默认启用）下插件工具会被剔除；此处先显式设为默认启用作可见性对照
+    await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
+                     json={"visibility": "public", "default_enabled": True},
+                     headers=admin_headers)
+    enabled_tools = await _run_one("默认启用")
+    assert SPEC_TOOLS <= set(enabled_tools)  # 可见 → 插件工具保留
 
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "hidden", "default_enabled": False},

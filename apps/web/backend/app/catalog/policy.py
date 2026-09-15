@@ -4,7 +4,7 @@
     {"_id": "plugin:spec_agent", "kind": "plugin", "item_id": "spec_agent",
      "visibility": "public"|"hidden", "default_enabled": true|false,
      "created_at": ..., "updated_at": ...}
-缺省（无记录）= public + default_enabled=True：保持改造前的"所有人可见且开箱即用"语义。
+缺省（无记录）= public + default_enabled=False：条目在市场可见，但需用户安装后才可用。
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class CatalogPolicyRepo:
         """
         doc = await self._store.get(POLICY_COLLECTION, policy_id(kind, item_id))
         if doc is None:
-            return {"visibility": "public", "default_enabled": True}
+            return {"visibility": "public", "default_enabled": False}
         return {
             "visibility": str(doc.get("visibility") or "")
             if str(doc.get("visibility") or "") in VISIBILITIES else "hidden",
@@ -69,7 +69,7 @@ class CatalogPolicyRepo:
             str(d["_id"]): {
                 "visibility": str(d.get("visibility") or "")
                 if str(d.get("visibility") or "") in VISIBILITIES else "hidden",
-                "default_enabled": bool(d.get("default_enabled", True)),
+                "default_enabled": bool(d.get("default_enabled", False)),
             }
             for d in docs
         }

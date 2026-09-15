@@ -8,11 +8,11 @@ import pytest
 from app.catalog.policy import POLICY_COLLECTION, CatalogPolicyRepo
 
 
-async def test_default_policy_is_public_enabled(store):
-    """无记录时缺省 public + 默认启用（保持升级前语义）。"""
+async def test_default_policy_is_public_but_not_enabled(store):
+    """无记录时缺省 public + 非默认启用（市场可见但需用户安装）。"""
     repo = CatalogPolicyRepo(store)
-    policy = await repo.get("plugin", "spec_agent")
-    assert policy == {"visibility": "public", "default_enabled": True}
+    pol = await repo.get("skill", "demo")
+    assert pol == {"visibility": "public", "default_enabled": False}
 
 
 async def test_set_and_get_policy(store):

@@ -26,10 +26,14 @@ def caps(store, tmp_path) -> CapabilityService:
     )
 
 
-async def test_defaults_visible_to_everyone(caps):
-    """缺省策略（public + 默认启用）→ 所有人可见，无需安装。"""
+async def test_default_policy_requires_install(caps):
+    """缺省策略（public + 非默认）→ 未安装不可见，安装后仅本人可见。"""
+    assert await caps.is_visible("u1", "plugin", "spec_agent") is False
+    assert await caps.visible_ids("u2", "plugin") == set()
+
+    await caps.installs.install("u1", "plugin", "spec_agent")
     assert await caps.is_visible("u1", "plugin", "spec_agent") is True
-    assert await caps.visible_ids("u2", "plugin") == {"spec_agent"}
+    assert await caps.visible_ids("u1", "plugin") == {"spec_agent"}
 
 
 async def test_hidden_invisible_even_if_installed(caps):
@@ -57,8 +61,6 @@ async def test_unknown_item_is_not_visible(caps):
 
 async def test_visible_plugin_tools(caps):
     """插件工具名按可见插件推导（运行期工具过滤用）。"""
-    assert await caps.visible_tool_names("u1") == SPEC_TOOLS
-
     await caps.policy.set("plugin", "spec_agent", visibility="public", default_enabled=False)
     assert await caps.visible_tool_names("u1") == set()
     await caps.installs.install("u1", "plugin", "spec_agent")
@@ -97,6 +99,11 @@ async def test_exists_and_can_install(caps):
 
 async def test_visible_skill_names_includes_plugin_skills(caps):
     """插件技能跟随其插件可见性（不是目录条目也要能算出来）。"""
+    # 缺省 = 非默认启用：先给 u1 装上内置技能与插件，才谈得上"可见"
+    for name in ("data-analysis", "pdf-extraction", "office-doc"):
+        await caps.installs.install("u1", "skill", name)
+    await caps.installs.install("u1", "plugin", "spec_agent")
+
     names = await caps.visible_skill_names("u1")
     assert {"data-analysis", "pdf-extraction", "office-doc"} <= names
     assert "spec-nmr" in names  # 来自 spec_agent 插件的 skills 声明

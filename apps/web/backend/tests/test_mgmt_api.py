@@ -234,7 +234,10 @@ async def test_connectivity_timeout(client, admin_headers, monkeypatch):
 
 
 async def test_list_includes_seeds(client, user_headers):
-    """GET 助手列表含两个 lifespan 种子（builtin 标记正确）。"""
+    """GET 助手列表含两个 lifespan 种子（安装后对普通用户可见，builtin 标记正确）。"""
+    for item in ("asst-research", "asst-data"):
+        assert (await client.post(f"/api/v1/catalog/expert/{item}/install",
+                                  json={}, headers=user_headers)).status_code == 201
     r = await client.get("/api/v1/assistants", headers=user_headers)
     assert r.status_code == 200
     items = {a["_id"]: a for a in r.json()}

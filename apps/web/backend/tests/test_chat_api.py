@@ -1039,6 +1039,10 @@ async def test_skill_index_injected_and_tools_available(
     同时守护渐进披露契约：技能正文绝不进 system prompt。
     """
     await _bind_provider_to_asst_data(client, admin_headers)
+    # 缺省 = 非默认启用：运行期技能索引按"已安装"过滤（无管理员直通），须先安装
+    for name in ("data-analysis", "pdf-extraction"):
+        assert (await client.post(f"/api/v1/catalog/skill/{name}/install",
+                                  json={}, headers=admin_headers)).status_code == 201
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
     FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
     captured = _capture_run_args(monkeypatch)
@@ -1126,6 +1130,10 @@ async def test_ai4ms_token_absent_when_identity_unresolved(app, client, admin_he
 async def test_requested_skills_filter_index(app, client, admin_headers, monkeypatch):
     """chat(requested_skills=...) 只装配选中技能（索引与工具上下文同步收窄）。"""
     provider = await _bind_provider_to_asst_data(client, admin_headers)
+    # 两个技能都安装，确保"未进索引"是 requested_skills 收窄的结果而非不可见
+    for name in ("data-analysis", "pdf-extraction"):
+        assert (await client.post(f"/api/v1/catalog/skill/{name}/install",
+                                  json={}, headers=admin_headers)).status_code == 201
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
     FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
     captured = _capture_run_args(monkeypatch)

@@ -7,7 +7,10 @@ admin_headers（管理员，sub=u-admin）。
 
 
 async def test_list_skills_includes_seeds(client, user_headers):
-    """普通用户也能读到随包内置的技能。"""
+    """普通用户安装后能读到随包内置的技能（缺省策略 = public + 非默认，需安装）。"""
+    for name in ("data-analysis", "pdf-extraction"):
+        assert (await client.post(f"/api/v1/catalog/skill/{name}/install",
+                                  json={}, headers=user_headers)).status_code == 201
     names = {s["name"] for s in (await client.get("/api/v1/skills", headers=user_headers)).json()}
     assert {"data-analysis", "pdf-extraction"} <= names
 
