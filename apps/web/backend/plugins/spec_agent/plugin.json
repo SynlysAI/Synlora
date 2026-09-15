@@ -1,0 +1,46 @@
+{
+  "id": "spec_agent",
+  "name": "Spec_Agent 谱图解析",
+  "version": "1.0.0",
+  "description": "核磁（NMR）谱图解析：正向预测（结构→谱）、反向预测（谱→结构）与谱图数据库检索",
+  "author": "AI⁴MS",
+  "tools_module": "tools.py",
+  "config_schema": [
+    {
+      "key": "base_url",
+      "label": "服务地址",
+      "type": "text",
+      "required": true,
+      "placeholder": "http://10.26.15.93:8001",
+      "description": "Spec_Agent 服务地址（含协议与端口）"
+    },
+    {
+      "key": "token",
+      "label": "访问凭证",
+      "type": "password",
+      "secret": true,
+      "required": false,
+      "placeholder": "服务端未开启鉴权时可留空",
+      "description": "调用 Spec_Agent 的 Bearer token；留空表示不发送认证头"
+    }
+  ],
+  "skills": ["spec-nmr"],
+  "expert": {
+    "name": "谱图解析专家",
+    "avatar": "🔬",
+    "description": "核磁谱图解析：正向/反向预测与谱图数据库检索",
+    "system_prompt": "你是谱图解析专家，专注核磁（NMR）谱图与分子结构的双向解析。给定结构时用正向预测核对谱图，给定实测谱峰时用反向预测或数据库检索推断候选结构。给出结论时说明依据与置信度；多候选要排序并说明理由；输入不足或谱峰与候选明显不符时如实说明，不要臆造。",
+    "tool_whitelist": [
+      "spec.nmr.forward",
+      "spec.nmr.reverse",
+      "spec.nmr.search",
+      "file.read",
+      "file.write",
+      "file.list",
+      "python.run",
+      "knowledge.search",
+      "ask_user",
+      "file.send"
+    ]
+  }
+}
