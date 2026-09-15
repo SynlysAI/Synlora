@@ -79,3 +79,46 @@ async def test_list_for_user_skips_dirty_docs(store):
 
     repo = UserCapabilityRepo(store)
     assert await repo.list_for_user("u1") == ["plugin:spec_agent"]
+
+
+async def test_install_records_enabled_true(store):
+    """安装写入的记录缺省启用（enabled=True）。"""
+    repo = UserCapabilityRepo(store)
+    await repo.install("u1", "skill", "demo")
+    doc = await store.get(USER_CAPS_COLLECTION, "u1:skill:demo")
+    assert doc["enabled"] is True
+
+
+async def test_set_enabled_toggles(store):
+    """启用态可往返切换，is_enabled 反映最新态。"""
+    repo = UserCapabilityRepo(store)
+    await repo.install("u1", "skill", "demo")
+    assert await repo.set_enabled("u1", "skill", "demo", False) is True
+    assert await repo.is_enabled("u1", "skill", "demo") is False
+    assert await repo.set_enabled("u1", "skill", "demo", True) is True
+    assert await repo.is_enabled("u1", "skill", "demo") is True
+
+
+async def test_set_enabled_missing_record_returns_false(store):
+    """未安装条目设置启用态返回 False（不凭空造记录）。"""
+    repo = UserCapabilityRepo(store)
+    assert await repo.set_enabled("u1", "skill", "nope", False) is False
+
+
+async def test_enabled_item_ids_only_lists_enabled(store):
+    """enabled_item_ids 只列举该用户该类型下启用中的条目。"""
+    repo = UserCapabilityRepo(store)
+    await repo.install("u1", "skill", "a")
+    await repo.install("u1", "skill", "b")
+    await repo.set_enabled("u1", "skill", "b", False)
+    assert await repo.enabled_item_ids("u1", "skill") == {"a"}
+
+
+async def test_enabled_defaults_true_for_legacy_docs(store):
+    """历史文档无 enabled 字段时按缺省 True 处理（升级兼容）。"""
+    await store.insert(USER_CAPS_COLLECTION, {
+        "_id": "u1:skill:legacy", "user_id": "u1", "kind": "skill",
+        "item_id": "legacy", "installed_at": 0.0,
+    })
+    repo = UserCapabilityRepo(store)
+    assert await repo.is_enabled("u1", "skill", "legacy") is True

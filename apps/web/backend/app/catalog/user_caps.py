@@ -2,9 +2,10 @@
 
 存储形态（集合 user_capabilities，_id = f"{user_id}:{kind}:{item_id}"）：
     {"_id": "u1:plugin:spec_agent", "user_id": "u1", "kind": "plugin",
-     "item_id": "spec_agent", "installed_at": ...}
+     "item_id": "spec_agent", "enabled": True, "installed_at": ...}
 设计取舍（用户已确认）：内置包留在仓库，安装只写记录——升级即生效、无副本漂移；
-用户私有目录仅预留给"用户自建/导入"（首期不实现）。
+enabled=false 表示"已装但停用"（运行期与未装同样不可见）；用户自建内容落
+data_root/users/<uid>/（由 SkillService / UserExpertService 管理）。
 """
 from __future__ import annotations
 
@@ -42,6 +43,8 @@ class UserCapabilityRepo:
     async def install(self, user_id: str, kind: str, item_id: str) -> None:
         """记录安装（幂等：已存在则不动，也不刷新 installed_at）。
 
+        enabled 缺省 True：装上即启用。
+
         Args:
             user_id: 用户 sub。
             kind: 条目类型。
@@ -53,7 +56,7 @@ class UserCapabilityRepo:
         try:
             await self._store.insert(USER_CAPS_COLLECTION, {
                 "_id": doc_id, "user_id": user_id, "kind": kind, "item_id": item_id,
-                "installed_at": time.time(),
+                "enabled": True, "installed_at": time.time(),
             })
         except ValueError:
             # 并发下已被他者插入：目标态（存在安装记录）已达成，保持幂等
@@ -85,6 +88,59 @@ class UserCapabilityRepo:
         """
         doc = await self._store.get(USER_CAPS_COLLECTION, cap_id(user_id, kind, item_id))
         return doc is not None
+
+    async def set_enabled(self, user_id: str, kind: str, item_id: str,
+                          enabled: bool) -> bool:
+        """设置已安装条目的启用态。
+
+        Args:
+            user_id: 用户 sub。
+            kind: 条目类型。
+            item_id: 条目 id。
+            enabled: True 启用 / False 停用。
+
+        Returns:
+            True 表示记录存在并已更新；未安装返回 False。
+        """
+        doc_id = cap_id(user_id, kind, item_id)
+        if await self._store.get(USER_CAPS_COLLECTION, doc_id) is None:
+            return False
+        await self._store.update(USER_CAPS_COLLECTION, doc_id, {"enabled": bool(enabled)})
+        return True
+
+    async def is_enabled(self, user_id: str, kind: str, item_id: str) -> bool:
+        """已安装条目是否处于启用态（未安装或脏文档按缺省 True 处理）。
+
+        Args:
+            user_id: 用户 sub。
+            kind: 条目类型。
+            item_id: 条目 id。
+
+        Returns:
+            True 表示启用；未安装返回 False。
+        """
+        doc = await self._store.get(USER_CAPS_COLLECTION, cap_id(user_id, kind, item_id))
+        if doc is None:
+            return False
+        return bool(doc.get("enabled", True))
+
+    async def enabled_item_ids(self, user_id: str, kind: str) -> set[str]:
+        """某用户某类型下“已安装且启用”的条目 id 集合。
+
+        Args:
+            user_id: 用户 sub。
+            kind: 条目类型。
+
+        Returns:
+            条目 id 集合。
+        """
+        docs = await self._store.list(USER_CAPS_COLLECTION,
+                                     filters={"user_id": user_id})
+        return {
+            str(d.get("item_id"))
+            for d in docs
+            if d.get("kind") == kind and d.get("item_id") and bool(d.get("enabled", True))
+        }
 
     async def installed_plugin_ids(self) -> set[str]:
         """出现过用户安装记录的插件 id（启动装配用：只挂载不涉及可见性）。
