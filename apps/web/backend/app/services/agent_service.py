@@ -316,9 +316,10 @@ class AgentService:
             backend = OpenAICompatibleBackend(provider_cfg)
             # 工作区根由调用方（sessions_api）按会话所属项目解析后传入；服务自身不拼路径
             workspace_root.mkdir(parents=True, exist_ok=True)
-            # 技能：全局目录（磁盘扫描）+ 本会话选中项（None/空 = 全部可用）；
-            # 索引进提示词，正文只入 context_extra（渐进披露，由 skill.read 按需取）
-            all_skills = self._skill_service.list_skills()
+            # 技能：用户自建根 + 公共层 + 只读根（磁盘扫描，按登录用户并入自建根）
+            # + 本会话选中项（None/空 = 全部可用）；索引进提示词，正文只入
+            # context_extra（渐进披露，由 skill.read 按需取）
+            all_skills = self._skill_service.list_skills(user_id=user_sub)
             if self._capability_service is not None:
                 # 技能可见性（黑名单口径）：内置技能按策略、插件技能跟随其插件
                 # 可见性；公共目录里管理员自建/导入的技能不在黑名单里（始终可见）
@@ -331,8 +332,9 @@ class AgentService:
             else:
                 active_skills = all_skills
             index = [(s["name"], s["description"]) for s in active_skills]
-            bodies = {s["name"]: self._skill_service.read_body(s["name"]) or ""
-                      for s in active_skills}
+            bodies = {s["name"]: self._skill_service.read_body(
+                s["name"], user_id=user_sub) or ""
+                for s in active_skills}
             persona = str((assistant or {}).get("system_prompt") or "").strip()
             whitelist = list((assistant or {}).get("tool_whitelist") or [])
             system_prompt = build_system_prompt(

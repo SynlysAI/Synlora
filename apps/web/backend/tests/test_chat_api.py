@@ -1076,6 +1076,60 @@ async def test_skill_index_injected_and_tools_available(
     assert skill["content"] not in prompt
 
 
+async def test_chat_passes_user_id_to_skill_index(app, client, admin_headers, monkeypatch):
+    """运行期技能索引必须按登录用户解析（用户自建技能才进得来）。"""
+    svc = app.state.skill_service
+    original = svc.list_skills
+    seen: list[str | None] = []
+
+    def spy(user_id=None):
+        seen.append(user_id)
+        return original(user_id=user_id)
+
+    monkeypatch.setattr(svc, "list_skills", spy)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    # 建 provider 并绑定助手（_bind_provider_to_asst_data 内部即 _make_provider，
+    # 两者同建 chat-mock 会撞 409，故不重复调用）
+    await _bind_provider_to_asst_data(client, admin_headers)
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid)
+
+    assert seen, "chat 未调用技能索引"
+    assert all(uid for uid in seen), f"技能索引未带 user_id: {seen}"
+
+
+async def test_user_owned_skill_enters_prompt_and_tool_context(
+        app, client, admin_headers, monkeypatch):
+    """端到端：经 POST /api/v1/me/skills 建的自建技能真的进提示词与工具上下文。
+
+    这是"用户自建技能在对话中生效"的直接证据：索引（名+描述）进 system prompt，
+    正文进 context_extra["skills"]，两处都只有带上登录用户 sub 才取得到
+    （用户根 `{data_root}/users/<uid>/skills` 不在公共层/只读根里）。
+    """
+    await _bind_provider_to_asst_data(client, admin_headers)
+    r = await client.post("/api/v1/me/skills", headers=admin_headers, json={
+        "name": "owner-only-skill",
+        "description": "只有技能主人可用的自建技能",
+        "content": "# 自建\n\n## 工作流\n\n只走主人目录。\n",
+    })
+    assert r.status_code == 201, r.text
+
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid)
+
+    prompt = captured[-1]["config"].system_prompt
+    assert "`owner-only-skill`" in prompt
+    assert "只有技能主人可用的自建技能" in prompt
+    # 正文同样按用户解析（read_body 未带 sub 时这里会是空串）
+    extra = captured[-1]["context_extra"]
+    assert "只走主人目录。" in extra["skills"]["owner-only-skill"]
+    assert extra["skill_meta"]["owner-only-skill"] == "只有技能主人可用的自建技能"
+
+
 class _FakeIdentity:
     """假 AI⁴MS 身份服务：token_for 固定返回预设值（None = 解析不到身份）。"""
 
