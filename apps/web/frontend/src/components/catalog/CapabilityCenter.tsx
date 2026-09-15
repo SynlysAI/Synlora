@@ -207,7 +207,6 @@ export default function CapabilityCenter() {
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="truncate font-mono text-[14px] font-medium">{item.name}</span>
-                            <GrayBadge>内置</GrayBadge>
                           </div>
                           <div
                             className="truncate text-[13px] text-[var(--sa-alias-label-secondary)]"
@@ -217,7 +216,10 @@ export default function CapabilityCenter() {
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2.5">
-                          {item.installed ? (
+                          {item.default_enabled ? (
+                            // 内置条目：全员自动可用，用户侧只读（无安装/启停概念）
+                            <GrayBadge>内置 · 全员可用</GrayBadge>
+                          ) : item.installed ? (
                             <>
                               {item.enabled ? <GrayBadge>已启用</GrayBadge> : <GrayBadge>已停用</GrayBadge>}
                               <button

@@ -103,7 +103,25 @@ def test_market_item_visible_when_default_enabled(client):
                if r["id"] == ITEM)
     assert row["installed"] is False
     assert row["default_enabled"] is True
-    assert row["visible"] is True          # 没装也可见 ← 默认启用
+    assert row["visible"] is True          # 没装也可见 ← 内置
+
+
+def test_builtin_item_rejects_user_switch(client):
+    """内置条目（default_enabled=True）：用户安装/启停/卸载一律 409（全员自动可用）。"""
+    client.put(f"/api/v1/admin/catalog/skill/{ITEM}/policy",
+               json={"visibility": "public", "default_enabled": True}, headers=HEADERS)
+    for body in ({"installed": True}, {"enabled": False}, {"installed": False}):
+        resp = client.put(f"/api/v1/me/capabilities/skill/{ITEM}",
+                          json=body, headers=HEADERS)
+        assert resp.status_code == 409, (body, resp.text)
+    # POST 安装路径同样被挡（can_install：内置不可装）
+    resp = client.post(f"/api/v1/catalog/skill/{ITEM}/install",
+                       json={}, headers=HEADERS)
+    assert resp.status_code == 404
+    # 没有留下任何安装记录
+    rows = client.get("/api/v1/market/skill", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == ITEM)
+    assert row["installed"] is False
 
 
 def test_market_unknown_kind_is_404(client):

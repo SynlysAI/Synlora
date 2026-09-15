@@ -181,22 +181,23 @@ async def test_market_items_expose_enabled(caps):
     assert row["installed"] is True and row["enabled"] is False and row["visible"] is False
 
 
-async def test_user_disable_overrides_default_enabled(caps):
-    """已装条目停用后，即使策略是"默认启用"，也按不可见处理。"""
+async def test_builtin_item_ignores_user_records(caps):
+    """内置条目（default_enabled=True）全员强制可见：历史安装/停用记录一并忽略，
+    用户停用压不过"内置"（内置优先，用户侧只读）。"""
     await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=True)
-    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 没装：默认启用
+    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 没装：内置
     await caps.installs.install("u1", "skill", "office-doc")
-    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 装了且启用
+    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 装了：仍内置
     await caps.installs.set_enabled("u1", "skill", "office-doc", False)
-    assert await caps.is_visible("u1", "skill", "office-doc") is False  # 停用优先
-    assert "office-doc" not in await caps.visible_ids("u1", "skill")
-    assert "office-doc" in await caps.hidden_skill_names("u1")
+    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 停用记录被忽略
+    assert "office-doc" in await caps.visible_ids("u1", "skill")
+    assert "office-doc" not in await caps.hidden_skill_names("u1")
 
 
 async def test_disabled_plugin_tools_are_filtered(caps):
-    """停用插件后，其工具退出可见集（插件配置注入同理，见 agent_service）。"""
+    """非内置插件停用后，其工具退出可见集（插件配置注入同理，见 agent_service）。"""
     await caps.policy.set("plugin", "spec_agent", visibility="public",
-                          default_enabled=True)
+                          default_enabled=False)
     await caps.installs.install("u1", "plugin", "spec_agent")
     assert await caps.visible_tool_names("u1") == SPEC_TOOLS
     await caps.installs.set_enabled("u1", "plugin", "spec_agent", False)

@@ -128,13 +128,13 @@ export interface CatalogItem {
   config_schema?: PluginConfigField[]
 }
 
-/** 「我的」列表条目：自建（mine）或已安装的内置（installed）。 */
+/** 「我的」列表条目：自建（mine）/ 已安装的内置（installed）/ 平台内置只读（builtin）。 */
 export interface MyCapability {
   kind: 'skill' | 'expert' | 'plugin'
   id: string
   name: string
   description: string
-  source: 'mine' | 'installed'
+  source: 'mine' | 'installed' | 'builtin'
   enabled: boolean
   builtin: boolean
   /** 管理员已下架（仅 installed 条目可能出现）：不可启用。 */

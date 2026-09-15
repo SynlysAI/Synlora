@@ -82,6 +82,10 @@ async def list_my_skills(request: Request, user=Depends(get_current_user)) -> li
         if item.id not in states:
             continue
         pol = await caps.policy.get("skill", item.id)
+        # 内置条目（default_enabled=True）全员自动可用、用户侧只读，
+        # 不进"我的"（历史安装记录被判定层忽略，这里同口径跳过）
+        if pol["default_enabled"]:
+            continue
         rows.append({
             "name": item.id, "description": item.description,
             "version": "1.0", "source": "installed",
@@ -225,6 +229,11 @@ async def list_my_experts(request: Request, user=Depends(get_current_user)) -> l
     states = await caps.installs.install_states(user_id, "expert")
     for item in caps.catalog.list_items("expert"):
         if item.id not in states:
+            continue
+        pol = await caps.policy.get("expert", item.id)
+        # 内置条目（default_enabled=True）全员自动可用、用户侧只读，
+        # 不进"我的"（与 list_my_skills 同口径）
+        if pol["default_enabled"]:
             continue
         rows.append({
             "id": item.id, "name": item.name, "avatar": "",

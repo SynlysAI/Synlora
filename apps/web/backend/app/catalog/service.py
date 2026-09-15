@@ -1,9 +1,10 @@
 """按用户计算可见能力（运行期过滤与市场列表的唯一入口）。
 
-三层汇总规则（用户显式动作优先）：
+三层汇总规则（内置优先）：
 - hidden → 不可见（管理员后台另行可见，见 market_items(admin=True)）；
-- 已安装 → 一律以用户的启用态为准（停用即不可见，压过策略默认启用）；
-- 未安装 → 看策略 default_enabled。
+- 内置（policy.default_enabled=True）→ 全员强制可见可用，忽略用户安装记录，
+  用户不可安装/停用/卸载（"默认启用"即"内置条目"，用户侧只读）；
+- 其余 → 已安装以用户启用态为准，未安装不可见（需去市场安装）。
 目录里不存在的条目一律不可见（防止凭 id 绕过）。
 
 工具名映射由外部注入（PluginPackage 不含工具清单，工具是 loader 动态 import 的），
@@ -70,9 +71,10 @@ class CapabilityService:
     async def is_visible(self, user_id: str, kind: str, item_id: str) -> bool:
         """判断某用户是否可见某条目。
 
-        判定口径与 visible_ids 一致（用户显式动作优先）：
-        可见 = 存在 and 非 hidden and（已安装 ? 启用态 : default_enabled）。
-        即已安装则以用户的启用态为准，停用优先于策略默认启用；未安装才看默认启用。
+        判定口径与 visible_ids 一致（内置优先）：
+        可见 = 存在 and 非 hidden and（内置 ? True : 已安装 ? 启用态 : False）。
+        内置条目（default_enabled=True）全员强制可见，历史安装记录一并忽略
+        （用户对内置条目无启停权）；非内置则已装看用户启停、未装不可见。
 
         Args:
             user_id: 用户 sub。
@@ -87,18 +89,18 @@ class CapabilityService:
         pol = await self.policy.get(kind, item_id)
         if pol["visibility"] == "hidden":
             return False
+        if pol["default_enabled"]:
+            return True
         states = await self.installs.install_states(user_id, kind)
-        if item_id in states:
-            return states[item_id]
-        return pol["default_enabled"]
+        return states.get(item_id, False)
 
     async def visible_ids(self, user_id: str, kind: str) -> set[str]:
         """某用户在某类下可见的全部条目 id。
 
-        判定口径（用户显式动作优先）：
-        可见 = 存在 and 非 hidden and（已安装 ? 启用态 : default_enabled）。
-        已安装但被用户停用的条目一律不可见（停用优先于策略默认启用），
-        绝不进入运行期上下文或列表；未安装的条目才看平台默认启用。
+        判定口径（内置优先）：
+        可见 = 存在 and 非 hidden and（内置 ? True : 已安装 ? 启用态 : False）。
+        内置条目全员可见（忽略用户安装记录）；非内置的已停用条目一律不可见，
+        绝不进入运行期上下文或列表。
 
         Args:
             user_id: 用户 sub。
@@ -117,9 +119,8 @@ class CapabilityService:
             pol = await self.policy.get(kind, item.id)
             if pol["visibility"] == "hidden":
                 continue
-            # 用户装过就以他的启用态为准（停用即不可见）；没装过才看平台默认
-            visible = states[item.id] if item.id in states else pol["default_enabled"]
-            if visible:
+            # 内置条目全员可见（历史安装记录忽略）；其余以用户启停为准
+            if pol["default_enabled"] or states.get(item.id):
                 out.add(item.id)
         return out
 
@@ -181,7 +182,10 @@ class CapabilityService:
         return out
 
     async def can_install(self, user_id: str, kind: str, item_id: str) -> bool:
-        """该用户能否安装该条目（存在且未被管理员隐藏）。
+        """该用户能否安装该条目（存在、未被隐藏、且非内置）。
+
+        内置条目（default_enabled=True）对全员自动可用，无"安装"概念——
+        拒绝安装避免出现"装完还能停用"的倒置（用户把自己停到比不装还差）。
 
         Args:
             user_id: 用户 sub。
@@ -194,18 +198,20 @@ class CapabilityService:
         if not await self.exists(kind, item_id):
             return False
         pol = await self.policy.get(kind, item_id)
-        return pol["visibility"] != "hidden"
+        return pol["visibility"] != "hidden" and not pol["default_enabled"]
 
     async def market_items(self, user_id: str, kind: str,
                            *, admin: bool = False) -> list[dict]:
         """市场列表（条目 + 策略 + 安装状态）。
 
-        行的三个状态字段口径：
-        - `installed`：是否写过安装记录（与是否停用无关）；
+        行的状态字段口径：
+        - `default_enabled`：即"内置"——True 表示全员自动可用，用户侧只读
+          （无安装/启停概念，市场行只显示「内置」徽标）；
+        - `installed`：是否写过安装记录（与是否停用无关；内置条目即使有
+          历史记录也被判定忽略）；
         - `enabled`：已装条目是否启用，仅对已装行有意义（未装恒 False）；
         - `visible`：运行期是否真的对该用户可见 —— 可见 = 存在 and 非 hidden
-          and（已安装 ? 启用态 : default_enabled），即已装则用户的停用动作
-          优先于策略默认启用，未装才看默认启用。
+          and（内置 ? True : 已安装 ? 启用态 : False）。
 
         Args:
             user_id: 用户 sub。
@@ -225,8 +231,8 @@ class CapabilityService:
                 continue
             is_installed = item.id in states
             is_enabled = states.get(item.id, False)
-            visible = (not hidden) and (
-                is_enabled if is_installed else pol["default_enabled"])
+            # 内置优先：default_enabled=True 恒可见（历史安装记录一并忽略）
+            visible = (not hidden) and (pol["default_enabled"] or is_enabled)
             row = {
                 "kind": item.kind, "id": item.id, "name": item.name,
                 "description": item.description, "source": item.source,

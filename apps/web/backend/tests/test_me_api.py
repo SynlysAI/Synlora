@@ -91,6 +91,16 @@ def test_my_skills_marks_revoked_installed_item(client):
     assert row["revoked"] is True
 
 
+def test_builtin_item_not_in_my_skills(client):
+    """内置条目（default_enabled=True）不进「我的」：先安装再切内置，记录被口径忽略。"""
+    client.put("/api/v1/me/capabilities/skill/data-analysis",
+               json={"installed": True}, headers=HEADERS)
+    client.put("/api/v1/admin/catalog/skill/data-analysis/policy",
+               json={"visibility": "public", "default_enabled": True}, headers=HEADERS)
+    rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
+    assert all(r["name"] != "data-analysis" for r in rows)
+
+
 EXPERT = {"name": "化学助手", "avatar": "🧪", "description": "演示",
           "system_prompt": "你是化学助手", "tool_whitelist": ["python.run"]}
 

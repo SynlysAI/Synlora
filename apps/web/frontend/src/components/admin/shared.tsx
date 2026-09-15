@@ -58,12 +58,12 @@ export function Switch({ checked, label, onChange, disabled }: SwitchProps) {
   )
 }
 
-/** 目录条目的可见性/默认启用开关组（能力目录策略）。 */
+/** 目录条目的可见性/内置开关组（能力目录策略）。 */
 export function CatalogPolicySwitches({ item, onChange }: {
   item: CatalogItem
   onChange: (next: { visibility: 'public' | 'hidden'; default_enabled: boolean }) => void
 }) {
-  // 隐藏的条目谈「默认启用」无意义：禁用它，只留「可见」可切换
+  // 隐藏的条目谈「内置」无意义：禁用它，只留「可见」可切换
   const hidden = item.visibility === 'hidden'
   return (
     <div className="flex shrink-0 items-center gap-3">
@@ -81,11 +81,11 @@ export function CatalogPolicySwitches({ item, onChange }: {
         />
       </span>
       <span className="flex items-center gap-1.5">
-        <span className="text-[12px] text-[var(--sa-alias-label-tertiary)]">默认启用</span>
+        <span className="text-[12px] text-[var(--sa-alias-label-tertiary)]">内置</span>
         <Switch
           checked={item.default_enabled}
           disabled={hidden}
-          label={`${item.name} 默认启用`}
+          label={`${item.name} 内置（全员自动可用，用户不可停用）`}
           onChange={(next) => onChange({ visibility: item.visibility, default_enabled: next })}
         />
       </span>

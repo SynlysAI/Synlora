@@ -46,6 +46,7 @@ async def test_seeded_experts_are_builtin_and_have_whitelist(store):
     research = await store.get("assistants", "asst-research")
     assert research["builtin"] is True
     assert sorted(research["tool_whitelist"]) == [
-        "file.list", "file.read", "file.write", "http.request", "knowledge.search", "python.run"]
+        "file.list", "file.read", "file.write", "http.request",
+        "knowledge.list", "knowledge.search", "python.run"]
     assert research["system_prompt"].startswith("你是 SynlysAgent 科研助手")
     assert research["model_provider_id"] is None

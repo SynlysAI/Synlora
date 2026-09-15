@@ -194,6 +194,7 @@ function ExpertModal({
 /** 「我的」面板。 */
 export default function MinePanel() {
   const items = useMyCapabilitiesStore((s) => s.items)
+  const builtinItems = useMyCapabilitiesStore((s) => s.builtinItems)
   const loaded = useMyCapabilitiesStore((s) => s.loaded)
   const loadMine = useMyCapabilitiesStore((s) => s.loadMine)
   const deleteSkill = useMyCapabilitiesStore((s) => s.deleteSkill)
@@ -208,12 +209,15 @@ export default function MinePanel() {
     loadMine().catch((err) => toast('error', `加载我的能力失败：${errorText(err)}`))
   }, [loadMine])
 
-  const rows = items.filter((item) => {
-    if (sub === 'enabled') return item.enabled
-    if (sub === 'disabled') return !item.enabled
-    if (sub === 'builtin') return item.builtin
-    return true
-  })
+  // 「内置」页签走只读数据源（平台内置条目，用户无启停）；其余页签过滤自己的列表
+  const rows =
+    sub === 'builtin'
+      ? builtinItems
+      : items.filter((item) => {
+          if (sub === 'enabled') return item.enabled
+          if (sub === 'disabled') return !item.enabled
+          return true
+        })
 
   const handleToggle = async (item: MyCapability) => {
     try {
@@ -277,7 +281,11 @@ export default function MinePanel() {
               <div className="flex items-center gap-2">
                 <span className="truncate font-mono text-[14px] font-medium">{item.name}</span>
                 <GrayBadge>{KIND_LABEL[item.kind]}</GrayBadge>
-                <GrayBadge>{item.source === 'mine' ? '自建' : '已安装'}</GrayBadge>
+                {item.source === 'builtin' ? (
+                  <GrayBadge>内置 · 全员可用</GrayBadge>
+                ) : (
+                  <GrayBadge>{item.source === 'mine' ? '自建' : '已安装'}</GrayBadge>
+                )}
                 {item.revoked && <GrayBadge>已被管理员下架</GrayBadge>}
               </div>
               <div className="truncate text-[13px] text-[var(--sa-alias-label-secondary)]" title={item.description}>
@@ -285,6 +293,11 @@ export default function MinePanel() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2.5">
+              {item.source === 'builtin' ? (
+                // 内置条目：管理员配置强制全员可用，用户无启停/卸载概念
+                <span className="text-[12px] text-[var(--sa-alias-label-caption)]">自动可用</span>
+              ) : (
+                <>
               {item.enabled ? <GrayBadge>已启用</GrayBadge> : <GrayBadge>已停用</GrayBadge>}
               {!item.revoked && (
                 <button type="button" onClick={() => void handleToggle(item)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
@@ -304,12 +317,16 @@ export default function MinePanel() {
               <button type="button" onClick={() => void handleRemove(item)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
                 {item.source === 'mine' ? '删除' : '卸载'}
               </button>
+                </>
+              )}
             </div>
           </div>
         ))}
         {loaded && rows.length === 0 && (
           <div className="px-4 py-10 text-center text-[13px] text-[var(--sa-alias-label-caption)]">
-            还没有技能或专家，去「市场」安装，或点右上角自己创建一个
+            {sub === 'builtin'
+              ? '暂无平台内置条目（管理员可在后台把条目配置为内置）'
+              : '还没有技能或专家，去「市场」安装，或点右上角自己创建一个'}
           </div>
         )}
       </div>

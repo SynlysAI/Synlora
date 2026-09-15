@@ -249,11 +249,20 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
         {"kind", "id", "installed", "enabled"}。
 
     Raises:
-        HTTPException: 类型非法或条目不可安装（404）、未安装却要改启用态（422）。
+        HTTPException: 类型非法或条目不可安装（404）、内置条目（409，
+            全员自动可用，用户无启停/卸载概念）、未安装却要改启用态（422）。
     """
     if kind not in KINDS:
         raise HTTPException(404, f"未知类型: {kind}")
     user_id = user["sub"]
+    # hidden 优先 404（不泄露存在性）；内置条目（default_enabled=True）全员
+    # 强制可用：用户的安装/启停/卸载一律拒绝——判定层已忽略其安装记录，
+    # 这里收口防止 API 侧留下无意义记录
+    pol = await service.policy.get(kind, item_id)
+    if pol["visibility"] == "hidden":
+        raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
+    if pol["default_enabled"]:
+        raise HTTPException(409, "内置条目全员自动可用，无需安装或启停")
     if body.installed is True:
         await _require_installable(service, user_id, kind, item_id)
         await _install_core(request, service, user_id, kind, item_id)

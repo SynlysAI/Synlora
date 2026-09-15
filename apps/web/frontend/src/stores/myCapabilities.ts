@@ -1,10 +1,11 @@
 /**
- * 「我的能力」store：自建（技能/专家）∪ 已安装的内置（技能/专家/插件）合并视图。
+ * 「我的能力」store：自建（技能/专家）∪ 已安装的内置（技能/专家/插件）∪ 平台内置只读视图。
  *
- * 数据来源三处（后端各自负责归属与可见性）：
- * - `GET /api/v1/me/skills`  自建技能 + 已装内置技能
- * - `GET /api/v1/me/experts` 自建专家 + 已装内置专家
- * - `GET /api/v1/market/plugin` 过滤 installed → 我的插件
+ * 数据来源（后端各自负责归属与可见性）：
+ * - `GET /api/v1/me/skills`  自建技能 + 已装内置技能（内置条目已由后端跳过）
+ * - `GET /api/v1/me/experts` 自建专家 + 已装内置专家（同上）
+ * - `GET /api/v1/market/{skill,expert,plugin}` 三类市场：
+ *   过滤 installed（且非内置）→ 我的已装；过滤 default_enabled → 内置只读列表
  * 写操作复用市场 store 的开关语义（`PUT /me/capabilities/...`）与 `/me/skills|experts` 的 CRUD。
  */
 import { create } from 'zustand'
@@ -45,6 +46,8 @@ export interface ExpertDraft {
 
 interface MyCapabilitiesState {
   items: MyCapability[]
+  /** 平台内置条目（管理员配置 default_enabled）：只读展示，用户无启停。 */
+  builtinItems: MyCapability[]
   loaded: boolean
   loadMine: () => Promise<void>
   createSkill: (draft: SkillDraft) => Promise<void>
@@ -57,14 +60,29 @@ interface MyCapabilitiesState {
 
 export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => ({
   items: [],
+  builtinItems: [],
   loaded: false,
 
   loadMine: async () => {
-    const [skills, experts, plugins] = await Promise.all([
+    const [skills, experts, markets] = await Promise.all([
       api<MyRow[]>('/api/v1/me/skills'),
       api<MyExpertRow[]>('/api/v1/me/experts'),
-      api<CatalogItem[]>('/api/v1/market/plugin'),
+      Promise.all([
+        api<CatalogItem[]>('/api/v1/market/skill'),
+        api<CatalogItem[]>('/api/v1/market/expert'),
+        api<CatalogItem[]>('/api/v1/market/plugin'),
+      ]),
     ])
+    const [skillRows, expertRows, pluginRows] = markets
+    const toMine = (kind: MyCapability['kind'], p: CatalogItem): MyCapability => ({
+      kind,
+      id: p.id,
+      name: p.name,
+      description: p.description,
+      source: p.default_enabled ? 'builtin' : 'installed',
+      enabled: p.default_enabled || p.enabled,
+      builtin: true,
+    })
     const items: MyCapability[] = [
       ...skills.map((s) => ({
         kind: 'skill' as const,
@@ -85,19 +103,15 @@ export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => 
         enabled: e.enabled,
         builtin: e.builtin,
       })),
-      ...plugins
-        .filter((p) => p.installed)
-        .map((p) => ({
-          kind: 'plugin' as const,
-          id: p.id,
-          name: p.name,
-          description: p.description,
-          source: 'installed' as const,
-          enabled: p.enabled,
-          builtin: true,
-        })),
+      // 已装插件（内置插件不进 items——用户对其无启停概念）
+      ...pluginRows.filter((p) => p.installed && !p.default_enabled).map((p) => toMine('plugin', p)),
     ]
-    set({ items, loaded: true })
+    const builtinItems: MyCapability[] = [
+      ...skillRows.filter((p) => p.default_enabled).map((p) => toMine('skill', p)),
+      ...expertRows.filter((p) => p.default_enabled).map((p) => toMine('expert', p)),
+      ...pluginRows.filter((p) => p.default_enabled).map((p) => toMine('plugin', p)),
+    ]
+    set({ items, builtinItems, loaded: true })
   },
 
   createSkill: async (draft) => {
