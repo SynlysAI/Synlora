@@ -2,8 +2,9 @@
 
 内置技能由 catalog 只读根（`apps/web/backend/catalog/skills`）**直接提供**，
 与插件技能根同一模式：不落 `{data_root}/public/skills`、不可删（标记 `builtin=True`）。
+`{data_root}/users/{uid}/skills` 是**用户自建根**：仅该用户可见，可写可删（传 `user_id` 时并入）。
 `{data_root}/public/skills` 是**公共层**：管理员自建/导入的技能，可写可删、始终可见。
-同名时公共层优先（`list_skills` 先扫公共层再由 `seen` 去重）。
+同名时按「用户根 → 公共层 → 只读根」的顺序优先（`list_skills` 依次扫描并由 `seen` 去重）。
 
 字段与正文骨架遵循 jiuwen `skill-spec.md`：frontmatter 必填
 `name`（= 目录名，kebab-case）/ `description`（做什么 + 何时用），可选
@@ -22,6 +23,7 @@ from pathlib import Path
 import yaml
 
 from app.services.workspace import public_skills_root
+from app.services.workspace import user_skills_root as workspace_skills_root
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +87,15 @@ def render_skill_md(skill: dict) -> str:
     return f"---\n{front}\n---\n\n{skill['content'].strip()}\n"
 
 
+class SkillNameTaken(ValueError):
+    """技能名已被占用（用户自建 / 公共层 / 内置任一来源）。
+
+    继承 `ValueError`，调用方既有的 `except ValueError` 仍可兜住；API 层优先映射 409。
+    """
+
+
 class SkillService:
-    """技能扫描与读写：可写公共层（{data_root}/public/skills）+ 只读根（catalog / 插件）。"""
+    """技能扫描与读写：用户自建根 + 可写公共层（{data_root}/public/skills）+ 只读根（catalog / 插件）。"""
 
     def __init__(self, data_root: Path, extra_roots: list[Path] | None = None) -> None:
         """保存数据根与只读技能根。
@@ -110,6 +119,101 @@ class SkillService:
         d = public_skills_root(self._data_root)
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def user_skills_dir(self, user_id: str) -> Path:
+        """某用户的自建技能根（不存在时不创建）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            {data_root}/users/{user_id}/skills 路径。
+        """
+        return workspace_skills_root(self._data_root, user_id)
+
+    def list_own_skills(self, user_id: str) -> list[dict]:
+        """扫描某用户自建技能。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            技能字典列表（builtin 恒为 False）。
+        """
+        return self._scan_root(self.user_skills_dir(user_id), builtin=False)
+
+    def name_taken(self, name: str) -> str | None:
+        """技能名是否已被任一来源占用。
+
+        Args:
+            name: 技能名。
+
+        Returns:
+            占用来源（"public" / "builtin"），未占用返回 None。
+        """
+        if (self.skills_dir / name / "SKILL.md").is_file():
+            return "public"
+        for root in self._extra_roots:
+            if (root / name / "SKILL.md").is_file():
+                return "builtin"
+        return None
+
+    def write_user_skill(self, user_id: str, *, name: str, description: str,
+                         content: str, version: str = "1.0", author: str = "",
+                         tags: list[str] | None = None,
+                         allowed_tools: list[str] | None = None) -> dict:
+        """写入某用户的自建技能（同名占用则拒绝）。
+
+        Args:
+            user_id: 用户 sub。
+            name: 技能名（kebab-case，同时作为目录名）。
+            description: 技能描述。
+            content: 正文。
+            version: 版本号。
+            author: 作者。
+            tags: 标签列表。
+            allowed_tools: 允许的工具名列表。
+
+        Returns:
+            写入后的技能字典（builtin 恒为 False）。
+
+        Raises:
+            ValueError: 技能名不是 kebab-case。
+            SkillNameTaken: 名字已被占用（自建 / 公共 / 内置）。
+        """
+        if not NAME_OK.match(name):
+            raise ValueError(f"技能名必须是 kebab-case: {name!r}")
+        if (self.user_skills_dir(user_id) / name / "SKILL.md").is_file():
+            raise SkillNameTaken(f"你已有同名技能「{name}」")
+        origin = self.name_taken(name)
+        if origin is not None:
+            label = "公共技能" if origin == "public" else "内置技能"
+            raise SkillNameTaken(f"「{name}」与{label}同名，请换一个名字")
+        skill = {"name": name, "description": description, "content": content,
+                 "version": version, "author": author,
+                 "tags": tags or [], "allowed_tools": allowed_tools or []}
+        target = self.user_skills_dir(user_id) / name
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
+        return {**skill, "builtin": False}
+
+    def delete_user_skill(self, user_id: str, name: str) -> bool:
+        """删除某用户的自建技能目录。
+
+        Args:
+            user_id: 用户 sub。
+            name: 技能名。
+
+        Returns:
+            存在并已删除返回 True；名字非法或不存在返回 False。
+        """
+        if not NAME_OK.match(name):
+            return False
+        target = self.user_skills_dir(user_id) / name
+        if not target.is_dir():
+            return False
+        shutil.rmtree(target)
+        return True
 
     def add_root(self, root: Path) -> None:
         """追加一个只读技能根（插件安装时调用；重复追加幂等）。
@@ -147,17 +251,24 @@ class SkillService:
             out.append(skill)
         return out
 
-    def list_skills(self) -> list[dict]:
-        """扫描全部技能（可写公共层 + 只读根；同名公共层优先）。
+    def list_skills(self, user_id: str | None = None) -> list[dict]:
+        """扫描全部技能（用户根 → 公共层 → 只读根，前者同名优先）。
 
         每个根内按目录名排序；单个技能解析失败（缺 frontmatter / 名不合法 /
         YAML 语法错误）只跳过该目录，不影响其余技能。
 
+        Args:
+            user_id: 用户 sub；None 表示不含任何用户根（管理员全局视图）。
+
         Returns:
             技能字典列表，每项含 `builtin` 标记。
         """
-        out = self._scan_root(self.skills_dir, builtin=False)
+        out = self._scan_root(self.user_skills_dir(user_id), builtin=False) if user_id else []
         seen = {s["name"] for s in out}
+        for skill in self._scan_root(self.skills_dir, builtin=False):
+            if skill["name"] not in seen:
+                seen.add(skill["name"])
+                out.append(skill)
         for root in self._extra_roots:
             for skill in self._scan_root(root, builtin=True):
                 if skill["name"] not in seen:
@@ -165,18 +276,21 @@ class SkillService:
                     out.append(skill)
         return out
 
-    def read_body(self, name: str) -> str | None:
-        """读技能正文（不含 frontmatter；公共层优先于额外根）。
+    def read_body(self, name: str, user_id: str | None = None) -> str | None:
+        """读技能正文（用户根优先于公共层与只读根；不含 frontmatter）。
 
         Args:
             name: 技能名（即目录名）。
+            user_id: 用户 sub；None 表示不含用户根。
 
         Returns:
             正文文本；名字非法、技能不存在或不可解析时返回 None。
         """
         if not NAME_OK.match(name):
             return None
-        for root in [self.skills_dir, *self._extra_roots]:
+        roots = ([self.user_skills_dir(user_id)] if user_id else []) + \
+            [self.skills_dir, *self._extra_roots]
+        for root in roots:
             md = root / name / "SKILL.md"
             if not md.is_file():
                 continue

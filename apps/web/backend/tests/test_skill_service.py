@@ -1,7 +1,7 @@
 """技能文件服务单测（扫描/解析/写入 SKILL.md）。"""
 import pytest
 
-from app.services.skill_service import SkillService
+from app.services.skill_service import SkillNameTaken, SkillService
 
 
 def _seed_one(root, name="data-analysis", desc="数据分析"):
@@ -261,3 +261,40 @@ def test_add_root_normalizes_path(tmp_path):
     svc.add_root(plugin_skills / "." / ".." / "skills")  # 等价写法
     assert len(svc._extra_roots) == 1
     assert [s["name"] for s in svc.list_skills()] == ["spec-nmr"]
+
+
+def test_user_skills_are_scoped_to_owner(tmp_path):
+    svc = SkillService(tmp_path)
+    svc.write_user_skill("u1", name="mine", description="我的", content="## 目标\nx")
+    assert [s["name"] for s in svc.list_own_skills("u1")] == ["mine"]
+    assert svc.list_own_skills("u2") == []
+    assert (tmp_path / "users" / "u1" / "skills" / "mine" / "SKILL.md").is_file()
+
+
+def test_user_skill_takes_precedence_over_public(tmp_path):
+    svc = SkillService(tmp_path)
+    svc.write_skill(name="dup", description="公共", content="## 目标\n公共")
+    svc.write_user_skill("u1", name="dup2", description="我的", content="## 目标\n我的")
+    names = [s["name"] for s in svc.list_skills(user_id="u1")]
+    assert "dup" in names and "dup2" in names
+
+
+def test_write_user_skill_rejects_taken_name(tmp_path):
+    svc = SkillService(tmp_path)
+    svc.write_skill(name="taken", description="公共", content="## 目标\nx")
+    with pytest.raises(SkillNameTaken):
+        svc.write_user_skill("u1", name="taken", description="d", content="c")
+
+
+def test_delete_user_skill_only_affects_own(tmp_path):
+    svc = SkillService(tmp_path)
+    svc.write_user_skill("u1", name="mine", description="d", content="c")
+    assert svc.delete_user_skill("u2", "mine") is False
+    assert svc.delete_user_skill("u1", "mine") is True
+
+
+def test_read_body_prefers_user_copy(tmp_path):
+    svc = SkillService(tmp_path)
+    svc.write_skill(name="shared", description="公共", content="## 目标\n公共正文")
+    svc.write_user_skill("u1", name="mine", description="我的", content="## 目标\n我的正文")
+    assert "我的正文" in svc.read_body("mine", user_id="u1")
