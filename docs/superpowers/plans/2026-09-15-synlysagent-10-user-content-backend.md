@@ -124,9 +124,21 @@ git commit -m "refactor: 工作区路径根改到 users/<uid>，删除旧布局�
 
 - [ ] **Step 1: 改测试**
 
-在 `tests/test_project_service.py` 中：
+**1) 先清理"按旧布局铺数据"的既有测试**（T1 删掉迁移逻辑后它们必然失败，本任务一并认领；
+Task 15 的全绿门槛依赖这一步）：
 
-1) 删除 `test_list_ensures_default_project_on_legacy`（旧布局迁移已移除）。
+- `tests/test_project_service.py:12-17`、`:154`：路径 `data_root/"workspaces"/...` → `data_root/"users"/<uid>/"workspaces"/...`
+- `tests/test_chat_api.py:934`、`:1159`：同上
+- `tests/test_files_api.py:336`、`:383`、`:438`：这三条用例铺 `{data_root}/workspaces/u-user/files`
+  并断言"旧文件被迁进活跃项目目录"。迁移已移除，改为断言**新布局下**的归属解析
+  （文件直接放在 `users/u-user/workspaces/<项目>/files/`，断言按磁盘位置能解析到归属项目）；
+  用例名与注释里的"migration/legacy"措辞同步改为当前语义。
+- `app/services/project_service.py:285` 与 `app/api/files_api.py:3`、`app/core/settings.py:19`
+  的注释里"workspaces/"路径说明同步改为 `users/<uid>/workspaces/`。
+
+**2) 再改本文件的目标用例**（在 `tests/test_project_service.py` 中）：
+
+删除 `test_list_ensures_default_project_on_legacy`（旧布局迁移已移除）。
 2) 把 `test_concurrent_list_seeds_single_default_project` 改为"并发首条消息只建一个默认工作区"：
 
 ```python
