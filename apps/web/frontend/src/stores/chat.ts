@@ -107,7 +107,7 @@ export interface ToolStat {
 
 /** 会话事件流统计（SSE 实时流与历史回放共用同一 reducer 累积）。 */
 export interface RunStats {
-  /** 已接收事件总数。 */
+  /** 已接收的持久事件总数（瞬态 delta 不计，与回放口径一致）。 */
   events: number
   /** 完成的轮数（turn/end + turn/aborted）。 */
   turns: number
@@ -128,14 +128,22 @@ export const emptyStats = (): RunStats => ({
   byTool: {},
 })
 
+/** 瞬态事件类型（只推 SSE 不落盘）：统计与落盘/回放口径对齐，一律不计入。 */
+const TRANSIENT_EVENT_TYPES: ReadonlySet<string> = new Set(['llm/delta', 'reasoning/delta'])
+
 /**
  * 会话事件 → 运行统计的纯函数累积（历史回放 reduce 与 SSE 逐事件共用）。
+ *
+ * 瞬态事件（llm/delta、reasoning/delta）不计入：SSE 流里它们逐 token 一条
+ * （一轮就有几十条），而刷新回放只读落盘副本（瞬态不落盘）——不过滤的话
+ * 流式中与刷新后的"事件总数"会对不上（如 52 vs 6）。
  *
  * @param stats 当前统计。
  * @param ev 会话事件。
  * @returns 应用事件后的新统计（不可变更新）。
  */
 export function reduceStats(stats: RunStats, ev: SessionEvent): RunStats {
+  if (TRANSIENT_EVENT_TYPES.has(ev.type)) return stats
   const next: RunStats = { ...stats, events: stats.events + 1 }
   const payload = ev.payload ?? {}
   switch (ev.type) {
