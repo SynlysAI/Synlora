@@ -21,6 +21,13 @@
 
 ### Task 1: 类型与市场 store 改走新端点
 
+> ✅ **已完成**（`65d0602` + `45c672b`，经 spec 与质量两道审查）。**以实际代码为准，下文初始代码有两处已被后续修复改写**：
+> - `loadMarket` 用 `Promise.allSettled` **逐类容错**（某类失败只保留该类上次数据；三类全失败才抛错）
+> - `install` 的安装路径按**该插件是否有 `config_schema`** 判定走 POST（不是"config 是否非空"——`required+secret` 字段允许空提交，按 config 判会绕过校验留下半装态）
+> - 三个写方法里的重拉是 `await get().loadMarket().catch(() => undefined)`（写已成功，重拉失败不该报成"安装失败"）
+>
+> 新会话请从 **Task 2** 开始。
+
 **Files:**
 - Modify: `apps/web/frontend/src/types.ts:115-127`
 - Modify: `apps/web/frontend/src/stores/catalog.ts`
