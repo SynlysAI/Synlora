@@ -2513,7 +2513,7 @@ cd "E:\agent_projects\Synlora" && git add README.md apps/web/backend/README.md C
 
 ## 六、明确不做（YAGNI）
 
-- 不卸载插件（v1 无 uninstall；`PluginConfigStore` 已有删除能力，需要时再开端点）
+- 不卸载插件（v1 无 uninstall；底层 `DocumentStore` 支持 `delete`，需要时再在 `PluginConfigStore`/API 上开端点）
 - 不做插件市场/在线安装（插件包随仓库；`{data_dir}/plugins/` 已预留运行期安装根）
 - 不做插件的 UI 贡献（插件的管理界面仍由宿主通用页面渲染 schema）
 - 不做 5 种谱图异步任务（待统一 Job 注册表）
