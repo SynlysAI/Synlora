@@ -183,16 +183,18 @@ class AgentService:
         token = await self._ai4ms_identity.token_for(user)
         return {"ai4ms_token": token} if token else {}
 
-    def _jsonl_path(self, session_id: str) -> Path:
+    def _jsonl_path(self, session_id: str, user_id: str) -> Path:
         """会话事件文件路径（父目录自动创建）。
 
         Args:
             session_id: 会话 id。
+            user_id: 用户 sub（事件随会话归入该用户目录）。
 
         Returns:
-            {data_root}/sessions/{session_id}/events.jsonl。
+            {data_root}/users/{user_id}/sessions/{session_id}/events.jsonl。
         """
-        p = self._settings.data_root / "sessions" / session_id / "events.jsonl"
+        p = (self._settings.data_root / "users" / user_id
+             / "sessions" / session_id / "events.jsonl")
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
@@ -261,7 +263,9 @@ class AgentService:
                 if event.type in TRANSIENT:
                     return
                 try:
-                    with self._jsonl_path(session_id).open("a", encoding="utf-8") as f:
+                    with self._jsonl_path(
+                            session_id, str(user.get("sub") or "anonymous")).open(
+                                "a", encoding="utf-8") as f:
                         f.write(event.model_dump_json() + "\n")
                 except OSError:
                     pass

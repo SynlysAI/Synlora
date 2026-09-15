@@ -299,7 +299,9 @@ async def delete_session(sid: str, request: Request,
     doc = await _own_session(sid, user, repos)
     for ev in await repos.event.list(filters={"session_id": sid}):
         await repos.event.delete(ev["_id"])
-    jsonl_dir = request.app.state.settings.data_root / "sessions" / sid
+    # 事件随会话落在登录用户目录下（与 AgentService._jsonl_path 一致）
+    jsonl_dir = (request.app.state.settings.data_root / "users"
+                 / str(user.get("sub") or "anonymous") / "sessions" / sid)
     shutil.rmtree(jsonl_dir, ignore_errors=True)
     await repos.session.delete(doc["_id"])
     return {"ok": True}

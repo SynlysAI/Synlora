@@ -19,6 +19,10 @@ from synlys_harness.types import Permission
 
 from app.services import agent_service as agent_service_mod
 
+# 本文件用例统一用 admin_headers 登录，其 token payload 的 sub 为 u-admin
+# （见 conftest.make_token_headers）；事件落盘按登录用户分层，断言需对齐该目录。
+USER_SUB = "u-admin"
+
 PROVIDER_BODY = {
     "name": "chat-mock",
     "base_url": "https://api.chat-mock.local/v1",
@@ -215,7 +219,8 @@ async def test_full_tool_chain(app, client, admin_headers, monkeypatch):
     assert events[-2][1]["payload"]["content"] == "答案是 42"
 
     # JSONL 回放源：瞬态 llm/delta 不落盘，行数 = 结构事件数（7 - 1）
-    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    jsonl = (app.state.settings.data_root / "users" / USER_SUB
+             / "sessions" / sid / "events.jsonl")
     assert jsonl.exists()
     lines = jsonl.read_text(encoding="utf-8").splitlines()
     assert len(lines) == len(events) - 1 == 6
@@ -290,7 +295,8 @@ async def test_transient_deltas_streamed_but_not_persisted(
     assert [e["seq"] for e in replayed] == [0, 1, 5, 6]  # seq 2/3/4 被 3 个 delta 占用
 
     # JSONL 行数 = 结构事件数（4），同样不含瞬态
-    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    jsonl = (app.state.settings.data_root / "users" / USER_SUB
+             / "sessions" / sid / "events.jsonl")
     lines = jsonl.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 4
     assert all(json.loads(line)["type"] != "llm/delta" for line in lines)
@@ -363,7 +369,8 @@ async def test_multi_turn_events_persist_and_context(app, client, admin_headers,
     assert user_texts == ["第一问", "第二问"]
 
     # JSONL 回放源同样只落结构事件（seq 与 DB 一致）
-    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    jsonl = (app.state.settings.data_root / "users" / USER_SUB
+             / "sessions" / sid / "events.jsonl")
     lines = jsonl.read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["seq"] for line in lines] == [0, 1, 3, 4, 5, 6, 8, 9]
 
@@ -688,7 +695,8 @@ async def test_sessions_crud(app, client, admin_headers, monkeypatch):
     resp = await client.post(f"/api/v1/sessions/{sid}/messages",
                              headers=admin_headers, json={"text": "在吗"})
     assert resp.status_code == 200
-    jsonl = app.state.settings.data_root / "sessions" / sid / "events.jsonl"
+    jsonl = (app.state.settings.data_root / "users" / USER_SUB
+             / "sessions" / sid / "events.jsonl")
     assert jsonl.exists()
 
     r = await client.delete(f"/api/v1/sessions/{sid}", headers=admin_headers)
