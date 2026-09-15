@@ -1,0 +1,99 @@
+"""CapabilityService 可见性判定测试。"""
+from __future__ import annotations
+
+import pytest
+from cryptography.fernet import Fernet
+
+from app.catalog.items import CatalogService
+from app.catalog.policy import CatalogPolicyRepo
+from app.catalog.service import CapabilityService
+from app.catalog.user_caps import UserCapabilityRepo
+from app.core.settings import Settings
+from app.plugins.loader import plugin_roots, scan_plugins
+from app.services.skill_service import SkillService
+
+SPEC_TOOLS = {"spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"}
+
+
+@pytest.fixture
+def caps(store, tmp_path) -> CapabilityService:
+    """组装 CapabilityService（真实 store + 仓库插件包 + 注入工具映射）。"""
+    settings = Settings(data_dir=str(tmp_path), fernet_key=Fernet.generate_key().decode())
+    skill_service = SkillService(tmp_path)
+    skill_service.seed_builtins()
+    return CapabilityService(
+        catalog=CatalogService(settings=settings, skill_service=skill_service,
+                               packages=scan_plugins(plugin_roots(settings))),
+        policy=CatalogPolicyRepo(store),
+        installs=UserCapabilityRepo(store),
+        tool_names_by_plugin={"spec_agent": set(SPEC_TOOLS)},
+    )
+
+
+async def test_defaults_visible_to_everyone(caps):
+    """缺省策略（public + 默认启用）→ 所有人可见，无需安装。"""
+    assert await caps.is_visible("u1", "plugin", "spec_agent") is True
+    assert await caps.visible_ids("u2", "plugin") == {"spec_agent"}
+
+
+async def test_hidden_invisible_even_if_installed(caps):
+    """hidden → 普通用户不可见（已安装也不可见）。"""
+    await caps.policy.set("plugin", "spec_agent", visibility="hidden", default_enabled=False)
+    await caps.installs.install("u1", "plugin", "spec_agent")
+    assert await caps.is_visible("u1", "plugin", "spec_agent") is False
+    assert await caps.visible_ids("u1", "plugin") == set()
+
+
+async def test_not_default_requires_install(caps):
+    """public + 非默认 → 未安装不可见，安装后可见，且只影响安装者本人。"""
+    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=False)
+    assert await caps.is_visible("u1", "skill", "office-doc") is False
+    await caps.installs.install("u1", "skill", "office-doc")
+    assert await caps.is_visible("u1", "skill", "office-doc") is True
+    assert await caps.is_visible("u2", "skill", "office-doc") is False
+
+
+async def test_unknown_item_is_not_visible(caps):
+    """目录里不存在的条目一律不可见（防止凭 id 绕过）。"""
+    assert await caps.is_visible("u1", "plugin", "nope") is False
+    assert await caps.is_visible("u1", "bogus-kind", "spec_agent") is False
+
+
+async def test_visible_plugin_tools(caps):
+    """插件工具名按可见插件推导（运行期工具过滤用）。"""
+    assert await caps.visible_tool_names("u1") == SPEC_TOOLS
+
+    await caps.policy.set("plugin", "spec_agent", visibility="public", default_enabled=False)
+    assert await caps.visible_tool_names("u1") == set()
+    await caps.installs.install("u1", "plugin", "spec_agent")
+    assert await caps.visible_tool_names("u1") == SPEC_TOOLS
+
+
+async def test_market_listing_marks_state(caps):
+    """市场列表：条目 + 策略 + 安装状态（供 UI 渲染）。"""
+    await caps.policy.set("plugin", "spec_agent", visibility="public", default_enabled=False)
+    await caps.installs.install("u1", "plugin", "spec_agent")
+    items = await caps.market_items("u1", "plugin")
+    row = next(i for i in items if i["id"] == "spec_agent")
+    assert row["installed"] is True and row["visible"] is True
+    assert row["default_enabled"] is False and row["visibility"] == "public"
+    assert row["name"] == "Spec_Agent 谱图解析" and row["kind"] == "plugin"
+
+
+async def test_market_items_hides_hidden_from_users(caps):
+    """普通用户视角不出现 hidden 条目；管理员视角出现。"""
+    await caps.policy.set("plugin", "spec_agent", visibility="hidden", default_enabled=False)
+    assert await caps.market_items("u1", "plugin") == []
+    admin_rows = await caps.market_items("admin1", "plugin", admin=True)
+    assert [r["id"] for r in admin_rows] == ["spec_agent"]
+
+
+async def test_exists_and_can_install(caps):
+    """exists 判存在；can_install 对 hidden 条目拒绝。"""
+    assert await caps.exists("plugin", "spec_agent") is True
+    assert await caps.exists("plugin", "nope") is False
+    assert await caps.can_install("u1", "plugin", "spec_agent") is True
+
+    await caps.policy.set("plugin", "spec_agent", visibility="hidden", default_enabled=False)
+    assert await caps.can_install("u1", "plugin", "spec_agent") is False
+    assert await caps.can_install("u1", "plugin", "nope") is False

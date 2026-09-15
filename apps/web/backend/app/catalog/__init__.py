@@ -7,3 +7,12 @@
 
 运行期由 CapabilityService 汇总三层，算出「某个用户实际可见」的专家/技能/插件。
 """
+from app.catalog.items import CatalogItem, CatalogService
+from app.catalog.policy import CatalogPolicyRepo
+from app.catalog.service import CapabilityService
+from app.catalog.user_caps import UserCapabilityRepo
+
+__all__ = [
+    "CapabilityService", "CatalogItem", "CatalogPolicyRepo", "CatalogService",
+    "UserCapabilityRepo",
+]
