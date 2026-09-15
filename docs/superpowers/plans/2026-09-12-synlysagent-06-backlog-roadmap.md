@@ -30,6 +30,16 @@
 ### 4. 小修（顺手项）
 - [ ] 设计文档 §11 同步实际进度（WeKnora 划掉、补 steering/压缩/重试/审批条目）
 
+### 5. 能力市场与用户可见性 ✅ 2026-09-15（0.6.0-beta.1）
+- [x] 后台左导航 + 「常规」页占位：管理后台由顶部页签改为**左侧导航列表**（188px，滚动只在右侧），页签为常规 / 模型服务 / 助手管理 / 技能管理 / 插件；新增「常规」页（外观与界面语言，占位）
+- [x] 三层模型：内置目录（随仓库只读，`app/catalog/` 枚举专家/技能/插件）→ 管理员策略（`catalog_policy`）→ 用户安装（`user_capabilities`）
+- [x] 管理员策略：`catalog_policy`（`_id = f"{kind}:{item_id}"`，`visibility ∈ {public, hidden}` + `default_enabled`；缺省 = public + 默认启用，升级后行为不变）
+- [x] 用户安装记录：`user_capabilities`（`_id = f"{uid}:{kind}:{item_id}"`；**安装 = 只写记录，不复制文件**；安装/卸载幂等）
+- [x] `CapabilityService`：按用户算可见集（hidden 不可见 / public+默认 全员可见 / public+非默认 需安装），唯一过滤入口
+- [x] 运行期与列表落地：插件工具过滤、技能索引过滤（黑名单口径 `hidden_skill_names`，公共技能目录管理员自建技能始终可见）、专家列表过滤、`ctx.extra["plugins"]` 只注入可见插件（内置工具不受影响）；插件配置公共/个人两层（个人优先、公共打底）
+- [x] 用户侧能力中心：左栏底部用户菜单 → 独立整页 `/capabilities`（专家/技能/插件三分组，安装/卸载，插件可填个人配置）；管理页三处加「可见性 / 默认启用」开关
+- [ ] **未做**：用户自建 / 导入技能与插件（用户私有目录 `{data_dir}/users/{uid}/` 仅设计预留、无写入路径）、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载
+
 ---
 
 ## 阶段二：V2 科研能力（中期，按价值排序）
@@ -83,3 +93,7 @@
 - 管线强制审批（Permission.ASK_USER）：pre-execute 打断 + approval_handler 复用 ask/user 事件与 answer 回路（fail-closed）+ 前端审批卡（允许/拒绝）；内置工具暂均 ALLOW，SpecLabOS 接入时声明即生效
 - 沙箱升级（0.4.0-beta.1）：python.run 执行器抽象（local/docker/fail-closed 三态，`SANDBOX_MODE`/`SANDBOX_STRICT` 切换）+ 临时容器强隔离（断网/资源限额/非 root/单目录挂载）+ 沙箱镜像 `docker/sandbox/` + 逃逸集成测试（详见阶段一·1）
 - 插件机制（0.5.0-beta.1，一切皆插件）：宿主通用插件框架（`plugin.json` manifest 扫描 + 配置加密落库 + 安装即注册工具/挂技能/播种专家 + 管理 API）+ 管理页「插件」页签（按 schema 动态渲染）+ 首个插件 `spec_agent`（Spec_Agent 核磁三件套）；插件配置由管理页填写落库加密，不进 settings/.env（详见 `2026-09-14-synlysagent-07-ai4ms-specagent-integration.md`）
+
+## 已完成（2026-09-15）
+
+- 能力目录（市场）+ 后台导航重构（0.6.0-beta.1）：管理后台由顶部页签改为**左侧导航列表**并新增「常规」页占位；「专家/技能/插件」改为三层可见性模型（内置只读目录 → 管理员 `catalog_policy` 策略 → 用户 `user_capabilities` 安装记录，**安装 = 只写记录不复制文件**）；运行期由 `CapabilityService` 按用户算可见集统一过滤（插件工具/技能索引/专家列表/插件配置，内置工具不受影响），技能过滤用黑名单口径保住公共技能目录里管理员自建的技能；用户侧新增独立整页「能力中心」`/capabilities`（详见 `2026-09-15-synlysagent-08-capability-catalog-and-admin-nav.md`）

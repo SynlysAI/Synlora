@@ -70,6 +70,52 @@ apps/web/backend/plugins/<id>/
 
 **已接入**：`spec_agent`（Spec_Agent 核磁预测三件套 `spec.nmr.forward/reverse/search`；安装后自动播种「谱图解析专家」；服务端未开鉴权时凭证留空）。
 
+## 能力目录与可见性（市场机制）
+
+**设计原则：内置项随仓库走，可见性由策略控制，用户安装只写记录。** 「专家 / 技能 / 插件」统一纳入能力目录（`app/catalog/`），三层模型如下（参考 jiuwen 的目录分层 + DSH 的配置分层）：
+
+| 层 | 谁能改 | 存哪 |
+| --- | --- | --- |
+| **内置目录**（随仓库，只读） | 开发者 | 专家=代码种子 `SEED_ASSISTANTS`；技能=随包播种的内置技能；插件=`apps/web/backend/plugins/<id>/` |
+| **管理员策略**（可见性 + 默认启用） | 管理员 | `catalog_policy` 集合，`_id = f"{kind}:{item_id}"` |
+| **用户安装**（只写记录） | 用户本人 | `user_capabilities` 集合，`_id = f"{uid}:{kind}:{item_id}"` |
+
+两个新集合的形态：
+
+```
+catalog_policy      { _id: "plugin:spec_agent", kind, item_id,
+                      visibility: "public"|"hidden", default_enabled: bool }
+user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id, installed_at }
+```
+
+**可见性规则**（`CapabilityService`，运行期过滤的唯一入口）：
+
+- `hidden` → 普通用户完全不可见（管理员后台仍可见、可改，且不提供「安装隐藏项」的入口）
+- `public + 默认启用`（缺省值）→ 全员开箱可用，无需安装
+- `public + 非默认` → 出现在用户侧「能力中心」，用户自行安装后对自己可见（不影响他人）
+
+策略缺省 = `public + 默认启用`，因此**升级后既有行为不变**，无需数据迁移。
+
+**安装 = 只写记录，不复制文件。** 安装只是往 `user_capabilities` 写一条 `(user, kind, item)` 记录；内置包随仓库（或数据目录播种）走，升级内置项即对所有已安装用户生效，**无副本漂移**、也不存在「装的是旧版」的问题。（jiuwen 要复制文件，是因为它从远端 hub 下载包；本项目首期内置即全部来源，无下载需求。）
+
+**运行期落地**：`CapabilityService` 按用户算出可见集，统一作用于插件工具过滤、技能索引过滤、专家列表过滤、`ctx.extra["plugins"]` 只注入可见插件。**内置工具（`python.run`/`file.*`/`web.*` 等）不受影响**，只有插件贡献的工具受策略控制。技能过滤用**黑名单口径**（`hidden_skill_names`）：内置技能按技能策略、插件技能跟随其插件；公共技能目录里管理员自建的技能始终可见。
+
+**插件配置两层**：管理员公共安装（`plugin_configs`，`_id = 插件 id`，部署级共享，如 Spec_Agent 网关地址）与用户个人安装（同集合，`_id = user:<uid>:<plugin_id>`，个人专用）并存；运行期**个人优先、公共打底**（浅合并），两者都无则空配置。用户维度文档只是「个人安装记录」，不参与插件整体安装状态判定。
+
+**API 一览**：
+
+| 侧 | 方法 | 路径 | 说明 |
+| --- | --- | --- | --- |
+| 用户 | `GET` | `/api/v1/catalog` | 当前用户可见的能力目录（含策略与安装状态；`hidden` 项不返回） |
+| 用户 | `POST` | `/api/v1/catalog/{kind}/{item_id}/install` | 安装（写记录；插件可带个人配置 body `{"config": {...}}`） |
+| 用户 | `DELETE` | `/api/v1/catalog/{kind}/{item_id}/install` | 卸载（删记录） |
+| 管理员 | `GET` | `/api/v1/admin/catalog` | 管理员视角目录（含 `hidden` 条目与全部策略） |
+| 管理员 | `PUT` | `/api/v1/admin/catalog/{kind}/{item_id}/policy` | 配置 `{visibility, default_enabled}` |
+
+用户侧入口：左栏底部用户菜单 →「能力中心」→ 独立整页 `/capabilities`（专家 / 技能 / 插件三分组，安装 / 卸载，插件可填个人配置）。管理后台为整页 `/admin/*`，由顶部页签改为**左侧导航列表**：常规 / 模型服务 / 助手管理 / 技能管理 / 插件。
+
+**首期明确不做**：用户自建 / 导入技能与插件（用户私有目录 `{data_dir}/users/{uid}/` 仅设计预留，无写入路径）、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、常规设置的实际内容（外观主题已可经右上角切换，界面语言等后续提供）。
+
 ## 与 AI4MS 门户对接
 
 - **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 location.hash 提取 token 后放入 `Authorization: Bearer <token>` 请求头（前端实现见 Plan 3）。token 为门户签发的 `{payload_b64}.{hmac_hex}` 格式，后端用 `AUTH_SECRET` 校验。

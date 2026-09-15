@@ -46,6 +46,7 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 - 认证与 AI⁴MS 门户逐字兼容（HMAC token + `ai4ms.users`，`#token=` 跳转）
 - python.run 执行器抽象（`tools/sandbox.py`）：local（-I 隔离/环境白名单/超时/截断，事故围栏）与 docker（临时容器：workspace 单目录挂载 /workspace、断网、资源限额、非 root、跑完即删）两实现；宿主经 `ctx.extra.code_executor` 注入、`resolve_executor()` 探测解析（不可用时 strict 拒绝或回退 local-weak 标记）；镜像构建见 `docker/sandbox/`
 - 一切皆插件：子平台接入 = `apps/web/backend/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板）；宿主通用框架 `app/plugins/`（loader 扫描 + config_store 加密落库 + PluginService 编排 + api 管理端点）；插件配置经管理页填写落库（不进 settings.py/.env），运行期按命名空间注入 `ctx.extra["plugins"]`；插件技能经 SkillService 额外技能根提供；新增插件不改主框架与 harness
+- 能力目录（市场）：内置项（专家/技能/插件）由 `app/catalog/` 枚举；管理员用 `catalog_policy` 配「可见性（public/hidden）+ 默认启用」，缺省 = public + 默认启用；用户安装只写 `user_capabilities` 记录（**不复制文件**）；运行期可见集由 `CapabilityService` 按用户计算（插件工具/技能索引/专家列表/`ctx.extra["plugins"]` 统一走它，**内置工具不受影响**）；技能过滤用黑名单口径（`hidden_skill_names`），公共技能目录里管理员自建的技能始终可见；插件配置分公共（`plugin_configs`，部署级）与个人（`user:<uid>:<plugin_id>`）两层，个人优先；管理后台为整页左导航（常规/模型服务/助手管理/技能管理/插件），用户侧「能力中心」为独立整页 `/capabilities`
 - 工具强制审批：`Permission.ASK_USER` 在管线 pre-execute 打断，宿主 `approval_handler` 复用 ask/user 事件与 answer 回路，fail-closed（SpecLabOS 类工具声明即生效）
 - 插话（steering）双语义：模型还有 step 则下个边界注入本轮；turn 正常结束时残留插话经 `take_queued_turn()` 自动转为下一轮续跑（取消/失败路径丢弃）
 - 运行时（ActiveRun/SSE 队列/ask future）为单进程内存态：uvicorn 必须 workers=1 单实例部署，多副本会破坏 steer/answer/cancel
