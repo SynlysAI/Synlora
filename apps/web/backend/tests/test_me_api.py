@@ -29,7 +29,12 @@ def test_create_and_list_my_skill(client):
 
 
 def test_my_skill_name_conflict_with_builtin(client):
-    # "data-analysis" 是内置目录条目；自建同名必须被拒
+    """自建与内置同名 → 409 而非 422，这条才真正守住 except 顺序。
+
+    "data-analysis" 是内置目录条目；自建同名抛 SkillNameTaken，它继承 ValueError，
+    若 API 层把 `except ValueError` 写在 `except SkillNameTaken` 之前，会被截成 422，
+    本用例断言 409 即失败。
+    """
     dup = client.post("/api/v1/me/skills", json={
         "name": "data-analysis", "description": "我", "content": "## 目标\ny"},
         headers=HEADERS)
@@ -37,7 +42,7 @@ def test_my_skill_name_conflict_with_builtin(client):
 
 
 def test_my_skill_invalid_name_is_422_not_409(client):
-    """非法 kebab-case 属 422；SkillNameTaken 才是 409（两者都是 ValueError 子类，别搞反）。"""
+    """非法 kebab-case → 422 而非 409。"""
     bad = client.post("/api/v1/me/skills", json={
         "name": "Bad_Name", "description": "x", "content": "y"}, headers=HEADERS)
     assert bad.status_code == 422
@@ -73,3 +78,14 @@ def test_my_skills_lists_installed_builtin(client):
     row = next(r for r in rows if r["name"] == "data-analysis")
     assert row["enabled"] is False          # 停用后仍在「我的」里，但状态为停用
     assert row["installed"] is True
+
+
+def test_my_skills_marks_revoked_installed_item(client):
+    """管理员下架后，已安装条目在「我的」里标 revoked（仍列出，但不可用）。"""
+    client.put("/api/v1/me/capabilities/skill/data-analysis",
+               json={"installed": True}, headers=HEADERS)
+    client.put("/api/v1/admin/catalog/skill/data-analysis/policy",
+               json={"visibility": "hidden", "default_enabled": False}, headers=HEADERS)
+    rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
+    row = next(r for r in rows if r["name"] == "data-analysis")
+    assert row["revoked"] is True

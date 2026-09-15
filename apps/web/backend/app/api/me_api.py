@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user
-from app.services.skill_service import SkillNameTaken
+from app.services.skill_service import SkillNameTaken, SkillNotFound
 
 router = APIRouter(prefix="/api/v1/me", tags=["me"])
 
@@ -130,21 +130,16 @@ async def update_my_skill(request: Request, name: str, body: MySkillUpdateBody,
         写入后的技能字典。
 
     Raises:
-        HTTPException: 403 不是自建技能；422 名字不合法。
+        HTTPException: 403 该技能不是你创建的；422 名字不合法。
     """
-    svc = _skill_service(request)
-    user_id = user["sub"]
-    # 仅自建技能可改：内置/公共技能不在用户目录里，此处即 403 挡住
-    if not (svc.user_skills_dir(user_id) / name / "SKILL.md").is_file():
-        raise HTTPException(403, "只能修改自己创建的技能")
     try:
-        # overwrite=True：已有自建技能的更新不该被"同名拒绝"挡下（名字已属于本人）
-        return svc.write_user_skill(
-            user_id, name=name, description=body.description, content=body.content,
+        # 「只许改自己的」不变量在服务层：update_user_skill 要求用户目录下确有该技能
+        return _skill_service(request).update_user_skill(
+            user["sub"], name, description=body.description, content=body.content,
             version=body.version, author=body.author,
-            tags=body.tags, allowed_tools=body.allowed_tools, overwrite=True)
-    except SkillNameTaken as exc:  # overwrite 路径不再触发，防御性兜底
-        raise HTTPException(409, str(exc)) from exc
+            tags=body.tags, allowed_tools=body.allowed_tools)
+    except SkillNotFound as exc:  # 必须排在 ValueError 之前（它是其子类）
+        raise HTTPException(403, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
