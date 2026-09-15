@@ -299,3 +299,21 @@ def test_delete_user_skill_only_affects_own(tmp_path):
     svc.write_user_skill("u1", name="mine", description="d", content="c")
     assert svc.delete_user_skill("u2", "mine") is False
     assert svc.delete_user_skill("u1", "mine") is True
+
+
+def test_write_user_skill_rejects_builtin_name(tmp_path):
+    """内置（只读根）里已有同名技能时，用户自建同样被拒绝。
+
+    "D4 同名拒绝"的另一半：不得与内置技能同名，否则用户可静默遮蔽内置技能。
+    """
+    catalog_root = tmp_path / "catalog" / "skills"
+    (catalog_root / "spec-nmr").mkdir(parents=True)
+    (catalog_root / "spec-nmr" / "SKILL.md").write_text(
+        "---\nname: spec-nmr\ndescription: 内置技能\n---\n\n## 目标\n内置\n",
+        encoding="utf-8")
+
+    svc = SkillService(tmp_path / "data", extra_roots=[catalog_root])
+    assert svc.name_taken("spec-nmr") == "builtin"
+    with pytest.raises(SkillNameTaken):
+        svc.write_user_skill("u1", name="spec-nmr", description="我的",
+                             content="## 目标\n我的")

@@ -151,7 +151,8 @@ class SkillService:
         Returns:
             占用来源（"public" / "builtin"），未占用返回 None。
         """
-        if (self.skills_dir / name / "SKILL.md").is_file():
+        # 用纯路径函数探测（skills_dir 属性会 mkdir，查询动作不该有建目录副作用）
+        if (public_skills_root(self._data_root) / name / "SKILL.md").is_file():
             return "public"
         for root in self._extra_roots:
             if (root / name / "SKILL.md").is_file():
