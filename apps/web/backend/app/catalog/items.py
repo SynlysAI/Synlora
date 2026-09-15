@@ -57,6 +57,15 @@ class CatalogService:
         self._skill_service = skill_service
         self._packages = packages
 
+    @property
+    def packages(self) -> dict[str, "PluginPackage"]:
+        """扫描到的插件包（{id: PluginPackage}）。
+
+        Returns:
+            插件包映射（只读用途；调用方不得就地修改）。
+        """
+        return self._packages
+
     def list_items(self, kind: str) -> list[CatalogItem]:
         """枚举某类内置条目。
 

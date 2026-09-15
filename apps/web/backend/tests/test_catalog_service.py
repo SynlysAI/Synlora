@@ -97,3 +97,25 @@ async def test_exists_and_can_install(caps):
     await caps.policy.set("plugin", "spec_agent", visibility="hidden", default_enabled=False)
     assert await caps.can_install("u1", "plugin", "spec_agent") is False
     assert await caps.can_install("u1", "plugin", "nope") is False
+
+
+async def test_visible_skill_names_includes_plugin_skills(caps):
+    """插件技能跟随其插件可见性（不是目录条目也要能算出来）。"""
+    names = await caps.visible_skill_names("u1")
+    assert {"data-analysis", "pdf-extraction", "office-doc"} <= names
+    assert "spec-nmr" in names  # 来自 spec_agent 插件的 skills 声明
+
+    await caps.policy.set("plugin", "spec_agent", visibility="hidden", default_enabled=False)
+    names_after = await caps.visible_skill_names("u1")
+    assert "spec-nmr" not in names_after
+    assert "data-analysis" in names_after  # 内置技能不受插件策略影响
+
+
+async def test_visible_ids_matches_per_item_visibility(caps):
+    """批量计算与逐条判定结果一致（优化不改变语义）。"""
+    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=False)
+    await caps.installs.install("u1", "skill", "office-doc")
+    batch = await caps.visible_ids("u1", "skill")
+    per_item = {i.id for i in caps.catalog.list_items("skill")
+                if await caps.is_visible("u1", "skill", i.id)}
+    assert batch == per_item

@@ -80,11 +80,35 @@ class CapabilityService:
         Returns:
             可见条目 id 集合。
         """
+        items = self.catalog.list_items(kind)
+        if not items:
+            return set()
+        # 一次取回该用户的安装记录，避免逐条查询
+        installed = set(await self.installs.list_for_user(user_id, kind=kind))
         out: set[str] = set()
-        for item in self.catalog.list_items(kind):
-            if await self.is_visible(user_id, kind, item.id):
+        for item in items:
+            pol = await self.policy.get(kind, item.id)
+            if pol["visibility"] == "hidden":
+                continue
+            if pol["default_enabled"] or f"{kind}:{item.id}" in installed:
                 out.add(item.id)
         return out
+
+    async def visible_skill_names(self, user_id: str) -> set[str]:
+        """某用户可见的技能名（内置技能按策略 + 插件技能跟随其插件可见性）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            技能名集合。
+        """
+        names = await self.visible_ids(user_id, "skill")
+        for plugin_id in await self.visible_ids(user_id, "plugin"):
+            pkg = self.catalog.packages.get(plugin_id)
+            if pkg is not None:
+                names |= set(pkg.skills)
+        return names
 
     async def visible_tool_names(self, user_id: str) -> set[str]:
         """某用户可见的插件工具名（运行期工具过滤用）。
@@ -129,17 +153,20 @@ class CapabilityService:
         Returns:
             条目字典列表；普通用户视角下 hidden 条目不出现。
         """
+        installed = set(await self.installs.list_for_user(user_id, kind=kind))
         rows: list[dict] = []
         for item in self.catalog.list_items(kind):
             pol = await self.policy.get(kind, item.id)
-            if pol["visibility"] == "hidden" and not admin:
+            hidden = pol["visibility"] == "hidden"
+            if hidden and not admin:
                 continue
+            is_installed = f"{kind}:{item.id}" in installed
             rows.append({
                 "kind": item.kind, "id": item.id, "name": item.name,
                 "description": item.description, "source": item.source,
                 "visibility": pol["visibility"],
                 "default_enabled": pol["default_enabled"],
-                "installed": await self.installs.is_installed(user_id, kind, item.id),
-                "visible": await self.is_visible(user_id, kind, item.id),
+                "installed": is_installed,
+                "visible": (not hidden) and (pol["default_enabled"] or is_installed),
             })
         return rows
