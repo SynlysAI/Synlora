@@ -140,11 +140,14 @@ class AgentService:
             self._executor = executor
         return self._executor
 
-    async def _visible_plugin_configs(self, user_id: str) -> dict[str, dict]:
+    async def _visible_plugin_configs(
+            self, user_id: str, enabled_plugins: list[str] | None = None) -> dict[str, dict]:
         """该用户可见插件的配置（公共打底、个人覆盖）。
 
         Args:
             user_id: 用户 sub。
+            enabled_plugins: 会话级插件开关（None = 跟随用户级可见集，
+                集合 = 只解析勾选的插件；勾选不能放大可见性，取交集）。
 
         Returns:
             {插件 id: 扁平配置}；单条解密失败只跳过该插件（工具会报未配置），
@@ -161,6 +164,8 @@ class AgentService:
             _LOGGER.warning("能力服务未注入，无法按用户解析插件配置（fail-closed）")
             return {}
         plugin_ids = await self._capability_service.visible_ids(user_id, "plugin")
+        if enabled_plugins is not None:
+            plugin_ids &= set(enabled_plugins)
         out: dict[str, dict] = {}
         for plugin_id in sorted(plugin_ids):
             try:
@@ -216,7 +221,8 @@ class AgentService:
                    workspace_root: Path,
                    requested_skills: list[str] | None = None,
                    attachments: list[dict] | None = None,
-                   file_ownership: dict | None = None) -> str:
+                   file_ownership: dict | None = None,
+                   enabled_plugins: list[str] | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
@@ -240,6 +246,9 @@ class AgentService:
             file_ownership: 交付/复制产生的文件记录归属字段（{"project_id": pid}
                 或 {"session_id": sid}，与 workspace_root 对应）；None = 不带归属
                 （历史口径，下载按磁盘位置解析）。
+            enabled_plugins: 会话级插件开关（勾选的插件 id 集合）：插件工具与
+                配置注入按它收窄。None = 未设置（跟随用户级可见集）；
+                空列表 = 本轮禁用全部插件（内置工具不受影响）。
 
         Returns:
             run_id。
@@ -366,6 +375,15 @@ class AgentService:
                 }
                 if all_plugin_tools:
                     visible_tools = await caps.visible_tool_names(user["sub"])
+                    # 会话级插件开关（enabled_plugins）：再按勾选集合收窄插件工具
+                    # （None = 未设置，跟随用户级可见集；空列表 = 本轮禁用全部插件；
+                    # 内置工具不受影响，且勾选不能放大可见性——交集而非替换）
+                    if enabled_plugins is not None:
+                        keep = {
+                            t for pid in set(enabled_plugins)
+                            for t in caps.tool_names_by_plugin.get(pid, ())
+                        }
+                        visible_tools = visible_tools & keep
                     tool_names = [
                         t for t in tool_names
                         if t not in all_plugin_tools or t in visible_tools
@@ -432,9 +450,10 @@ class AgentService:
                     "ask_user_handler": ask_handler,
                     "send_file_handler": send_file_handler,
                     "approval_handler": approval_handler,
-                    # 插件配置命名空间（仅注入该用户可见的插件，个人配置优先；
-                    # 核心不认识任何插件专属字段）
-                    "plugins": (await self._visible_plugin_configs(user["sub"])
+                    # 插件配置命名空间（仅注入该用户可见且未被会话级开关排除的
+                    # 插件，个人配置优先；核心不认识任何插件专属字段）
+                    "plugins": (await self._visible_plugin_configs(
+                                    user["sub"], enabled_plugins)
                                 if self._plugin_service is not None else {}),
                     # 按登录用户代签的 AI⁴MS 身份凭证（插件优先用它，取不到则用插件配置里的服务 token）
                     **await self._ai4ms_token_extra(user),

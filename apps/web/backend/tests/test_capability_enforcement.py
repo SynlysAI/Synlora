@@ -454,6 +454,107 @@ async def test_runtime_tool_names_filtered_by_visibility(
         assert name in hidden_tools  # 内置工具不受可见性影响
 
 
+# ---------- 会话级插件开关（+ 号「插件」面板，照 jiuwen 扩展面板语义） ----------
+
+
+async def test_session_plugin_switch_filters_tools_and_configs(
+        app, client, admin_headers, user_headers, monkeypatch, tmp_path):
+    """会话级开关收窄插件工具与配置注入：None=跟随可见集，[]=全关，勾选=只留勾的。
+
+    勾选不能放大可见性（交集而非替换）：不可见插件勾了也不注入。
+    """
+    await _install_plugin(client, admin_headers)
+    provider = await _make_provider(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend",
+                        _NoopBackend)
+    app.state.plugin_service._attached["spec_agent"] = set(SPEC_TOOLS)
+    captured = _capture_run_args(monkeypatch)
+    await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
+                     json={"visibility": "public", "default_enabled": False},
+                     headers=admin_headers)
+
+    decrypted = await app.state.provider_repo.get_decrypted(provider["_id"])
+    cfg = ModelProviderConfig(
+        name=decrypted["name"], base_url=decrypted["base_url"],
+        api_key=decrypted["api_key"], model_id=decrypted["model_id"])
+    user = {"sub": "u-user", "username": "tester-user", "role": "user"}
+
+    async def _run_one(label: str, enabled_plugins) -> tuple[set, dict]:
+        """发起一轮对话并返回（工具名集合, ctx.extra["plugins"]）。
+
+        Args:
+            label: 消息文本（区分轮次）。
+            enabled_plugins: 会话级插件开关（直传 chat，与 send_message 读会话
+                文档后传参同一路径）。
+
+        Returns:
+            (AgentConfig.tool_names 集合, context_extra["plugins"])。
+        """
+        sid = (await client.post("/api/v1/sessions", headers=user_headers,
+                                 json={"model_provider_id": provider["_id"]})).json()["_id"]
+        run_id = await app.state.agent_service.chat(
+            sid, user, None, cfg, label, workspace_root=tmp_path / label,
+            enabled_plugins=enabled_plugins)
+        await _wait_run_done(app, run_id)
+        return (set(captured[-1]["config"].tool_names),
+                captured[-1]["context_extra"]["plugins"])
+
+    # 用户先安装插件（非默认启用 → 装了才可见）
+    await _install(client, user_headers, "plugin", "spec_agent")
+
+    # 1) None（未设置）：跟随用户级可见集 → 插件工具与配置都在
+    tools, plugins = await _run_one("缺省", None)
+    assert SPEC_TOOLS <= tools
+    assert set(plugins) == {"spec_agent"}
+
+    # 2) 空列表：本会话禁用全部插件（内置工具不受影响）
+    tools, plugins = await _run_one("全关", [])
+    assert not (SPEC_TOOLS & tools)
+    assert "python.run" in tools
+    assert plugins == {}
+
+    # 3) 勾选 = 只留勾的（此处勾的正是可见的那个 → 与缺省同效）
+    tools, plugins = await _run_one("勾选", ["spec_agent"])
+    assert SPEC_TOOLS <= tools
+    assert set(plugins) == {"spec_agent"}
+
+    # 4) 勾选不能放大可见性：管理员下架后勾它也不注入
+    await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
+                     json={"visibility": "hidden", "default_enabled": False},
+                     headers=admin_headers)
+    tools, plugins = await _run_one("不可见仍勾选", ["spec_agent"])
+    assert not (SPEC_TOOLS & tools)
+    assert plugins == {}
+
+
+async def test_session_enabled_plugins_validation(app, client, user_headers):
+    """会话级开关的落库与校验：建会话/ PATCH 带不存在的插件 404，显式 null 重置。"""
+    r = await client.post("/api/v1/sessions", headers=user_headers,
+                          json={"enabled_plugins": ["no-such-plugin"]})
+    assert r.status_code == 404
+
+    sid = (await client.post("/api/v1/sessions", headers=user_headers,
+                             json={})).json()["_id"]
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
+                           json={"enabled_plugins": ["spec_agent"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["enabled_plugins"] == ["spec_agent"]
+    # 未提供该字段的 PATCH 不动它；显式 null 恢复"跟随可见集"
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
+                           json={"title": "改名不动开关"})
+    assert r.json()["enabled_plugins"] == ["spec_agent"]
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
+                           json={"enabled_plugins": None})
+    assert r.json()["enabled_plugins"] is None
+    # 空列表是合法态（本会话禁用全部插件），不是"未设置"
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
+                           json={"enabled_plugins": []})
+    assert r.status_code == 200 and r.json()["enabled_plugins"] == []
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
+                           json={"enabled_plugins": ["bogus"]})
+    assert r.status_code == 404
+
+
 async def test_tool_mapping_reflects_runtime_install(app, client, admin_headers):
     """装配期传活引用：运行期新挂载的工具即时进入映射（不再依赖启动快照）。"""
     caps = app.state.capability_service

@@ -52,6 +52,7 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 - 用户安装后可启用/停用（`user_capabilities.enabled`，停用优先于默认启用）；用户可自建技能与专家（落各自 `users/<uid>/`，技能同名全局唯一），内置条目不可编辑（想定制请自建换名）；用户侧能力中心为「市场 / 我的」两栏（`/capabilities`）：市场装/卸/启停，我的子页签过滤 + 自建技能/专家增删改（改造计划 `docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md` 已全部完成）
 - 工具强制审批：`Permission.ASK_USER` 在管线 pre-execute 打断，宿主 `approval_handler` 复用 ask/user 事件与 answer 回路，fail-closed（SpecLabOS 类工具声明即生效）
 - 插话（steering）双语义：模型还有 step 则下个边界注入本轮；turn 正常结束时残留插话经 `take_queued_turn()` 自动转为下一轮续跑（取消/失败路径丢弃）
+- 插件会话级开关：会话文档 `enabled_plugins`（null = 跟随用户级可见集；列表 = 只用这些，[] = 本会话禁用全部插件），`+ 号 → 插件` 面板切换即 PATCH 持久化（草稿态暂存 sessions store、随建会话写入）；chat 装配按它对插件工具与 `ctx.extra["plugins"]` 配置取**交集**（勾选不能放大可见性，内置工具不受影响）
 - 运行时（ActiveRun/SSE 队列/ask future）为单进程内存态：uvicorn 必须 workers=1 单实例部署，多副本会破坏 steer/answer/cancel
 
 ## 环境与测试

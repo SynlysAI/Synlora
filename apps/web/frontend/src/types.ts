@@ -156,6 +156,8 @@ export interface Session {
   model_provider_id: string | null
   /** 会话绑定的项目 id（null/缺省 = 无工作区会话，会话目录 sessions/{id} 即工作区）。 */
   project_id?: string | null
+  /** 会话级插件开关：null/缺省 = 跟随用户级可见集；列表 = 只用这些（[] = 本会话禁用全部插件）。 */
+  enabled_plugins?: string[] | null
   created_at: number
   updated_at: number
 }

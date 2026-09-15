@@ -5,9 +5,9 @@
  * - 触发器包在相对定位锚点里，点击时取 `getBoundingClientRect()`，经
  *   `createPortal` 到 `document.body` + `position: fixed` 弹出；视口下方空间
  *   不足 200px 时向上弹（bottom 反算），否则向下；
- * - 菜单项三段：上传文件（直接动作）、专家 ›（二级面板）、技能 ›（二级面板）；
- *   二级面板点击展开（不是 hover），三个面板互斥，面板绝对定位在触发项包装层内
- *   `left: calc(100% + 11px)`（见 PickerPanel）；
+ * - 菜单项四段：上传文件（直接动作）、专家 ›（二级面板）、技能 ›（二级面板）、
+ *   插件 ›（二级面板，会话级开关）；二级面板点击展开（不是 hover），四个面板
+ *   互斥，面板绝对定位在触发项包装层内 `left: calc(100% + 11px)`（见 PickerPanel）；
  * - `pointerdown` 挂 document：点在触发器/弹层之外即关闭，卸载时移除。
  *
  * 本项目新增：左侧「当前专家 chip」（jiuwen 的 chat-agent-tag 形态），点击即
@@ -20,6 +20,7 @@ import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
 import { useSessionsStore } from '@/stores/sessions'
 import ExpertPicker from './ExpertPicker'
+import PluginPicker from './PluginPicker'
 import SkillPicker from './SkillPicker'
 
 /** 菜单项样式（13px 行，与 ModelPicker/WorkspacePicker 菜单项一致）。 */
@@ -54,8 +55,8 @@ export default function AttachMenu({ selectedSkills, onToggleSkill, onFiles }: A
   )
 
   const [open, setOpen] = useState(false)
-  /** 当前展开的二级面板（三选一互斥）。 */
-  const [panel, setPanel] = useState<'none' | 'expert' | 'skill'>('none')
+  /** 当前展开的二级面板（四选一互斥）。 */
+  const [panel, setPanel] = useState<'none' | 'expert' | 'skill' | 'plugin'>('none')
   const [anchor, setAnchor] = useState<DOMRect | null>(null)
   const [direction, setDirection] = useState<'up' | 'down'>('down')
 
@@ -84,7 +85,7 @@ export default function AttachMenu({ selectedSkills, onToggleSkill, onFiles }: A
   }, [open])
 
   /** 以锚点矩形打开菜单并指定初始二级面板。 */
-  const openMenu = (nextPanel: 'none' | 'expert' | 'skill') => {
+  const openMenu = (nextPanel: 'none' | 'expert' | 'skill' | 'plugin') => {
     const el = rootRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
@@ -135,7 +136,7 @@ export default function AttachMenu({ selectedSkills, onToggleSkill, onFiles }: A
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="更多操作"
-        title="上传文件 / 选择专家 / 选择技能"
+        title="上传文件 / 选择专家 / 选择技能 / 插件开关"
         onClick={toggleMenu}
         className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--sa-radius-md)] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
           open && panel === 'none' ? ITEM_OPEN_CLASS : ''
@@ -344,6 +345,49 @@ export default function AttachMenu({ selectedSkills, onToggleSkill, onFiles }: A
                   onToggle={onToggleSkill}
                 />
               )}
+            </div>
+
+            {/* 插件 ›（二级面板，会话级开关） */}
+            <div className="relative">
+              <button
+                type="button"
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={panel === 'plugin'}
+                onClick={() => setPanel(panel === 'plugin' ? 'none' : 'plugin')}
+                className={`${ITEM_CLASS} ${panel === 'plugin' ? ITEM_OPEN_CLASS : ''}`}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="shrink-0"
+                  aria-hidden="true"
+                >
+                  <path d="M6 2.75v2.5M10 2.75v2.5M4.25 5.25h7.5v3.5a3.75 3.75 0 0 1-7.5 0v-3.5ZM8 12.5v1.5" />
+                </svg>
+                <span className="flex-1 truncate">插件</span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="shrink-0"
+                  aria-hidden="true"
+                >
+                  <path d="M4.5 2.5 8 6l-3.5 3.5" />
+                </svg>
+              </button>
+              {panel === 'plugin' && <PluginPicker direction={direction} />}
             </div>
           </div>,
           document.body,

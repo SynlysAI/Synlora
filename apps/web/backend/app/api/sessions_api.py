@@ -153,27 +153,49 @@ class SessionCreateBody(BaseModel):
 
     assistant_id 可选：缺省/空表示不选专家，agent 只走平台默认提示词且
     放开全部内置工具（jiuwen 的 "" 卸载专家语义）。
+    enabled_plugins 为会话级插件开关：缺省 None = 跟随用户级可见集（装了并
+    启用的插件全部生效）；显式列表 = 只用列表内的插件（空列表 = 本会话禁用
+    全部插件），照 jiuwen「+ 扩展面板」的会话级开关语义。
     """
 
     assistant_id: str | None = None
     title: str = ""
     model_provider_id: str | None = None
     project_id: str | None = None
+    enabled_plugins: list[str] | None = None
 
 
 class SessionUpdateBody(BaseModel):
-    """更新会话请求体（改名/归档/切换模型/切换专家）。
+    """更新会话请求体（改名/归档/切换模型/切换专家/插件开关）。
 
     model_provider_id 显式传 null 恢复助手默认；assistant_id 显式传 ""/null
-    表示卸载专家（无 persona、工具放开全部内置工具）；两者都用 model_fields_set
-    区分"未提供该字段"（不动原值）与"显式传空"（清空）——切换只影响后续轮次
-    （每轮 chat 重新从会话文档取助手）。
+    表示卸载专家（无 persona、工具放开全部内置工具）；enabled_plugins 显式传
+    null 恢复"跟随用户级可见集"；三者都用 model_fields_set 区分"未提供该字段"
+    （不动原值）与"显式传空"（清空）——切换只影响后续轮次（每轮 chat 重新从
+    会话文档取值）。
     """
 
     title: str | None = None
     archived: bool | None = None
     model_provider_id: str | None = None
     assistant_id: str | None = None
+    enabled_plugins: list[str] | None = None
+
+
+async def _validate_plugin_ids(request: Request, plugin_ids: list[str]) -> None:
+    """校验会话级插件开关里的插件 id 都真实存在（不存在即 404，防脏数据落库）。
+
+    Args:
+        request: FastAPI 请求（取能力服务）。
+        plugin_ids: 插件 id 列表。
+
+    Raises:
+        HTTPException: 任一插件不存在（404）。
+    """
+    service = request.app.state.capability_service
+    for pid in plugin_ids:
+        if not await service.exists("plugin", pid):
+            raise HTTPException(404, f"插件不存在: {pid}")
 
 
 class AttachmentIn(BaseModel):
@@ -238,6 +260,8 @@ async def create_session(body: SessionCreateBody, request: Request,
         raise HTTPException(404, "项目不存在")
     if body.model_provider_id:
         await _validate_provider(body.model_provider_id, repos)
+    if body.enabled_plugins is not None:
+        await _validate_plugin_ids(request, body.enabled_plugins)
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
@@ -246,18 +270,20 @@ async def create_session(body: SessionCreateBody, request: Request,
         "message_count": 0,
         "model_provider_id": body.model_provider_id,
         "project_id": body.project_id,
+        "enabled_plugins": body.enabled_plugins,
     })
 
 
 @router.patch("/sessions/{sid}")
-async def update_session(sid: str, body: SessionUpdateBody,
+async def update_session(sid: str, body: SessionUpdateBody, request: Request,
                          user=Depends(get_current_user),
                          repos=Depends(get_repos)) -> dict:
-    """改名/归档/切换模型/切换专家（归属校验 404）。
+    """改名/归档/切换模型/切换专家/插件开关（归属校验 404）。
 
     Args:
         sid: 会话 id。
         body: 请求体。
+        request: 当前请求（校验插件 id 用）。
         user: 当前用户 payload。
         repos: repo 集中访问对象。
 
@@ -268,9 +294,11 @@ async def update_session(sid: str, body: SessionUpdateBody,
     未提供该字段不动原值（靠 model_fields_set 区分"未提供"与"显式 null"）。
     assistant_id：传非空 id 校验助手存在后写回；显式传 ""/null 卸载专家；
     未提供该字段不动原值（只影响后续轮次，不改历史事件）。
+    enabled_plugins：传列表校验插件存在后写回（会话级插件开关）；显式传
+    null 恢复"跟随用户级可见集"；未提供该字段不动原值。
 
     Raises:
-        HTTPException: 会话不存在或非本人（404）、助手不存在（404）、
+        HTTPException: 会话不存在或非本人（404）、助手/插件不存在（404）、
             model_provider_id 非法（422）。
     """
     doc = await _own_session(sid, user, repos)
@@ -294,6 +322,11 @@ async def update_session(sid: str, body: SessionUpdateBody,
             fields["model_provider_id"] = pid
         else:
             fields["model_provider_id"] = None
+    if "enabled_plugins" in body.model_fields_set:
+        if body.enabled_plugins is not None:
+            await _validate_plugin_ids(request, body.enabled_plugins)
+        # 显式 null = 恢复"跟随用户级可见集"；空列表 = 本会话禁用全部插件
+        fields["enabled_plugins"] = body.enabled_plugins
     return await repos.session.update(doc["_id"], fields)
 
 
@@ -410,7 +443,8 @@ async def send_message(sid: str, body: MessageIn, request: Request,
                                     workspace_root=workspace_root,
                                     requested_skills=body.skills,
                                     attachments=attachments_meta,
-                                    file_ownership=ownership)
+                                    file_ownership=ownership,
+                                    enabled_plugins=doc.get("enabled_plugins"))
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
 
