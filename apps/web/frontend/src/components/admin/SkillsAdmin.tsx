@@ -322,7 +322,7 @@ export default function SkillsAdmin() {
     )
   }
 
-  /** 删除（两步内联确认；builtin 行按钮已禁用，后端仍有 409 兜底）。 */
+  /** 删除（两步内联确认；builtin 行按钮已禁用，后端对只读根技能返回 404 兜底）。 */
   const handleDelete = async (s: Skill) => {
     if (confirmingName !== s.name) {
       setConfirmingName(s.name)
@@ -335,7 +335,7 @@ export default function SkillsAdmin() {
       setConfirmingName(null)
       await loadSkills()
     } catch (err) {
-      // 409 内置技能不可删 / 404 已不存在
+      // 内置技能来自只读根（catalog/skills），不落公共层目录，删除返回 404；公共层技能不存在时同样 404
       toast('error', `删除失败：${errorText(err)}`)
     } finally {
       setDeleting(false)

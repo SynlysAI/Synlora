@@ -33,8 +33,8 @@
 ## 项目结构
 
 ```
-packages/synlys-harness/   # 纯 Python Agent 运行时（零 Web 依赖）：事件会话/工具管线/沙箱/LLM 流式/loop
-apps/web/backend/          # FastAPI 宿主（8005）：双后端存储/AI4MS 兼容认证/SSE 对话/文件工作区
+packages/synlys-harness/   # 纯 Python Agent 运行时（零 Web 依赖，零内置内容）：事件会话/工具管线/沙箱/LLM 流式/loop
+apps/web/backend/          # FastAPI 宿主（8005）：双后端存储/AI4MS 兼容认证/SSE 对话/文件工作区 + catalog/（内置内容）
 apps/web/frontend/         # React 19 + TS + Tailwind 4 + Zustand 三栏工作台
 docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ 验收报告（acceptance）
 ```
@@ -45,8 +45,9 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 - harness 不 import FastAPI；web 只是宿主；接入契约见 `docs/superpowers/plans/2026-09-10-synlysagent-02-web-backend.md` 文首 10 条
 - 认证与 AI⁴MS 门户逐字兼容（HMAC token + `ai4ms.users`，`#token=` 跳转）
 - python.run 执行器抽象（`tools/sandbox.py`）：local（-I 隔离/环境白名单/超时/截断，事故围栏）与 docker（临时容器：workspace 单目录挂载 /workspace、断网、资源限额、非 root、跑完即删）两实现；宿主经 `ctx.extra.code_executor` 注入、`resolve_executor()` 探测解析（不可用时 strict 拒绝或回退 local-weak 标记）；镜像构建见 `docker/sandbox/`
-- 一切皆插件：子平台接入 = `apps/web/backend/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板）；宿主通用框架 `app/plugins/`（loader 扫描 + config_store 加密落库 + PluginService 编排 + api 管理端点）；插件配置经管理页填写落库（不进 settings.py/.env），运行期按命名空间注入 `ctx.extra["plugins"]`；插件技能经 SkillService 额外技能根提供；新增插件不改主框架与 harness
-- 能力目录（市场）：内置项（专家/技能/插件）由 `app/catalog/` 枚举；管理员用 `catalog_policy` 配「可见性（public/hidden）+ 默认启用」，缺省 = public + 默认启用；用户安装只写 `user_capabilities` 记录（**不复制文件**）；运行期可见集由 `CapabilityService` 按用户计算（插件工具/技能索引/专家列表/`ctx.extra["plugins"]` 统一走它，**内置工具不受影响**）；技能过滤用黑名单口径（`hidden_skill_names`），公共技能目录里管理员自建的技能始终可见；插件配置分公共（`plugin_configs`，部署级）与个人（`user:<uid>:<plugin_id>`）两层，个人优先；管理后台为整页左导航（常规/模型服务/助手管理/技能管理/插件），用户侧「能力中心」为独立整页 `/capabilities`
+- 一切皆插件：子平台接入 = `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板）；宿主通用框架 `app/plugins/`（loader 扫描 + config_store 加密落库 + PluginService 编排 + api 管理端点）；插件配置经管理页填写落库（不进 settings.py/.env），运行期按命名空间注入 `ctx.extra["plugins"]`；插件技能经 SkillService 额外技能根提供；新增插件不改主框架与 harness
+- 内置内容统一在宿主 `apps/web/backend/catalog/`，按类型分目录（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`），**位置即类型、加目录即扩展**，由 `app/catalog/loader.py::scan_catalog` 一次扫入；**harness 零内容（内容归宿主、机制归 harness）**；`catalog/skills` 是只读技能根，`{data_dir}/skills` 是可写公共层（同名公共层优先）；`catalog/` 是数据目录非 Python 包，非 editable 部署须与 `app/` 同级同放
+- 能力目录（市场）：内置项（专家/技能/插件）由 `apps/web/backend/catalog/{experts,skills,plugins}/` 扫描枚举（`app/catalog/loader.py::scan_catalog`，三类条目统一来自它）；管理员用 `catalog_policy` 配「可见性（public/hidden）+ 默认启用」，缺省 = public + 默认启用；用户安装只写 `user_capabilities` 记录（**不复制文件**）；运行期可见集由 `CapabilityService` 按用户计算（插件工具/技能索引/专家列表/`ctx.extra["plugins"]` 统一走它，**内置工具不受影响**）；技能过滤用黑名单口径（`hidden_skill_names`），公共技能目录里管理员自建的技能始终可见；插件配置分公共（`plugin_configs`，部署级）与个人（`user:<uid>:<plugin_id>`）两层，个人优先；管理后台为整页左导航（常规/模型服务/助手管理/技能管理/插件），用户侧「能力中心」为独立整页 `/capabilities`
 - 工具强制审批：`Permission.ASK_USER` 在管线 pre-execute 打断，宿主 `approval_handler` 复用 ask/user 事件与 answer 回路，fail-closed（SpecLabOS 类工具声明即生效）
 - 插话（steering）双语义：模型还有 step 则下个边界注入本轮；turn 正常结束时残留插话经 `take_queued_turn()` 自动转为下一轮续跑（取消/失败路径丢弃）
 - 运行时（ActiveRun/SSE 队列/ask future）为单进程内存态：uvicorn 必须 workers=1 单实例部署，多副本会破坏 steer/answer/cancel

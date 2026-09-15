@@ -40,6 +40,15 @@
 - [x] 用户侧能力中心：左栏底部用户菜单 → 独立整页 `/capabilities`（专家/技能/插件三分组，安装/卸载，插件可填个人配置）；管理页三处加「可见性 / 默认启用」开关
 - [ ] **未做**：用户自建 / 导入技能与插件（用户私有目录 `{data_dir}/users/{uid}/` 仅设计预留、无写入路径）、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载
 
+### 内置内容统一到 `catalog/`（按类型分目录）✅ 2026-09-15（0.7.0-beta.1）
+- [x] 内容出 harness（删 `resources/skills/` 与 `pyproject.toml` package-data，唯一一次有意改动 harness）；边界确立为「**内容归宿主、机制归 harness**」
+- [x] 类型分目录 + 统一扫描器（`catalog_roots` / `scan_catalog` / `CatalogIndex`；位置即类型，加目录即扩展）
+- [x] 专家种子改由 `catalog/experts` 驱动（删 `SEED_ASSISTANTS` 常量；`app/catalog/seed.py::seed_experts` 按 `_id` 幂等）
+- [x] 技能改只读根直接提供（删 `seed_builtins` 拷贝与 `BUILTIN_SKILL_NAMES` 硬编码）；`{data_dir}/skills` 退回公共层、同名公共层优先
+- [x] 旧副本迁移清理（同名且 `SKILL.md` 字节一致才删，改过的保留）
+
+> `CatalogService` 三类条目统一来自扫描结果（技能描述取 `SKILL.md` frontmatter）。
+
 ---
 
 ## 阶段二：V2 科研能力（中期，按价值排序）

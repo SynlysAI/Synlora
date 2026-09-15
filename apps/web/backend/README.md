@@ -52,7 +52,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 插件包结构：
 
 ```
-apps/web/backend/plugins/<id>/
+apps/web/backend/catalog/plugins/<id>/
   plugin.json              # manifest：id/name/version/tools_module/config_schema/skills/expert
   tools.py                 # 用 harness @tool 声明的工具，配置从 ctx.extra["plugins"][id] 取
   skills/<name>/SKILL.md   # 插件自带技能（可选）
@@ -62,7 +62,7 @@ apps/web/backend/plugins/<id>/
 
 **新增一个子平台的步骤**：
 
-1. 复制 `plugins/spec_agent/`，改 `plugin.json`（`id`/`name`/`config_schema`/`tools_module`/`expert`）
+1. 复制 `catalog/plugins/spec_agent/`，改 `plugin.json`（`id`/`name`/`config_schema`/`tools_module`/`expert`）
 2. 写 `tools.py`（`from synlys_harness import tool, ToolContext, ToolResult`，配置走 `ctx.extra["plugins"]["<id>"]`）
 3. 重启服务后在插件页安装
 
@@ -76,7 +76,7 @@ apps/web/backend/plugins/<id>/
 
 | 层 | 谁能改 | 存哪 |
 | --- | --- | --- |
-| **内置目录**（随仓库，只读） | 开发者 | 专家=代码种子 `SEED_ASSISTANTS`；技能=随包播种的内置技能；插件=`apps/web/backend/plugins/<id>/` |
+| **内置目录**（随仓库，只读） | 开发者 | 专家=`catalog/experts/<dir>/expert.json`；技能=`catalog/skills/<name>/SKILL.md`；插件=`catalog/plugins/<id>/plugin.json` |
 | **管理员策略**（可见性 + 默认启用） | 管理员 | `catalog_policy` 集合，`_id = f"{kind}:{item_id}"` |
 | **用户安装**（只写记录） | 用户本人 | `user_capabilities` 集合，`_id = f"{uid}:{kind}:{item_id}"` |
 
@@ -96,9 +96,9 @@ user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id, insta
 
 策略缺省 = `public + 默认启用`，因此**升级后既有行为不变**，无需数据迁移。
 
-**安装 = 只写记录，不复制文件。** 安装只是往 `user_capabilities` 写一条 `(user, kind, item)` 记录；内置包随仓库（或数据目录播种）走，升级内置项即对所有已安装用户生效，**无副本漂移**、也不存在「装的是旧版」的问题。（jiuwen 要复制文件，是因为它从远端 hub 下载包；本项目首期内置即全部来源，无下载需求。）
+**安装 = 只写记录，不复制文件。** 安装只是往 `user_capabilities` 写一条 `(user, kind, item)` 记录；内置内容随仓库在 `catalog/` 里，作为**只读技能根/扫描根**直接提供，升级内置项即对所有已安装用户生效，**无副本漂移**、也不存在「装的是旧版」的问题。（jiuwen 要复制文件，是因为它从远端 hub 下载包；本项目首期内置即全部来源，无下载需求。）
 
-**运行期落地**：`CapabilityService` 按用户算出可见集，统一作用于插件工具过滤、技能索引过滤、专家列表过滤、`ctx.extra["plugins"]` 只注入可见插件。**内置工具（`python.run`/`file.*`/`web.*` 等）不受影响**，只有插件贡献的工具受策略控制。技能过滤用**黑名单口径**（`hidden_skill_names`）：内置技能按技能策略、插件技能跟随其插件；公共技能目录里管理员自建的技能始终可见。
+**运行期落地**：`CatalogService` 的专家/技能/插件三类条目**统一来自 `scan_catalog` 的扫描结果**（技能描述取 `SKILL.md` frontmatter）；`CapabilityService` 按用户算出可见集，统一作用于插件工具过滤、技能索引过滤、专家列表过滤、`ctx.extra["plugins"]` 只注入可见插件。**内置工具（`python.run`/`file.*`/`web.*` 等）不受影响**，只有插件贡献的工具受策略控制。技能过滤用**黑名单口径**（`hidden_skill_names`）：内置技能按技能策略、插件技能跟随其插件；公共技能目录里管理员自建的技能始终可见。
 
 **插件配置两层**：管理员公共安装（`plugin_configs`，`_id = 插件 id`，部署级共享，如 Spec_Agent 网关地址）与用户个人安装（同集合，`_id = user:<uid>:<plugin_id>`，个人专用）并存；运行期**个人优先、公共打底**（浅合并），两者都无则空配置。用户维度文档只是「个人安装记录」，不参与插件整体安装状态判定。
 
@@ -115,6 +115,69 @@ user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id, insta
 用户侧入口：左栏底部用户菜单 →「能力中心」→ 独立整页 `/capabilities`（专家 / 技能 / 插件三分组，安装 / 卸载，插件可填个人配置）。管理后台为整页 `/admin/*`，由顶部页签改为**左侧导航列表**：常规 / 模型服务 / 助手管理 / 技能管理 / 插件。
 
 **首期明确不做**：用户自建 / 导入技能与插件（用户私有目录 `{data_dir}/users/{uid}/` 仅设计预留，无写入路径）、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、常规设置的实际内容（外观主题已可经右上角切换，界面语言等后续提供）。
+
+## 内置内容布局（catalog/）
+
+**设计原则：位置即类型，加一个目录即扩展。** 全部内置内容统一落在宿主侧 `apps/web/backend/catalog/`（此前分散在 Python 常量 `SEED_ASSISTANTS`、harness 包内 `resources/skills/` 与 `backend/plugins/` 三处异构位置），按类型分目录；**harness 退回零内容（内容归宿主、机制归 harness）**。
+
+```
+apps/web/backend/catalog/          # 加一个目录 = 加一个内置项（自动扫到）
+  experts/<dir>/expert.json        # 专家：id/name/avatar/description/system_prompt/tool_whitelist
+  skills/<name>/SKILL.md           # 技能：frontmatter 即元数据，无额外 manifest
+  plugins/<id>/plugin.json         # 插件：沿用既有契约（tools_module/config_schema/skills/expert）
+```
+
+三类包的最小示例：
+
+```jsonc
+// experts/<dir>/expert.json —— 内置独立专家（按 _id 幂等播种成助手文档）
+{
+  "id": "asst-data",
+  "name": "数据分析助手",
+  "avatar": "📊",
+  "description": "优先用 python.run 做统计分析与可视化",
+  "system_prompt": "你是数据分析助手……",
+  "tool_whitelist": ["python.run", "file.read", "file.write", "file.list"]
+}
+```
+
+```markdown
+---
+name: office-doc
+description: 生成 Word / Excel / PPT 办公文档。用户要"整理成报告/做成 PPT"时使用。
+version: "1.0"
+author: SynlysAgent
+tags: [文档, 报告]
+---
+
+# Office 文档生成
+（正文……）
+```
+
+```jsonc
+// plugins/<id>/plugin.json —— 插件 manifest（id/name/version/tools_module 必填）
+{
+  "id": "spec_agent",
+  "name": "Spec_Agent 谱图解析",
+  "version": "1.0.0",
+  "tools_module": "tools.py",
+  "config_schema": [{ "key": "base_url", "label": "服务地址", "type": "text", "required": true }],
+  "skills": ["spec-nmr"],
+  "expert": { "name": "谱图解析专家", "system_prompt": "……", "tool_whitelist": ["spec.nmr.forward"] }
+}
+```
+
+**扫描器**（`app/catalog/loader.py`）：`catalog_roots(settings)` 给出搜索根（随仓库的 `apps/web/backend/catalog/` + `{data_dir}/catalog/` 运行期安装预留），`scan_catalog(roots) -> CatalogIndex{.experts,.skills,.plugins}` 三类分开返回。三条规则：
+
+1. **位置即类型**：只认 `<root>/{experts,skills,plugins}/` 三个固定子目录，放错位置不收录。
+2. **非法包只告警跳过、不阻断启动**：manifest 解析失败 / 缺必填字段（专家 `id/name/system_prompt`，插件 `id/name/version/tools_module`）/ `config_schema` 缺 `key` 的包，记日志后跳过。
+3. **同名后者覆盖前者并告警**：同根内重复 id、或跨根重名时，遍历顺序靠后的覆盖靠前的（数据目录根在仓库根之后，故运行期安装预留位优先）。
+
+**只读根 vs 公共层**：`catalog/skills/` 作为**只读技能根**直接提供给 `SkillService`（不再播种拷贝到 `{data_dir}/skills`），其技能标记 `builtin=True`、不可删（删除返回 404）；`{data_dir}/skills/` 退回**可写公共层**（管理员自建 / 导入技能，始终可见），两者同名时**公共层优先**。`builtin` 标记语义 = 「来自只读根」。
+
+**旧副本迁移**：启动时清理 `{data_dir}/skills` 里与 `catalog/skills` 同名且 `SKILL.md` **字节一致**的旧播种副本；字节不同 = 管理员改过，保留。
+
+**专家种子**：`app/catalog/seed.py::seed_experts` 按 `_id` 幂等（已存在跳过、不覆盖管理员改动，缺失补种），内置专家由 `catalog/experts` 驱动，原先的 `SEED_ASSISTANTS` 与 `BUILTIN_SKILL_NAMES` 两个硬编码已删除。
 
 ## 与 AI4MS 门户对接
 

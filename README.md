@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。
 
-- 版本：0.6.0-beta.1（内测版）
+- 版本：0.7.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -47,6 +47,7 @@ Synlora/
 ├── apps/web/
 │   ├── backend/                 # FastAPI 应用（唯一进程，PM2 部署单元）
 │   │   ├── app/                 #   api（REST+SSE）/ services / core（配置+认证）/ db（双后端存储）
+│   │   ├── catalog/             #   内置内容（experts/ skills/ plugins/，按类型分目录，非 Python 包）
 │   │   └── run_uvicorn.py       #   启动入口（读 .env）
 │   └── frontend/                # React 19 + TS + Vite 三栏工作台（npm run build 产物由后端托管）
 ├── docs/superpowers/            # 设计文档（specs/）、实施计划（plans/）、验收报告与截图（acceptance/）
@@ -115,11 +116,15 @@ pm2 logs synlys-agent
 
 ### 插件机制（AI⁴MS 子平台接入）
 
-一切皆插件：新增子平台 = 新增 `apps/web/backend/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。首个插件 `spec_agent` 提供核磁预测三件套并自动播种「谱图解析专家」，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。首个插件 `spec_agent` 提供核磁预测三件套并自动播种「谱图解析专家」，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 能力目录（市场）
 
-「专家 / 技能 / 插件」统一纳入能力目录，三层可见性模型：**内置目录**（随仓库，只读，`app/catalog/` 枚举）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 默认启用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认；普通用户在左栏用户菜单「能力中心」（独立整页 `/capabilities`）自行安装/卸载。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+「专家 / 技能 / 插件」统一纳入能力目录，三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 默认启用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认；普通用户在左栏用户菜单「能力中心」（独立整页 `/capabilities`）自行安装/卸载。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+
+### 内置内容布局（catalog/）
+
+**位置即类型，加一个目录即扩展**：内置专家 / 技能 / 插件统一落在 `apps/web/backend/catalog/`（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`），由 `app/catalog/loader.py` 的 `scan_catalog()` 一次性扫入；`catalog/skills/` 作为**只读技能根**直接提供，`{data_dir}/skills/` 退回可写公共层（同名公共层优先）。**harness 内不含任何内置内容（内容归宿主、机制归 harness）**，宿主的 `catalog/` 是数据目录而非 Python 包，非 editable 部署需与 `app/` 同级一起放。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### Docker 沙箱（多用户/云部署）
 
@@ -145,7 +150,7 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 cd packages/synlys-harness
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
-# web 后端（322 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
+# web 后端（341 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
 cd apps/web/backend
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
