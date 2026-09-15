@@ -52,7 +52,7 @@ async def install_plugin(plugin_id: str, body: PluginConfigBody,
     """安装插件（填写配置即安装：注册工具、挂技能、播种专家）。
 
     Raises:
-        HTTPException: 插件不存在（404）、必填配置缺失（422）。
+        HTTPException: 插件不存在（404）、配置解密失败（409）、必填配置缺失（422）。
     """
     try:
         return await service.install(plugin_id, body.config)
@@ -60,6 +60,9 @@ async def install_plugin(plugin_id: str, body: PluginConfigBody,
         raise HTTPException(404, f"插件不存在: {plugin_id}")
     except ValueError as exc:
         raise HTTPException(422, str(exc))
+    except RuntimeError as exc:
+        # 配置解密失败（FERNET_KEY 轮换/缺失）：需到插件页重新填写凭证
+        raise HTTPException(409, str(exc))
 
 
 @router.put("/{plugin_id}/config")
@@ -69,7 +72,7 @@ async def update_plugin_config(plugin_id: str, body: PluginConfigBody,
     """更新已安装插件的配置（敏感字段留空 = 保持原值）。
 
     Raises:
-        HTTPException: 插件不存在（404）、未安装（409）、必填缺失（422）。
+        HTTPException: 插件不存在（404）、未安装（409）、解密失败（409）、必填缺失（422）。
     """
     try:
         return await service.update_config(plugin_id, body.config)
@@ -77,4 +80,7 @@ async def update_plugin_config(plugin_id: str, body: PluginConfigBody,
         raise HTTPException(404, f"插件不存在: {plugin_id}")
     except ValueError as exc:
         detail = str(exc)
-        raise HTTPException(409 if "未安装" in detail else 422, detail)
+        raise HTTPException(409 if detail.startswith("插件未安装") else 422, detail)
+    except RuntimeError as exc:
+        # 配置解密失败（FERNET_KEY 轮换/缺失）：需到插件页重新填写凭证
+        raise HTTPException(409, str(exc))

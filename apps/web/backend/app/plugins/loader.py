@@ -109,6 +109,12 @@ def scan_plugins(roots: list[Path]) -> dict[str, PluginPackage]:
             if missing:
                 logger.warning("插件 manifest 缺字段 %s，已跳过 %s", missing, entry.name)
                 continue
+            schema = data.get("config_schema") or []
+            if not isinstance(schema, list) or any(
+                    not isinstance(f, dict) or not str(f.get("key") or "").strip()
+                    for f in schema):
+                logger.warning("插件 manifest 的 config_schema 非法（缺 key），已跳过 %s", entry.name)
+                continue
             if plugin_id in packages:
                 logger.warning("插件 id 重复，后者覆盖前者: %s（%s）", plugin_id, entry)
             packages[plugin_id] = PluginPackage(

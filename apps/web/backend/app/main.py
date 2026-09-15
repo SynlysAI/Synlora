@@ -59,17 +59,11 @@ async def lifespan(app: FastAPI):
     app.state.file_repo = FileRepo(store)
     app.state.event_repo = EventRepo(store)
     app.state.project_service = ProjectService(store, settings.data_root)
-    # 插件框架：扫描插件包 → 技能服务带上已安装插件的技能根 → 注册其工具
+    # 插件框架：扫描插件包 → 建技能服务 → 注册已安装插件的工具与技能根
+    # （插件技能根由 plugin_service.startup() 挂载，先于 AgentService 构造完成）
     packages = scan_plugins(plugin_roots(settings))
     plugin_config_store = PluginConfigStore(store, settings.fernet_key)
-    installed_ids = await plugin_config_store.installed_ids()
-    extra_roots = [
-        pkg.skills_root for pid in installed_ids
-        if (pkg := packages.get(pid)) is not None and pkg.skills_root is not None
-    ]
-    app.state.plugin_packages = packages
-    app.state.plugin_config_store = plugin_config_store
-    app.state.skill_service = SkillService(settings.data_root, extra_roots=extra_roots)
+    app.state.skill_service = SkillService(settings.data_root)
     app.state.skill_service.seed_builtins()  # 幂等：内置技能是列表能列出它们的前提
     app.state.weknora_service = WeKnoraService(
         settings.weknora_base_url, settings.weknora_api_key)

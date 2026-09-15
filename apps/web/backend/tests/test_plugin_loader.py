@@ -108,6 +108,11 @@ def test_scan_plugins_skips_malformed(tmp_path):
     missing = tmp_path / "missing"
     missing.mkdir()
     (missing / "plugin.json").write_text(json.dumps({"id": "x"}), encoding="utf-8")
+    bad_schema = tmp_path / "bad-schema"
+    bad_schema.mkdir()
+    (bad_schema / "plugin.json").write_text(json.dumps({
+        "id": "bad-schema", "name": "n", "version": "1", "tools_module": "tools.py",
+        "config_schema": [{"label": "缺少 key"}]}), encoding="utf-8")
     (tmp_path / "not-a-plugin").mkdir()  # 无 manifest 的目录
 
     assert scan_plugins([tmp_path]) == {}

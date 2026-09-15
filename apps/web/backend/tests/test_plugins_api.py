@@ -105,3 +105,36 @@ async def test_put_config_before_install_409(client, admin_headers):
                             json={"config": {"base_url": "http://a"}},
                             headers=admin_headers)
     assert resp.status_code == 409
+
+
+async def test_list_plugins_after_install_marks_installed(client, admin_headers):
+    """安装后列表状态转正（installed/configured 为 True）。"""
+    await client.post("/api/v1/plugins/spec_agent/install",
+                      json={"config": {"base_url": "http://x"}}, headers=admin_headers)
+    items = {p["id"]: p for p in (await client.get(
+        "/api/v1/plugins", headers=admin_headers)).json()}
+    assert items["spec_agent"]["installed"] is True
+    assert items["spec_agent"]["configured"] is True
+    assert items["spec_agent"]["missing"] == []
+
+
+async def test_update_config_missing_required_422(client, admin_headers):
+    """已安装后清空必填字段 → 422（不得绕过校验）。"""
+    await client.post("/api/v1/plugins/spec_agent/install",
+                      json={"config": {"base_url": "http://x"}}, headers=admin_headers)
+    resp = await client.put("/api/v1/plugins/spec_agent/config",
+                            json={"config": {"base_url": ""}}, headers=admin_headers)
+    assert resp.status_code == 422 and "base_url" in resp.json()["detail"]
+
+
+async def test_install_with_broken_fernet_key_is_mapped(app, client, admin_headers, monkeypatch):
+    """解密失败（FERNET_KEY 轮换）→ 409 而非 500（友好提示可达用户）。"""
+    from app.plugins.config_store import PluginConfigStore
+
+    async def _boom(self, plugin_id):
+        raise RuntimeError("插件配置解密失败（FERNET_KEY 是否已更换？）")
+
+    monkeypatch.setattr(PluginConfigStore, "resolved", _boom)
+    resp = await client.post("/api/v1/plugins/spec_agent/install",
+                             json={"config": {"base_url": "http://x"}}, headers=admin_headers)
+    assert resp.status_code == 409 and "解密失败" in resp.json()["detail"]
