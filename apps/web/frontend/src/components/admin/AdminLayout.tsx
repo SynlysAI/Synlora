@@ -150,13 +150,13 @@ export default function AdminLayout({ tab, children }: AdminLayoutProps) {
                     e.preventDefault()
                     navigate({ kind: 'admin', tab: t.key })
                   }}
-                  className={`flex h-10 items-center truncate rounded-[var(--sa-radius-md)] px-3 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
+                  className={`flex h-10 items-center rounded-[var(--sa-radius-md)] px-3 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
                     t.key === tab
                       ? 'bg-[var(--sa-specific-sidebar-nav-item-active)] font-medium text-[var(--sa-alias-label-primary)]'
                       : 'text-[var(--sa-alias-label-secondary)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)]'
                   }`}
                 >
-                  {t.label}
+                  <span className="min-w-0 flex-1 truncate">{t.label}</span>
                 </a>
               ))}
             </nav>
