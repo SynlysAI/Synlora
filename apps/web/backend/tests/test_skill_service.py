@@ -183,7 +183,7 @@ def test_extra_roots_are_listed_and_readable(tmp_path):
     assert skills["spec-nmr"]["builtin"] is True
     assert svc.read_body("spec-nmr") == "正文内容"
 
-    # 插件技能不落用户技能目录，删除只作用于用户目录（返回 False 而非删掉插件技能）
+    # 插件技能不落公共层，删除只作用于公共层（返回 False 而非删掉插件技能）
     assert svc.delete_skill("spec-nmr") is False
     assert (plugin_skills / "spec-nmr" / "SKILL.md").exists()
 
@@ -203,12 +203,12 @@ def test_extra_root_added_at_runtime(tmp_path):
     assert [s["name"] for s in svc.list_skills()] == ["spec-nmr"]
 
 
-def test_user_skill_shadows_plugin_skill(tmp_path):
-    """同名时用户技能优先（插件技能不覆盖用户目录里的同名技能）。"""
+def test_public_skill_shadows_plugin_skill(tmp_path):
+    """同名时公共层优先（插件技能不覆盖公共层里的同名技能）。"""
     data_root = tmp_path / "data"
-    user_dir = data_root / "public" / "skills" / "spec-nmr"
-    user_dir.mkdir(parents=True)
-    (user_dir / "SKILL.md").write_text(
+    public_dir = data_root / "public" / "skills" / "spec-nmr"
+    public_dir.mkdir(parents=True)
+    (public_dir / "SKILL.md").write_text(
         "---\nname: spec-nmr\ndescription: 用户版本\n---\n用户正文\n", encoding="utf-8")
     plugin_skills = tmp_path / "plugin" / "skills"
     (plugin_skills / "spec-nmr").mkdir(parents=True)
@@ -227,15 +227,15 @@ def test_extra_root_missing_dir_is_fine(tmp_path):
     assert svc.read_body("anything") is None
 
 
-def test_broken_user_skill_falls_back_to_plugin(tmp_path):
-    """用户目录同名技能损坏时，read_body 回退到插件根（与 list_skills 语义一致）。
+def test_broken_public_skill_falls_back_to_plugin(tmp_path):
+    """公共层同名技能损坏时，read_body 回退到插件根（与 list_skills 语义一致）。
 
     回归：修复前 read_body 命中损坏目录即返回 None，导致技能进索引却没有正文。
     """
     data_root = tmp_path / "data"
-    user_dir = data_root / "public" / "skills" / "spec-nmr"
-    user_dir.mkdir(parents=True)
-    (user_dir / "SKILL.md").write_text("没有 frontmatter 的坏文件", encoding="utf-8")
+    public_dir = data_root / "public" / "skills" / "spec-nmr"
+    public_dir.mkdir(parents=True)
+    (public_dir / "SKILL.md").write_text("没有 frontmatter 的坏文件", encoding="utf-8")
     plugin_skills = tmp_path / "plugin" / "skills"
     (plugin_skills / "spec-nmr").mkdir(parents=True)
     (plugin_skills / "spec-nmr" / "SKILL.md").write_text(

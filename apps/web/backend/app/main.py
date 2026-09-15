@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
             "检查部署是否遗漏 %s", catalog_roots(settings)[0])
     plugin_config_store = PluginConfigStore(store, settings.fernet_key)
     # 内置技能：catalog/skills 作为只读根直接提供（与插件技能根同一模式），
-    # {data_dir}/public/skills 为公共层（管理员自建/导入，始终可见）
+    # {data_dir}/public/skills 是公共层（管理员自建/导入，始终可见）
     catalog_skills_root = catalog_roots(settings)[0] / "skills"
     app.state.skill_service = SkillService(settings.data_root, extra_roots=[catalog_skills_root])
     removed = app.state.skill_service.migrate_legacy_builtin_copies(catalog_skills_root)

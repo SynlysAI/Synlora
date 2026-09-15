@@ -2,7 +2,7 @@
 
 内置技能由 catalog 只读根（`apps/web/backend/catalog/skills`）**直接提供**，
 与插件技能根同一模式：不落 `{data_root}/public/skills`、不可删（标记 `builtin=True`）。
-`{data_root}/public/skills` 退回**公共层**：管理员自建/导入的技能，可写可删、始终可见。
+`{data_root}/public/skills` 是**公共层**：管理员自建/导入的技能，可写可删、始终可见。
 同名时公共层优先（`list_skills` 先扫公共层再由 `seen` 去重）。
 
 字段与正文骨架遵循 jiuwen `skill-spec.md`：frontmatter 必填
@@ -166,7 +166,7 @@ class SkillService:
         return out
 
     def read_body(self, name: str) -> str | None:
-        """读技能正文（不含 frontmatter；用户目录优先于额外根）。
+        """读技能正文（不含 frontmatter；公共层优先于额外根）。
 
         Args:
             name: 技能名（即目录名）。
@@ -249,6 +249,10 @@ class SkillService:
 
         Returns:
             被清理的技能名列表（内容不同而保留的不在其中）。
+
+        注：旧播种路径 `{data_root}/skills` 已废弃（公共层迁至 `public/skills`），
+        本函数现在只可能命中"有人手工在 public/skills 下重建的同名同字节目录"。
+        旧部署遗留的 `{data_root}/skills` 目录不再被扫描，需人工清理。
         """
         removed: list[str] = []
         if not catalog_skills_root.is_dir():
