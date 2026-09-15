@@ -5,7 +5,7 @@ from app.services.skill_service import SkillService
 
 
 def _seed_one(root, name="data-analysis", desc="数据分析"):
-    d = root / "skills" / name
+    d = root / "public" / "skills" / name
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: {desc}\ntags:\n  - 统计\n---\n\n# 目标\n分析数据",
@@ -38,9 +38,15 @@ def test_read_unknown_skill_returns_none(tmp_path):
     assert SkillService(tmp_path).read_body("nope") is None
 
 
+def test_public_skills_dir_is_under_public(tmp_path):
+    """可写公共层根在 {data_root}/public/skills（与 workspace 布局一致）。"""
+    assert SkillService(tmp_path).skills_dir == tmp_path / "public" / "skills"
+
+
 def test_scan_skips_broken_skill(tmp_path):
-    (tmp_path / "skills" / "broken").mkdir(parents=True)
-    (tmp_path / "skills" / "broken" / "SKILL.md").write_text("没有 frontmatter", encoding="utf-8")
+    (tmp_path / "public" / "skills" / "broken").mkdir(parents=True)
+    (tmp_path / "public" / "skills" / "broken" / "SKILL.md").write_text(
+        "没有 frontmatter", encoding="utf-8")
     assert SkillService(tmp_path).list_skills() == []
 
 
@@ -50,7 +56,7 @@ def test_delete_public_skill_succeeds_even_if_name_matches_builtin(tmp_path):
     svc = SkillService(tmp_path)
     assert svc.list_skills()[0]["builtin"] is False
     assert svc.delete_skill("data-analysis") is True
-    assert not (tmp_path / "skills" / "data-analysis").exists()
+    assert not (tmp_path / "public" / "skills" / "data-analysis").exists()
 
 
 def test_migrate_removes_identical_legacy_copies(tmp_path):
@@ -116,7 +122,7 @@ def test_catalog_root_skills_are_readonly_and_builtin(tmp_path):
 
 def test_frontmatter_handles_quotes_and_fullwidth_colon(tmp_path):
     """description 含全角冒号与引号时解析不能出错（手写解析器会在这里翻车）。"""
-    d = tmp_path / "skills" / "quirky"
+    d = tmp_path / "public" / "skills" / "quirky"
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(
         '---\n'
@@ -200,7 +206,7 @@ def test_extra_root_added_at_runtime(tmp_path):
 def test_user_skill_shadows_plugin_skill(tmp_path):
     """同名时用户技能优先（插件技能不覆盖用户目录里的同名技能）。"""
     data_root = tmp_path / "data"
-    user_dir = data_root / "skills" / "spec-nmr"
+    user_dir = data_root / "public" / "skills" / "spec-nmr"
     user_dir.mkdir(parents=True)
     (user_dir / "SKILL.md").write_text(
         "---\nname: spec-nmr\ndescription: 用户版本\n---\n用户正文\n", encoding="utf-8")
@@ -227,7 +233,7 @@ def test_broken_user_skill_falls_back_to_plugin(tmp_path):
     回归：修复前 read_body 命中损坏目录即返回 None，导致技能进索引却没有正文。
     """
     data_root = tmp_path / "data"
-    user_dir = data_root / "skills" / "spec-nmr"
+    user_dir = data_root / "public" / "skills" / "spec-nmr"
     user_dir.mkdir(parents=True)
     (user_dir / "SKILL.md").write_text("没有 frontmatter 的坏文件", encoding="utf-8")
     plugin_skills = tmp_path / "plugin" / "skills"

@@ -4,7 +4,7 @@
     <root>/experts/<dir>/expert.json    → 专家
     <root>/skills/<name>/SKILL.md       → 技能（frontmatter 即元数据，无额外 manifest）
     <root>/plugins/<id>/plugin.json     → 插件（沿用既有插件契约）
-两个根：随仓库的 `apps/web/backend/catalog/` + `{data_dir}/catalog/`（运行期安装预留）。
+两个根：随仓库的 `apps/web/backend/catalog/` + `{data_dir}/public/catalog/`（运行期安装预留）。
 非法/缺字段/放错位置的包只告警跳过，不阻断启动；同名（同根内或跨根）后者覆盖前者并告警。
 """
 from __future__ import annotations
@@ -133,11 +133,11 @@ def catalog_roots(settings: "Settings") -> list[Path]:
 
     Returns:
         根目录列表：随仓库的 `apps/web/backend/catalog/` + 数据目录下
-        `{data_dir}/catalog/`（后者为运行期安装预留）。
+        `{data_dir}/public/catalog/`（后者为运行期安装预留）。
     """
     return [
         Path(__file__).resolve().parents[2] / "catalog",
-        settings.data_root / "catalog",
+        settings.data_root / "public" / "catalog",
     ]
 
 

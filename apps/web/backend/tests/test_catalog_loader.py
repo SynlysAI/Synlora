@@ -110,11 +110,11 @@ def _make_skill(root, name: str, text: str | None = SKILL_MD):
 
 
 def test_catalog_roots_include_repo_and_data_dir(tmp_path):
-    """扫描根 = 随仓库的 catalog/ + 数据目录下的 catalog/。"""
+    """扫描根 = 随仓库的 catalog/ + 数据目录下的 public/catalog/。"""
     settings = Settings(data_dir=str(tmp_path))
     roots = catalog_roots(settings)
     assert roots[0].name == "catalog" and roots[0].parent.name == "backend"
-    assert roots[1] == tmp_path / "catalog"
+    assert roots[1] == tmp_path / "public" / "catalog"
 
 
 def test_scan_catalog_parses_three_kinds(tmp_path):

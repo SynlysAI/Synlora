@@ -1,8 +1,8 @@
 """技能：磁盘 SKILL.md 的扫描/解析/写入（不入库）。
 
 内置技能由 catalog 只读根（`apps/web/backend/catalog/skills`）**直接提供**，
-与插件技能根同一模式：不落 `{data_root}/skills`、不可删（标记 `builtin=True`）。
-`{data_root}/skills` 退回**公共层**：管理员自建/导入的技能，可写可删、始终可见。
+与插件技能根同一模式：不落 `{data_root}/public/skills`、不可删（标记 `builtin=True`）。
+`{data_root}/public/skills` 退回**公共层**：管理员自建/导入的技能，可写可删、始终可见。
 同名时公共层优先（`list_skills` 先扫公共层再由 `seen` 去重）。
 
 字段与正文骨架遵循 jiuwen `skill-spec.md`：frontmatter 必填
@@ -20,6 +20,8 @@ import shutil
 from pathlib import Path
 
 import yaml
+
+from app.services.workspace import public_skills_root
 
 logger = logging.getLogger(__name__)
 
@@ -84,13 +86,13 @@ def render_skill_md(skill: dict) -> str:
 
 
 class SkillService:
-    """技能扫描与读写：可写公共层（{data_root}/skills）+ 只读根（catalog / 插件）。"""
+    """技能扫描与读写：可写公共层（{data_root}/public/skills）+ 只读根（catalog / 插件）。"""
 
     def __init__(self, data_root: Path, extra_roots: list[Path] | None = None) -> None:
         """保存数据根与只读技能根。
 
         Args:
-            data_root: 应用数据根目录（其下 skills/ 为可写公共层）。
+            data_root: 应用数据根目录（其下 public/skills 为可写公共层）。
             extra_roots: 只读技能根（catalog/skills 与插件包的 skills/ 目录；
                 同名时公共层优先，只读根技能不可删）。
         """
@@ -100,12 +102,12 @@ class SkillService:
 
     @property
     def skills_dir(self) -> Path:
-        """技能根目录（自动创建）。
+        """公共可写技能层根目录（自动创建）。
 
         Returns:
-            {data_root}/skills 路径，不存在时已创建。
+            {data_root}/public/skills 路径，不存在时已创建。
         """
-        d = self._data_root / "skills"
+        d = public_skills_root(self._data_root)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
