@@ -78,6 +78,9 @@ class UserCapabilityRepo:
     async def is_installed(self, user_id: str, kind: str, item_id: str) -> bool:
         """是否已安装。
 
+        注：运行期可见性判定请用 install_states / is_enabled —— 本方法只看"是否有安装
+        记录"，不体现用户的停用动作。
+
         Args:
             user_id: 用户 sub。
             kind: 条目类型。
@@ -139,6 +142,26 @@ class UserCapabilityRepo:
             str(d.get("item_id"))
             for d in docs
             if d.get("kind") == kind and d.get("item_id") and bool(d.get("enabled", True))
+        }
+
+    async def install_states(self, user_id: str, kind: str) -> dict[str, bool]:
+        """某用户某类型下的安装状态（{item_id: 是否启用}）。
+
+        调用方据此区分"未安装"（键不存在）与"已装但停用"（值为 False）；
+        一次查询同时给出两个事实，避免调用方分别查 installed 与 enabled。
+
+        Args:
+            user_id: 用户 sub。
+            kind: 条目类型。
+
+        Returns:
+            {item_id: enabled} 映射（只含已安装条目）。
+        """
+        docs = await self._store.list(USER_CAPS_COLLECTION, filters={"user_id": user_id})
+        return {
+            str(d.get("item_id")): bool(d.get("enabled", True))
+            for d in docs
+            if d.get("kind") == kind and d.get("item_id")
         }
 
     async def installed_plugin_ids(self) -> set[str]:

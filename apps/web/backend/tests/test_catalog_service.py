@@ -158,9 +158,8 @@ async def test_visible_ids_matches_per_item_visibility(caps):
     assert await caps.is_visible("u1", "skill", "office-doc") is False
 
 
-async def test_disabled_install_is_not_visible(caps, store):
+async def test_disabled_install_is_not_visible(caps):
     """已装但停用 → 与未装同等不可见，并进入技能黑名单。"""
-    caps.installs = UserCapabilityRepo(store)
     await caps.installs.install("u1", "skill", "office-doc")
     assert "office-doc" in await caps.visible_ids("u1", "skill")
     await caps.installs.set_enabled("u1", "skill", "office-doc", False)
@@ -168,9 +167,8 @@ async def test_disabled_install_is_not_visible(caps, store):
     assert "office-doc" in await caps.hidden_skill_names("u1")
 
 
-async def test_market_items_expose_enabled(caps, store):
+async def test_market_items_expose_enabled(caps):
     """市场行暴露 enabled：已装启用 → True/True/True；停用后 → True/False/False。"""
-    caps.installs = UserCapabilityRepo(store)
     await caps.installs.install("u1", "skill", "office-doc")
     # 正例先断言：否则 enabled 写成常量 False 也能过（字段本身没被验真）
     rows = await caps.market_items("u1", "skill")
@@ -181,3 +179,25 @@ async def test_market_items_expose_enabled(caps, store):
     rows = await caps.market_items("u1", "skill")
     row = next(r for r in rows if r["id"] == "office-doc")
     assert row["installed"] is True and row["enabled"] is False and row["visible"] is False
+
+
+async def test_user_disable_overrides_default_enabled(caps):
+    """已装条目停用后，即使策略是"默认启用"，也按不可见处理。"""
+    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=True)
+    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 没装：默认启用
+    await caps.installs.install("u1", "skill", "office-doc")
+    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 装了且启用
+    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
+    assert await caps.is_visible("u1", "skill", "office-doc") is False  # 停用优先
+    assert "office-doc" not in await caps.visible_ids("u1", "skill")
+    assert "office-doc" in await caps.hidden_skill_names("u1")
+
+
+async def test_disabled_plugin_tools_are_filtered(caps):
+    """停用插件后，其工具退出可见集（插件配置注入同理，见 agent_service）。"""
+    await caps.policy.set("plugin", "spec_agent", visibility="public",
+                          default_enabled=True)
+    await caps.installs.install("u1", "plugin", "spec_agent")
+    assert await caps.visible_tool_names("u1") == SPEC_TOOLS
+    await caps.installs.set_enabled("u1", "plugin", "spec_agent", False)
+    assert await caps.visible_tool_names("u1") == set()

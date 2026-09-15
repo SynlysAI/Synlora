@@ -1,9 +1,9 @@
 """按用户计算可见能力（运行期过滤与市场列表的唯一入口）。
 
-三层汇总规则：
+三层汇总规则（用户显式动作优先）：
 - hidden → 不可见（管理员后台另行可见，见 market_items(admin=True)）；
-- public + 默认启用 → 所有人可见；
-- public + 非默认 → 仅已安装且启用者可见。
+- 已安装 → 一律以用户的启用态为准（停用即不可见，压过策略默认启用）；
+- 未安装 → 看策略 default_enabled。
 目录里不存在的条目一律不可见（防止凭 id 绕过）。
 
 工具名映射由外部注入（PluginPackage 不含工具清单，工具是 loader 动态 import 的），
@@ -70,8 +70,9 @@ class CapabilityService:
     async def is_visible(self, user_id: str, kind: str, item_id: str) -> bool:
         """判断某用户是否可见某条目。
 
-        判定口径与 visible_ids 一致：非默认启用的条目须「已装且启用」，
-        已安装但被用户停用（enabled=False）与未安装同等不可见。
+        判定口径与 visible_ids 一致（用户显式动作优先）：
+        可见 = 存在 and 非 hidden and（已安装 ? 启用态 : default_enabled）。
+        即已安装则以用户的启用态为准，停用优先于策略默认启用；未安装才看默认启用。
 
         Args:
             user_id: 用户 sub。
@@ -86,15 +87,18 @@ class CapabilityService:
         pol = await self.policy.get(kind, item_id)
         if pol["visibility"] == "hidden":
             return False
-        if pol["default_enabled"]:
-            return True
-        return await self.installs.is_enabled(user_id, kind, item_id)
+        states = await self.installs.install_states(user_id, kind)
+        if item_id in states:
+            return states[item_id]
+        return pol["default_enabled"]
 
     async def visible_ids(self, user_id: str, kind: str) -> set[str]:
         """某用户在某类下可见的全部条目 id。
 
-        判定口径为「已装且启用」：已安装但被用户停用（enabled=False）的条目
-        与未安装同等不可见，绝不进入运行期上下文或列表。
+        判定口径（用户显式动作优先）：
+        可见 = 存在 and 非 hidden and（已安装 ? 启用态 : default_enabled）。
+        已安装但被用户停用的条目一律不可见（停用优先于策略默认启用），
+        绝不进入运行期上下文或列表；未安装的条目才看平台默认启用。
 
         Args:
             user_id: 用户 sub。
@@ -106,14 +110,16 @@ class CapabilityService:
         items = self.catalog.list_items(kind)
         if not items:
             return set()
-        # 一次取回该用户的启用集，避免逐条查询
-        enabled = await self.installs.enabled_item_ids(user_id, kind)
+        # 一次取回该用户的安装状态，避免逐条查询
+        states = await self.installs.install_states(user_id, kind)
         out: set[str] = set()
         for item in items:
             pol = await self.policy.get(kind, item.id)
             if pol["visibility"] == "hidden":
                 continue
-            if pol["default_enabled"] or item.id in enabled:
+            # 用户装过就以他的启用态为准（停用即不可见）；没装过才看平台默认
+            visible = states[item.id] if item.id in states else pol["default_enabled"]
+            if visible:
                 out.add(item.id)
         return out
 
@@ -196,9 +202,10 @@ class CapabilityService:
 
         行的三个状态字段口径：
         - `installed`：是否写过安装记录（与是否停用无关）；
-        - `enabled`：已装条目是否启用（未装恒 False）；
-        - `visible`：运行期是否真的对该用户可见 —— 停用视为不可见
-          （即 visible = public 且（默认启用 或 已装且启用））。
+        - `enabled`：已装条目是否启用，仅对已装行有意义（未装恒 False）；
+        - `visible`：运行期是否真的对该用户可见 —— 可见 = 存在 and 非 hidden
+          and（已安装 ? 启用态 : default_enabled），即已装则用户的停用动作
+          优先于策略默认启用，未装才看默认启用。
 
         Args:
             user_id: 用户 sub。
@@ -209,16 +216,17 @@ class CapabilityService:
             条目字典列表；普通用户视角下 hidden 条目不出现。插件行额外带
             `config_schema`（配置字段声明，供用户侧市场渲染安装表单）。
         """
-        installed = set(await self.installs.list_for_user(user_id, kind=kind))
-        enabled = await self.installs.enabled_item_ids(user_id, kind)
+        states = await self.installs.install_states(user_id, kind)
         rows: list[dict] = []
         for item in self.catalog.list_items(kind):
             pol = await self.policy.get(kind, item.id)
             hidden = pol["visibility"] == "hidden"
             if hidden and not admin:
                 continue
-            is_installed = f"{kind}:{item.id}" in installed
-            is_enabled = item.id in enabled
+            is_installed = item.id in states
+            is_enabled = states.get(item.id, False)
+            visible = (not hidden) and (
+                is_enabled if is_installed else pol["default_enabled"])
             row = {
                 "kind": item.kind, "id": item.id, "name": item.name,
                 "description": item.description, "source": item.source,
@@ -226,7 +234,7 @@ class CapabilityService:
                 "default_enabled": pol["default_enabled"],
                 "installed": is_installed,
                 "enabled": is_enabled,
-                "visible": (not hidden) and (pol["default_enabled"] or is_enabled),
+                "visible": visible,
             }
             # 插件行补配置 schema：用户侧市场据此渲染"安装时填配置"的表单；
             # 非插件条目无此概念，不加该字段（避免前端误判）
