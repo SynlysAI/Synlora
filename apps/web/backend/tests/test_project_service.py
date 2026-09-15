@@ -167,6 +167,15 @@ async def test_user_project_cannot_take_default_dir_name(tmp_path, store):
     assert (user_dir / "default").is_dir()
 
 
+async def test_rename_to_default_name_does_not_take_default_dir(tmp_path, store):
+    """把用户项目改名为 default 时同样不能占用 default 目录（改名的 create 路径）。"""
+    service = ProjectService(store, tmp_path)
+    project = await service.create_project("u1", "exp")
+    renamed = await service.rename_project("u1", project["_id"], "default")
+    assert renamed["dir_name"] != "default"
+    assert not (tmp_path / "users" / "u1" / "workspaces" / "default").exists()
+
+
 async def test_rename_default_project_keeps_default_dir(tmp_path, store):
     """重命名默认工作区只改显示名：目录名恒为 default，否则会再长出第二个 default。"""
     service = ProjectService(store, tmp_path)

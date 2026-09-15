@@ -275,8 +275,8 @@ class ProjectService:
             else:
                 taken = await self._repo.used_dir_names(user_id)
                 taken.discard(old_dir)  # 自己不算占用，否则会被判成冲突而加后缀
-                if base != workspace.DEFAULT_PROJECT_DIR:
-                    taken.add(workspace.DEFAULT_PROJECT_DIR)  # default 留给默认工作区
+                # default 恒留给默认工作区（无条件保留：改名成 default 时该落在 default-2）
+                taken.add(workspace.DEFAULT_PROJECT_DIR)
                 new_dir = workspace.free_dir_name(user_dir, base, taken)
             if new_dir != old_dir:
                 src = user_dir / old_dir
