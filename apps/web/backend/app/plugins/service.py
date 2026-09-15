@@ -150,8 +150,8 @@ class PluginService:
             self._registry.register(fn)
             attached.add(name)
         if package.skills_root is not None:
-            # plugin=True：技能标 source='plugin'，管理页据此过滤到插件页统一查看
-            self._skill_service.add_root(package.skills_root, plugin=True)
+            # plugin=<id>：技能标 source='plugin' 且带归属，管理页/会话开关据此过滤
+            self._skill_service.add_root(package.skills_root, plugin=package.id)
 
     def _validate(self, package: PluginPackage, values: dict) -> None:
         """校验必填配置。

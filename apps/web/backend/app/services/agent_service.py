@@ -142,12 +142,12 @@ class AgentService:
 
     async def _visible_plugin_configs(
             self, user_id: str, enabled_plugins: list[str] | None = None) -> dict[str, dict]:
-        """该用户可见插件的配置（公共打底、个人覆盖）。
+        """该用户可见插件的配置（公共打底、个人覆盖），按会话级开关收窄。
 
         Args:
             user_id: 用户 sub。
-            enabled_plugins: 会话级插件开关（None = 跟随用户级可见集，
-                集合 = 只解析勾选的插件；勾选不能放大可见性，取交集）。
+            enabled_plugins: 会话级插件开关（默认全关：None 与空列表同为
+                "未启用任何插件"；勾选不能放大可见性，取交集）。
 
         Returns:
             {插件 id: 扁平配置}；单条解密失败只跳过该插件（工具会报未配置），
@@ -164,8 +164,7 @@ class AgentService:
             _LOGGER.warning("能力服务未注入，无法按用户解析插件配置（fail-closed）")
             return {}
         plugin_ids = await self._capability_service.visible_ids(user_id, "plugin")
-        if enabled_plugins is not None:
-            plugin_ids &= set(enabled_plugins)
+        plugin_ids &= set(enabled_plugins or [])
         out: dict[str, dict] = {}
         for plugin_id in sorted(plugin_ids):
             try:
@@ -246,9 +245,10 @@ class AgentService:
             file_ownership: 交付/复制产生的文件记录归属字段（{"project_id": pid}
                 或 {"session_id": sid}，与 workspace_root 对应）；None = 不带归属
                 （历史口径，下载按磁盘位置解析）。
-            enabled_plugins: 会话级插件开关（勾选的插件 id 集合）：插件工具与
-                配置注入按它收窄。None = 未设置（跟随用户级可见集）；
-                空列表 = 本轮禁用全部插件（内置工具不受影响）。
+            enabled_plugins: 会话级插件开关（**默认全关**）：只有列表内的插件
+                在本轮生效——工具、配置注入、技能索引按它收窄，未启用插件的
+                播种专家按未选处理。None 与空列表同为"未启用任何插件"；
+                内置工具不受影响。
 
         Returns:
             run_id。
@@ -332,12 +332,22 @@ class AgentService:
             # 技能：用户自建根 + 公共层 + 只读根（磁盘扫描，按登录用户并入自建根）
             # + 本会话选中项（None/空 = 全部可用）；索引进提示词，正文只入
             # context_extra（渐进披露，由 skill.read 按需取）
+            # 会话级插件开关（默认关）：未启用的插件其技能也不进索引——技能描述
+            # 是提示词的一部分，"工具被挡但技能还暴露"等于半开状态
+            active_plugins = set(enabled_plugins or [])
             all_skills = self._skill_service.list_skills(user_id=user_sub)
             if self._capability_service is not None:
                 # 技能可见性（黑名单口径）：内置技能按策略、插件技能跟随其插件
                 # 可见性；公共目录里管理员自建/导入的技能不在黑名单里（始终可见）
                 hidden_skills = await self._capability_service.hidden_skill_names(
                     user["sub"])
+                caps = self._capability_service
+                for pid in await caps.visible_ids(user["sub"], "plugin"):
+                    if pid in active_plugins:
+                        continue
+                    pkg = caps.catalog.plugins.get(pid)
+                    if pkg is not None:
+                        hidden_skills |= set(pkg.skills)
                 all_skills = [s for s in all_skills if s["name"] not in hidden_skills]
             if requested_skills:
                 active_skills = [s for s in all_skills
@@ -348,6 +358,14 @@ class AgentService:
             bodies = {s["name"]: self._skill_service.read_body(
                 s["name"], user_id=user_sub) or ""
                 for s in active_skills}
+            # 会话级插件开关对专家的影响：绑定的专家若来自未启用插件（默认全关），
+            # 按"未选专家"处理——persona 不注入（插件的人设也是提示词，半暴露与
+            # 技能同理不可接受），工具放开全部内置工具；会话文档不动，重新开启
+            # 插件后下轮自动恢复
+            if assistant and str(assistant.get("_id", "")).startswith("asst-plugin-"):
+                owner_pid = str(assistant["_id"])[len("asst-plugin-"):]
+                if owner_pid not in active_plugins:
+                    assistant = None
             persona = str((assistant or {}).get("system_prompt") or "").strip()
             whitelist = list((assistant or {}).get("tool_whitelist") or [])
             system_prompt = build_system_prompt(
@@ -375,15 +393,14 @@ class AgentService:
                 }
                 if all_plugin_tools:
                     visible_tools = await caps.visible_tool_names(user["sub"])
-                    # 会话级插件开关（enabled_plugins）：再按勾选集合收窄插件工具
-                    # （None = 未设置，跟随用户级可见集；空列表 = 本轮禁用全部插件；
-                    # 内置工具不受影响，且勾选不能放大可见性——交集而非替换）
-                    if enabled_plugins is not None:
-                        keep = {
-                            t for pid in set(enabled_plugins)
-                            for t in caps.tool_names_by_plugin.get(pid, ())
-                        }
-                        visible_tools = visible_tools & keep
+                    # 会话级插件开关（默认全关）：插件工具只保留启用插件的；
+                    # None 与空列表同为"未启用任何插件"；内置工具不受影响，
+                    # 且勾选不能放大可见性——与用户级可见集取交集
+                    keep = {
+                        t for pid in active_plugins
+                        for t in caps.tool_names_by_plugin.get(pid, ())
+                    }
+                    visible_tools = visible_tools & keep
                     tool_names = [
                         t for t in tool_names
                         if t not in all_plugin_tools or t in visible_tools

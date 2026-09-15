@@ -1,12 +1,13 @@
 /**
  * 「+」菜单「插件」二级面板：对本会话生效的插件开关（照 jiuwen 扩展面板语义）。
  *
- * 会话级开关（区别于技能的「本轮一次性」）：切换即 PATCH 会话文档持久化，
- * 本会话后续每条消息都生效，直到用户再切换；草稿态（会话未落库）先存
- * sessions store 的 draftEnabledPlugins，首次发送随建会话一起写进会话。
+ * **默认全关**：只有显式打开的插件才在本会话生效（工具、配置、技能索引、
+ * 播种专家）。会话级开关（区别于技能的「本轮一次性」）：切换即 PATCH 会话
+ * 文档持久化，刷新不丢；草稿态（会话未落库）先存 sessions store 的
+ * draftEnabledPlugins，首次发送随建会话一起写进会话。
  *
  * 数据源：市场插件行（/api/v1/market/plugin）里「对该用户生效」的插件——
- * 内置（default_enabled）或已装且启用；关闭 = 本会话不加载该插件的工具与配置。
+ * 内置（default_enabled）或已装且启用。
  */
 import { useEffect, useState } from 'react'
 import { Switch } from '@/components/admin/shared'
@@ -41,12 +42,10 @@ export default function PluginPicker({ direction }: PluginPickerProps) {
       .catch((err: Error) => setError(err.message))
   }, [plugins])
 
-  /** 生效插件全集（内置 ∪ 已装启用）。 */
-  const allIds = (plugins ?? []).map((p) => p.id)
-  /** 当前生效集合：显式设置优先，未设置（null）= 全集。 */
+  /** 当前启用集合：默认全关（null/[] 同义），只含显式打开的插件。 */
   const effective = session
-    ? session.enabled_plugins ?? allIds
-    : draftEnabledPlugins ?? allIds
+    ? session.enabled_plugins ?? []
+    : draftEnabledPlugins ?? []
 
   /** 切换某插件开关：写会话（PATCH）或草稿暂存；全集等于打开集时不回落 null（显式集合更直观）。 */
   const toggle = (id: string) => {
@@ -93,7 +92,7 @@ export default function PluginPicker({ direction }: PluginPickerProps) {
       ) : (
         <>
           <div className="px-2 pb-1 pt-0.5 text-[11px] text-[var(--sa-alias-label-caption)]">
-            开关只影响当前会话：关闭后本会话不加载该插件的工具
+            默认关闭；打开后本会话启用该插件的工具、技能与专家（刷新保持）
           </div>
           {filtered.map((p) => (
             <div

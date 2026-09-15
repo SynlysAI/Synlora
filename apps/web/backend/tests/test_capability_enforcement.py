@@ -422,11 +422,12 @@ async def test_runtime_tool_names_filtered_by_visibility(
         api_key=decrypted["api_key"], model_id=decrypted["model_id"])
     user = {"sub": "u-user", "username": "tester-user", "role": "user"}
 
-    async def _run_one(label: str) -> list[str]:
+    async def _run_one(label: str, enabled_plugins=None) -> list[str]:
         """发起一轮无专家对话（工具放开全部注册表），返回装配后的工具名。
 
         Args:
             label: 消息文本（仅用于区分轮次）。
+            enabled_plugins: 会话级插件开关（可见性对照需要显式勾选）。
 
         Returns:
             AgentConfig.tool_names。
@@ -434,22 +435,28 @@ async def test_runtime_tool_names_filtered_by_visibility(
         sid = (await client.post("/api/v1/sessions", headers=user_headers,
                                  json={"model_provider_id": provider["_id"]})).json()["_id"]
         run_id = await app.state.agent_service.chat(
-            sid, user, None, cfg, label, workspace_root=tmp_path / label)
+            sid, user, None, cfg, label, workspace_root=tmp_path / label,
+            enabled_plugins=enabled_plugins)
         await _wait_run_done(app, run_id)
         return captured[-1]["config"].tool_names
 
-    # 缺省（非默认启用）下插件工具会被剔除；此处先显式设为默认启用作可见性对照
+    # 会话级开关默认全关：插件工具不进装配（与策略无关）
+    default_tools = set(await _run_one("默认全关"))
+    assert not (SPEC_TOOLS & default_tools)
+    assert "python.run" in default_tools  # 内置工具不受影响
+
+    # 显式设为默认启用（可见性对照）：勾选后可见 → 插件工具保留
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "public", "default_enabled": True},
                      headers=admin_headers)
-    enabled_tools = await _run_one("默认启用")
-    assert SPEC_TOOLS <= set(enabled_tools)  # 可见 → 插件工具保留
+    enabled_tools = await _run_one("勾选且可见", ["spec_agent"])
+    assert SPEC_TOOLS <= set(enabled_tools)
 
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)
-    hidden_tools = set(await _run_one("隐藏后"))
-    assert not (SPEC_TOOLS & hidden_tools)  # 不可见 → 插件工具被剔除
+    hidden_tools = set(await _run_one("隐藏后仍勾选", ["spec_agent"]))
+    assert not (SPEC_TOOLS & hidden_tools)  # 不可见 → 勾选也挡（交集不放大）
     for name in ("python.run", "file.read", "skill.list"):
         assert name in hidden_tools  # 内置工具不受可见性影响
 
@@ -459,9 +466,8 @@ async def test_runtime_tool_names_filtered_by_visibility(
 
 async def test_session_plugin_switch_filters_tools_and_configs(
         app, client, admin_headers, user_headers, monkeypatch, tmp_path):
-    """会话级开关收窄插件工具与配置注入：None=跟随可见集，[]=全关，勾选=只留勾的。
-
-    勾选不能放大可见性（交集而非替换）：不可见插件勾了也不注入。
+    """会话级开关（默认全关）：None/[] 均不注入插件工具、配置与技能索引；
+    勾选才生效。勾选不能放大可见性（交集而非替换）：不可见插件勾了也不注入。
     """
     await _install_plugin(client, admin_headers)
     provider = await _make_provider(client, admin_headers)
@@ -479,52 +485,71 @@ async def test_session_plugin_switch_filters_tools_and_configs(
         api_key=decrypted["api_key"], model_id=decrypted["model_id"])
     user = {"sub": "u-user", "username": "tester-user", "role": "user"}
 
-    async def _run_one(label: str, enabled_plugins) -> tuple[set, dict]:
-        """发起一轮对话并返回（工具名集合, ctx.extra["plugins"]）。
+    async def _run_one(label: str, enabled_plugins, assistant_id=None):
+        """发起一轮对话并返回装配结果（工具/插件配置/系统提示词）。
 
         Args:
             label: 消息文本（区分轮次）。
             enabled_plugins: 会话级插件开关（直传 chat，与 send_message 读会话
                 文档后传参同一路径）。
+            assistant_id: 绑定专家 id（None = 未选）。
 
         Returns:
-            (AgentConfig.tool_names 集合, context_extra["plugins"])。
+            (tool_names 集合, context_extra["plugins"], system_prompt)。
         """
         sid = (await client.post("/api/v1/sessions", headers=user_headers,
                                  json={"model_provider_id": provider["_id"]})).json()["_id"]
+        assistant = (await app.state.store.get("assistants", assistant_id)
+                     if assistant_id else None)
         run_id = await app.state.agent_service.chat(
-            sid, user, None, cfg, label, workspace_root=tmp_path / label,
+            sid, user, assistant, cfg, label, workspace_root=tmp_path / label,
             enabled_plugins=enabled_plugins)
         await _wait_run_done(app, run_id)
         return (set(captured[-1]["config"].tool_names),
-                captured[-1]["context_extra"]["plugins"])
+                captured[-1]["context_extra"]["plugins"],
+                captured[-1]["config"].system_prompt)
 
-    # 用户先安装插件（非默认启用 → 装了才可见）
+    # 用户先安装插件（非默认启用 → 装了才可见；管理员公共安装已播种插件专家）
     await _install(client, user_headers, "plugin", "spec_agent")
+    plugin_expert = await app.state.store.get(
+        "assistants", "asst-plugin-spec_agent")
+    assert plugin_expert is not None
+    persona_snippet = plugin_expert["system_prompt"][:12]
 
-    # 1) None（未设置）：跟随用户级可见集 → 插件工具与配置都在
-    tools, plugins = await _run_one("缺省", None)
+    # 1) None（未设置）：默认全关——插件工具/配置/技能索引一律不出现
+    tools, plugins, prompt = await _run_one("缺省全关", None)
+    assert not (SPEC_TOOLS & tools)
+    assert "python.run" in tools  # 内置工具不受影响
+    assert plugins == {}
+    assert "spec-nmr" not in prompt  # 插件技能不进索引（提示词不暴露）
+
+    # 2) 空列表与 None 同义
+    tools, plugins, _ = await _run_one("空列表全关", [])
+    assert not (SPEC_TOOLS & tools) and plugins == {}
+
+    # 3) 勾选开启：工具、配置、技能索引齐备；插件专家 persona 正常注入
+    tools, plugins, prompt = await _run_one("勾选开启", ["spec_agent"],
+                                            assistant_id="asst-plugin-spec_agent")
     assert SPEC_TOOLS <= tools
     assert set(plugins) == {"spec_agent"}
+    assert "spec-nmr" in prompt
+    assert persona_snippet in prompt
 
-    # 2) 空列表：本会话禁用全部插件（内置工具不受影响）
-    tools, plugins = await _run_one("全关", [])
+    # 4) 插件专家 + 未启用插件：专家按未选处理（persona 不注入，工具放开内置）
+    tools, plugins, prompt = await _run_one("专家被插件开关停用", [],
+                                            assistant_id="asst-plugin-spec_agent")
+    assert persona_snippet not in prompt
     assert not (SPEC_TOOLS & tools)
     assert "python.run" in tools
-    assert plugins == {}
 
-    # 3) 勾选 = 只留勾的（此处勾的正是可见的那个 → 与缺省同效）
-    tools, plugins = await _run_one("勾选", ["spec_agent"])
-    assert SPEC_TOOLS <= tools
-    assert set(plugins) == {"spec_agent"}
-
-    # 4) 勾选不能放大可见性：管理员下架后勾它也不注入
+    # 5) 勾选不能放大可见性：管理员下架后勾它也不注入
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)
-    tools, plugins = await _run_one("不可见仍勾选", ["spec_agent"])
+    tools, plugins, prompt = await _run_one("不可见仍勾选", ["spec_agent"])
     assert not (SPEC_TOOLS & tools)
     assert plugins == {}
+    assert "spec-nmr" not in prompt
 
 
 async def test_session_enabled_plugins_validation(app, client, user_headers):
@@ -545,8 +570,7 @@ async def test_session_enabled_plugins_validation(app, client, user_headers):
     assert r.json()["enabled_plugins"] == ["spec_agent"]
     r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
                            json={"enabled_plugins": None})
-    assert r.json()["enabled_plugins"] is None
-    # 空列表是合法态（本会话禁用全部插件），不是"未设置"
+    assert r.json()["enabled_plugins"] is None  # 与空列表同义：本会话不启用任何插件
     r = await client.patch(f"/api/v1/sessions/{sid}", headers=user_headers,
                            json={"enabled_plugins": []})
     assert r.status_code == 200 and r.json()["enabled_plugins"] == []

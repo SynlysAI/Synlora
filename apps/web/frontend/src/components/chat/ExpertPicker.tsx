@@ -65,15 +65,29 @@ export default function ExpertPicker({ direction, onPicked }: ExpertPickerProps)
     ? (session?.assistant_id ?? null)
     : (defaultAssistant?._id ?? null)
 
+  // 会话级插件开关（默认全关）：未启用插件的播种专家（asst-plugin-*）不出现
+  // 在选择列表——后端装配同样会把它按未选处理，这里只是让 UI 与之一致
+  const draftEnabledPlugins = useSessionsStore((s) => s.draftEnabledPlugins)
+  const rawPlugins = session ? session.enabled_plugins ?? [] : draftEnabledPlugins ?? []
+  const enabledPlugins = new Set(rawPlugins)
+  const visibleAssistants = useMemo(
+    () => assistants.filter(
+      (a) => !a._id.startsWith('asst-plugin-')
+        || enabledPlugins.has(a._id.slice('asst-plugin-'.length)),
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 原始数组作依赖，Set 每次重建
+    [assistants, rawPlugins],
+  )
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return assistants
-    return assistants.filter(
+    if (!q) return visibleAssistants
+    return visibleAssistants.filter(
       (a) =>
         a.name.toLowerCase().includes(q) ||
         a.description.toLowerCase().includes(q),
     )
-  }, [assistants, query])
+  }, [visibleAssistants, query])
 
   /** 选中/取消助手：点已勾选的即取消（等价于原先的「不使用专家」）。
    *  有会话走 PATCH + 列表刷新（取消时传空串，后端卸载专家），无会话写新对话默认。 */

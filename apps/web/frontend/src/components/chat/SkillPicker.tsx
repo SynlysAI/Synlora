@@ -4,8 +4,12 @@
  * 照抄 jiuwen `ChatPanel/SkillPickerPanel.tsx` 的列表结构（名称 + 描述两行、
  * 选中打勾），壳走本项目 PickerPanel；选择态由 Composer 持有（受控），
  * 因为技能是「本轮一次性」语义——发送后清空，不需要进 store 长期保留。
+ *
+ * 会话级插件开关（默认全关）：未启用插件的技能不出现在列表——后端装配同样
+ * 会把它们挡在索引外，这里让 UI 与装配一致。
  */
 import { useEffect, useMemo, useState } from 'react'
+import { useSessionsStore } from '@/stores/sessions'
 import { useSkillsStore } from '@/stores/skills'
 import PickerPanel from './PickerPanel'
 
@@ -34,16 +38,29 @@ export default function SkillPicker({ direction, selected, onToggle }: SkillPick
       .catch((err: Error) => setError(err.message))
   }, [loaded])
 
+  // 会话级插件开关：未启用插件的技能（s.plugin 有值且不在启用集合）不出现
+  const sessions = useSessionsStore((s) => s.sessions)
+  const currentId = useSessionsStore((s) => s.currentId)
+  const draftEnabledPlugins = useSessionsStore((s) => s.draftEnabledPlugins)
+  const session = sessions.find((x) => x._id === currentId) ?? null
+  const rawPlugins = session ? session.enabled_plugins ?? [] : draftEnabledPlugins ?? []
+  const enabledPlugins = new Set(rawPlugins)
+  const visibleSkills = useMemo(
+    () => skills.filter((s) => !s.plugin || enabledPlugins.has(s.plugin)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 原始数组作依赖，Set 每次重建
+    [skills, rawPlugins],
+  )
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    if (!q) return skills
-    return skills.filter(
+    if (!q) return visibleSkills
+    return visibleSkills.filter(
       (s) =>
         s.name.toLowerCase().includes(q) ||
         s.description.toLowerCase().includes(q) ||
         s.tags.some((t) => t.toLowerCase().includes(q)),
     )
-  }, [skills, query])
+  }, [visibleSkills, query])
 
   return (
     <PickerPanel

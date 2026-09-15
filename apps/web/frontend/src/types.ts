@@ -84,6 +84,8 @@ export interface Skill {
   builtin: boolean
   /** 来源：catalog（内置目录）/ public（公共层）/ plugin（插件贡献）/ user（用户自建）。 */
   source?: 'catalog' | 'public' | 'plugin' | 'user'
+  /** source=plugin 时的归属插件 id（会话级开关据此过滤技能列表）。 */
+  plugin?: string
 }
 
 /** 插件配置字段 schema（对应后端 app/catalog/loader.py 的 config_schema）。 */

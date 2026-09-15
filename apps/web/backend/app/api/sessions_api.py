@@ -153,9 +153,9 @@ class SessionCreateBody(BaseModel):
 
     assistant_id 可选：缺省/空表示不选专家，agent 只走平台默认提示词且
     放开全部内置工具（jiuwen 的 "" 卸载专家语义）。
-    enabled_plugins 为会话级插件开关：缺省 None = 跟随用户级可见集（装了并
-    启用的插件全部生效）；显式列表 = 只用列表内的插件（空列表 = 本会话禁用
-    全部插件），照 jiuwen「+ 扩展面板」的会话级开关语义。
+    enabled_plugins 为会话级插件开关（**默认全关**，照 jiuwen「+ 扩展面板」）：
+    缺省 None 与空列表同为"本会话不启用任何插件"；列表 = 只启用这些插件的
+    工具、配置、技能与播种专家。开关切换即 PATCH 落库，刷新不丢。
     """
 
     assistant_id: str | None = None
@@ -294,8 +294,8 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
     未提供该字段不动原值（靠 model_fields_set 区分"未提供"与"显式 null"）。
     assistant_id：传非空 id 校验助手存在后写回；显式传 ""/null 卸载专家；
     未提供该字段不动原值（只影响后续轮次，不改历史事件）。
-    enabled_plugins：传列表校验插件存在后写回（会话级插件开关）；显式传
-    null 恢复"跟随用户级可见集"；未提供该字段不动原值。
+    enabled_plugins：传列表校验插件存在后写回（会话级插件开关，默认全关）；
+    显式传 null 与空列表同义（本会话不启用任何插件）；未提供该字段不动原值。
 
     Raises:
         HTTPException: 会话不存在或非本人（404）、助手/插件不存在（404）、
@@ -325,7 +325,7 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
     if "enabled_plugins" in body.model_fields_set:
         if body.enabled_plugins is not None:
             await _validate_plugin_ids(request, body.enabled_plugins)
-        # 显式 null = 恢复"跟随用户级可见集"；空列表 = 本会话禁用全部插件
+        # 显式 null 与空列表同义：本会话不启用任何插件（默认全关）
         fields["enabled_plugins"] = body.enabled_plugins
     return await repos.session.update(doc["_id"], fields)
 
