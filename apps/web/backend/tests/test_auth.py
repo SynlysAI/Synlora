@@ -21,7 +21,11 @@ from app.main import create_app
 
 
 def _settings(**kw) -> Settings:
-    """构造测试配置（显式固定 auth 相关字段，避免环境变量干扰）。
+    """构造测试配置（显式固定 auth 与存储后端，避免环境变量干扰）。
+
+    `storage_backend` 默认固定 sqlite：开发后门（匿名/dev token）只在 sqlite 生效，
+    否则本机 `.env` 切成 mongodb 会让这些用例随环境变红；需要 mongodb 语义的用例
+    自行显式传 `storage_backend="mongodb"`。
 
     Args:
         kw: 覆盖字段。
@@ -29,7 +33,8 @@ def _settings(**kw) -> Settings:
     Returns:
         测试用 Settings 实例。
     """
-    base = {"auth_secret": "unit-test-secret", "auth_enabled": True}
+    base = {"auth_secret": "unit-test-secret", "auth_enabled": True,
+            "storage_backend": "sqlite"}
     base.update(kw)
     return Settings(**base)
 
