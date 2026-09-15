@@ -111,6 +111,19 @@ export interface PluginInfo {
   secrets_set: Record<string, boolean>
 }
 
+/** 能力目录条目（对应后端 app/catalog/service.py 的 market_items）。 */
+export interface CatalogItem {
+  kind: 'expert' | 'skill' | 'plugin'
+  id: string
+  name: string
+  description: string
+  source: 'builtin'
+  visibility: 'public' | 'hidden'
+  default_enabled: boolean
+  installed: boolean
+  visible: boolean
+}
+
 /** 会话元数据文档。 */
 export interface Session {
   _id: string

@@ -10,10 +10,10 @@
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, getToken } from '@/api/client'
-import type { Skill } from '@/types'
+import type { CatalogItem, Skill } from '@/types'
 import { toast } from '@/stores/toasts'
 import { useAdminStore } from '@/stores/admin'
-import { FormError, GrayBadge, Modal } from './shared'
+import { CatalogPolicySwitches, FormError, GrayBadge, Modal } from './shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from './form'
 
 /** 技能名合法模式（kebab-case，与后端 skill_service.NAME_OK 一致）。 */
@@ -279,6 +279,8 @@ export default function SkillsAdmin() {
   const skills = useAdminStore((s) => s.skills)
   const loaded = useAdminStore((s) => s.skillsLoaded)
   const loadSkills = useAdminStore((s) => s.loadSkills)
+  const catalog = useAdminStore((s) => s.catalog)
+  const loadCatalog = useAdminStore((s) => s.loadCatalog)
   /** 打开表单模态：null 关闭 / 'new' 新建 / 行数据编辑。 */
   const [editing, setEditing] = useState<Skill | 'new' | null>(null)
   /** 导入模态开关。 */
@@ -292,7 +294,33 @@ export default function SkillsAdmin() {
   // 挂载时拉取一次；后续在增删改成功后手动刷新
   useEffect(() => {
     loadSkills().catch((err) => toast('error', `加载技能失败：${errorText(err)}`))
-  }, [loadSkills])
+    loadCatalog().catch((err) => toast('error', `加载能力目录失败：${errorText(err)}`))
+  }, [loadSkills, loadCatalog])
+
+  /** 能力目录策略开关：PUT 成功后重拉目录（不做乐观更新）。 */
+  const handlePolicy = async (
+    item: CatalogItem,
+    next: { visibility: 'public' | 'hidden'; default_enabled: boolean },
+  ) => {
+    try {
+      await api(`/api/v1/admin/catalog/${item.kind}/${item.id}/policy`, {
+        method: 'PUT',
+        body: next,
+      })
+      await loadCatalog()
+    } catch (err) {
+      toast('error', errorText(err))
+    }
+  }
+
+  /** 技能行的策略开关：不在能力目录里的技能（自建/导入）返回 null。 */
+  const policySwitches = (name: string) => {
+    const item = catalog.find((c) => c.kind === 'skill' && c.id === name)
+    if (!item) return null
+    return (
+      <CatalogPolicySwitches item={item} onChange={(next) => void handlePolicy(item, next)} />
+    )
+  }
 
   /** 删除（两步内联确认；builtin 行按钮已禁用，后端仍有 409 兜底）。 */
   const handleDelete = async (s: Skill) => {
@@ -388,6 +416,7 @@ export default function SkillsAdmin() {
               {s.allowed_tools.length} 项工具
             </div>
             <div className="flex shrink-0 items-center gap-2.5">
+              {policySwitches(s.name)}
               <button
                 type="button"
                 disabled={exportingName === s.name}

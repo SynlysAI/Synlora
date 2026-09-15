@@ -7,11 +7,11 @@
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { api } from '@/api/client'
-import type { Assistant, ModelProvider } from '@/types'
+import type { Assistant, CatalogItem, ModelProvider } from '@/types'
 import { TOOL_LABELS } from '@/components/chat/toolLabels'
 import { toast } from '@/stores/toasts'
 import { useAdminStore } from '@/stores/admin'
-import { FormError, GrayBadge, Modal } from './shared'
+import { CatalogPolicySwitches, FormError, GrayBadge, Modal } from './shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from './form'
 
 /** 全部合法工具名（与后端 ToolRegistry 注册项一一对应，标签见 toolLabels.ts）。 */
@@ -326,6 +326,8 @@ export default function AssistantsAdmin() {
   const models = useAdminStore((s) => s.enabledModels)
   const loaded = useAdminStore((s) => s.assistantsLoaded)
   const loadAssistants = useAdminStore((s) => s.loadAssistants)
+  const catalog = useAdminStore((s) => s.catalog)
+  const loadCatalog = useAdminStore((s) => s.loadCatalog)
   /** 打开表单模态：null 关闭 / 'new' 新建 / 行数据编辑。 */
   const [editing, setEditing] = useState<Assistant | 'new' | null>(null)
   /** 删除二次确认中的行 id。 */
@@ -335,7 +337,33 @@ export default function AssistantsAdmin() {
   // 挂载时拉取一次（store 内同时同步工作台助手数据）；增删改成功后手动刷新
   useEffect(() => {
     loadAssistants().catch((err) => toast('error', `加载助手失败：${errorText(err)}`))
-  }, [loadAssistants])
+    loadCatalog().catch((err) => toast('error', `加载能力目录失败：${errorText(err)}`))
+  }, [loadAssistants, loadCatalog])
+
+  /** 能力目录策略开关：PUT 成功后重拉目录（不做乐观更新）。 */
+  const handlePolicy = async (
+    item: CatalogItem,
+    next: { visibility: 'public' | 'hidden'; default_enabled: boolean },
+  ) => {
+    try {
+      await api(`/api/v1/admin/catalog/${item.kind}/${item.id}/policy`, {
+        method: 'PUT',
+        body: next,
+      })
+      await loadCatalog()
+    } catch (err) {
+      toast('error', errorText(err))
+    }
+  }
+
+  /** 助手行的策略开关：仅内置目录里的专家（不在目录里的返回 null）。 */
+  const policySwitches = (id: string) => {
+    const item = catalog.find((c) => c.kind === 'expert' && c.id === id)
+    if (!item) return null
+    return (
+      <CatalogPolicySwitches item={item} onChange={(next) => void handlePolicy(item, next)} />
+    )
+  }
 
   /** 删除（二次确认后执行；builtin 行按钮已禁用，后端仍有 409 兜底）。 */
   const handleDelete = async (a: Assistant) => {
@@ -397,6 +425,7 @@ export default function AssistantsAdmin() {
               {a.tool_whitelist.length} 项工具
             </div>
             <div className="flex shrink-0 items-center gap-2.5">
+              {policySwitches(a._id)}
               <button
                 type="button"
                 onClick={() => setEditing(a)}

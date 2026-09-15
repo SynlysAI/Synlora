@@ -11,10 +11,10 @@
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { api } from '@/api/client'
-import type { PluginInfo } from '@/types'
+import type { CatalogItem, PluginInfo } from '@/types'
 import { toast } from '@/stores/toasts'
 import { useAdminStore } from '@/stores/admin'
-import { FormError, GrayBadge, Modal } from './shared'
+import { CatalogPolicySwitches, FormError, GrayBadge, Modal } from './shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from './form'
 
 /** 状态徽标：未安装（灰）/ 已配置（灰）/ 待补配置（弱红，列出缺失必填项）。 */
@@ -127,13 +127,41 @@ export default function PluginsAdmin() {
   const plugins = useAdminStore((s) => s.plugins)
   const loaded = useAdminStore((s) => s.pluginsLoaded)
   const loadPlugins = useAdminStore((s) => s.loadPlugins)
+  const catalog = useAdminStore((s) => s.catalog)
+  const loadCatalog = useAdminStore((s) => s.loadCatalog)
   /** 打开表单模态的插件（null 关闭）。 */
   const [editing, setEditing] = useState<PluginInfo | null>(null)
 
   // 挂载时拉取一次；后续在安装/配置成功后手动刷新
   useEffect(() => {
     loadPlugins().catch((err) => toast('error', `加载插件失败：${errorText(err)}`))
-  }, [loadPlugins])
+    loadCatalog().catch((err) => toast('error', `加载能力目录失败：${errorText(err)}`))
+  }, [loadPlugins, loadCatalog])
+
+  /** 能力目录策略开关：PUT 成功后重拉目录（不做乐观更新）。 */
+  const handlePolicy = async (
+    item: CatalogItem,
+    next: { visibility: 'public' | 'hidden'; default_enabled: boolean },
+  ) => {
+    try {
+      await api(`/api/v1/admin/catalog/${item.kind}/${item.id}/policy`, {
+        method: 'PUT',
+        body: next,
+      })
+      await loadCatalog()
+    } catch (err) {
+      toast('error', errorText(err))
+    }
+  }
+
+  /** 插件行的策略开关：目录里的插件（不在目录里的返回 null）。 */
+  const policySwitches = (id: string) => {
+    const item = catalog.find((c) => c.kind === 'plugin' && c.id === id)
+    if (!item) return null
+    return (
+      <CatalogPolicySwitches item={item} onChange={(next) => void handlePolicy(item, next)} />
+    )
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -165,6 +193,7 @@ export default function PluginsAdmin() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2.5">
+              {policySwitches(p.id)}
               <button
                 type="button"
                 onClick={() => setEditing(p)}

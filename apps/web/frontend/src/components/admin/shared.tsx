@@ -5,6 +5,7 @@
  * ModelsAdmin 与 AssistantsAdmin 共用，保持两页交互一致。
  */
 import type { ReactNode } from 'react'
+import type { CatalogItem } from '@/types'
 
 /** 12px 旋转转圈。 */
 export function Spinner({ className = '' }: { className?: string }) {
@@ -54,6 +55,41 @@ export function Switch({ checked, label, onChange, disabled }: SwitchProps) {
         }`}
       />
     </button>
+  )
+}
+
+/** 目录条目的可见性/默认启用开关组（能力目录策略）。 */
+export function CatalogPolicySwitches({ item, onChange }: {
+  item: CatalogItem
+  onChange: (next: { visibility: 'public' | 'hidden'; default_enabled: boolean }) => void
+}) {
+  // 隐藏的条目谈「默认启用」无意义：禁用它，只留「可见」可切换
+  const hidden = item.visibility === 'hidden'
+  return (
+    <div className="flex shrink-0 items-center gap-3">
+      <span className="flex items-center gap-1.5">
+        <span className="text-[12px] text-[var(--sa-alias-label-tertiary)]">可见</span>
+        <Switch
+          checked={!hidden}
+          label={`${item.name} 对普通用户可见`}
+          onChange={(next) =>
+            onChange({
+              visibility: next ? 'public' : 'hidden',
+              default_enabled: item.default_enabled,
+            })
+          }
+        />
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="text-[12px] text-[var(--sa-alias-label-tertiary)]">默认启用</span>
+        <Switch
+          checked={item.default_enabled}
+          disabled={hidden}
+          label={`${item.name} 默认启用`}
+          onChange={(next) => onChange({ visibility: item.visibility, default_enabled: next })}
+        />
+      </span>
+    </div>
   )
 }
 
