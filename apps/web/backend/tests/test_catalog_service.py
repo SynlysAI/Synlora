@@ -45,7 +45,14 @@ async def test_hidden_invisible_even_if_installed(caps):
 
 
 async def test_not_default_requires_install(caps):
-    """public + 非默认 → 未安装不可见，安装后可见，且只影响安装者本人。"""
+    """public + 非默认 → 未安装不可见，安装后可见，且只影响安装者本人。
+
+    非默认取值已与缺省相同，"未安装不可见"单看是恒真的；先设一次"默认启用"
+    作对照，证明策略确实在放行/拦截。
+    """
+    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=True)
+    assert await caps.is_visible("u1", "skill", "office-doc") is True
+
     await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=False)
     assert await caps.is_visible("u1", "skill", "office-doc") is False
     await caps.installs.install("u1", "skill", "office-doc")
@@ -61,7 +68,15 @@ async def test_unknown_item_is_not_visible(caps):
 
 async def test_visible_plugin_tools(caps):
     """插件工具名按可见插件推导（运行期工具过滤用）。"""
-    await caps.policy.set("plugin", "spec_agent", visibility="public", default_enabled=False)
+    # 对照：显式设为"默认启用" ⇒ 未安装即可见。这一半才有判别力——新缺省是
+    # public + 非默认，若直接断言"未安装不可见"，策略 PUT 失效也会通过
+    await caps.policy.set("plugin", "spec_agent", visibility="public",
+                          default_enabled=True)
+    assert await caps.visible_tool_names("u1") == SPEC_TOOLS
+
+    # 非默认 ⇒ 未安装不可见（策略真正承担过滤职责），安装后仅本人可见
+    await caps.policy.set("plugin", "spec_agent", visibility="public",
+                          default_enabled=False)
     assert await caps.visible_tool_names("u1") == set()
     await caps.installs.install("u1", "plugin", "spec_agent")
     assert await caps.visible_tool_names("u1") == SPEC_TOOLS

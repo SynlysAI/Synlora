@@ -94,6 +94,23 @@ async def clean_capability_state(app):
     service._attached.pop("spec_agent", None)
 
 
+async def _install(client, headers, kind: str, item: str) -> None:
+    """以某用户身份安装一个能力目录条目（市场安装，只写 user_capabilities 记录）。
+
+    用例若要让"改策略 ⇒ 不可见"具备判别力，必须先安装该条目：新缺省是
+    public + 非默认，未安装本来就不可见，不装就直接断言"不可见"是恒真的。
+
+    Args:
+        client: httpx 异步客户端。
+        headers: 发起安装的请求头（普通用户或管理员）。
+        kind: 条目类型（skill/expert/plugin）。
+        item: 条目 id。
+    """
+    resp = await client.post(f"/api/v1/catalog/{kind}/{item}/install",
+                             json={}, headers=headers)
+    assert resp.status_code == 201, resp.text
+
+
 async def _install_plugin(client, admin_headers) -> None:
     """以管理员安装 spec_agent（注册工具、挂技能根、播种专家）。
 
@@ -186,14 +203,27 @@ async def test_default_policy_requires_install(
 
 async def test_not_default_plugin_needs_user_install(
         app, client, admin_headers, user_headers):
-    """public + default_enabled=False：未安装不可见，安装后可见且不影响他人。"""
+    """public + default_enabled=False：未安装不可见，安装后可见且不影响他人。
+
+    注意 public + False 现在与缺省取值逐位相同，单看这半段"需安装"信息量为零
+    （策略 PUT 失效也照样通过）；因此先设 default_enabled=True 作对照，证明
+    "未安装即可见"确实来自策略放行，再改回非默认验证过滤。
+    """
     await _install_plugin(client, admin_headers)
+    # 对照：默认启用 ⇒ 未安装即对该用户可见（策略在放行，非缺省结果）
+    await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
+                     json={"visibility": "public", "default_enabled": True},
+                     headers=admin_headers)
+    skills = {s["name"] for s in
+              (await client.get("/api/v1/skills", headers=user_headers)).json()}
+    assert "spec-nmr" in skills
+
+    # 改回非默认 ⇒ 策略真正承担过滤职责
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "public", "default_enabled": False},
                      headers=admin_headers)
-    # 缺省口径同为"需安装"：先装上内置技能，用于对照"内置技能不受插件策略影响"
-    assert (await client.post("/api/v1/catalog/skill/data-analysis/install",
-                              json={}, headers=user_headers)).status_code == 201
+    # 先装上内置技能，用于对照"内置技能不受插件策略影响"
+    await _install(client, user_headers, "skill", "data-analysis")
 
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
@@ -209,8 +239,7 @@ async def test_not_default_plugin_needs_user_install(
                    (await client.get("/api/v1/assistants", headers=admin_headers)).json()}
     assert PLUGIN_EXPERT in admin_names
 
-    assert (await client.post("/api/v1/catalog/plugin/spec_agent/install",
-                              json={}, headers=user_headers)).status_code == 201
+    await _install(client, user_headers, "plugin", "spec_agent")
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
     assert "spec-nmr" in skills
@@ -247,15 +276,13 @@ async def test_hidden_plugin_absent_from_user_catalog(
 async def test_skill_and_expert_policies_filter_lists(
         client, admin_headers, user_headers):
     """技能与专家列表按各自策略过滤；管理员不过滤。"""
-    # 缺省 = 非默认启用：先安装对照组条目（data-analysis / 科研助手），
-    # 它们未被改策略，应保持可见 —— 从而证明本用例的过滤来自显式策略
-    for kind, item in (("skill", "data-analysis"), ("expert", "asst-research")):
-        assert (await client.post(f"/api/v1/catalog/{kind}/{item}/install",
-                                  json={}, headers=user_headers)).status_code == 201
-    # office-doc 也先安装：让它"本应可见"，下面的 hidden 才真正承担过滤职责。
-    # （若改成 public + 非默认启用，取值恰好等于缺省，策略 PUT 完全失效也会通过）
-    assert (await client.post("/api/v1/catalog/skill/office-doc/install",
-                              json={}, headers=user_headers)).status_code == 201
+    # 缺省 = 非默认启用：四个条目都先安装，让它们"本应可见"，下面的 hidden
+    # 才真正承担过滤职责（若改成 public + 非默认启用，取值恰好等于缺省，
+    # 策略 PUT 完全失效也会通过）。data-analysis / 科研助手 不被改策略，
+    # 作可见性对照组。
+    for kind, item in (("skill", "data-analysis"), ("expert", "asst-research"),
+                       ("skill", "office-doc"), ("expert", "asst-data")):
+        await _install(client, user_headers, kind, item)
 
     # hidden 是唯一"既挡得住已安装条目、又区别于新缺省"的取值
     await client.put("/api/v1/admin/catalog/skill/office-doc/policy",
@@ -515,6 +542,9 @@ async def test_public_admin_skill_stays_visible_to_users(
 async def test_hidden_builtin_skill_invisible_to_user(
         app, client, admin_headers, user_headers):
     """被策略隐藏的内置技能：普通用户不可见，管理员可见。"""
+    # 先安装：缺省（public + 非默认）下未安装本就不可见，装上后"不可见"
+    # 才是 hidden 策略的结果，断言才有判别力
+    await _install(client, user_headers, "skill", "office-doc")
     await client.put("/api/v1/admin/catalog/skill/office-doc/policy",
                      json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)
@@ -529,6 +559,13 @@ async def test_hidden_builtin_skill_invisible_to_user(
 async def test_plugin_skill_follows_plugin_policy(app, client, admin_headers, user_headers):
     """插件技能跟随其插件：插件被隐藏时技能也不可见。"""
     await _install_plugin(client, admin_headers)
+    # 先让用户自己装上插件：缺省（非默认）下未安装的插件技能本就不可见，
+    # 装上后"不可见"才是 hidden 策略的结果（先断言可见，确认起手是可见态）
+    await _install(client, user_headers, "plugin", "spec_agent")
+    names = [s["name"] for s in (await client.get(
+        "/api/v1/skills", headers=user_headers)).json()]
+    assert "spec-nmr" in names  # 起手：已安装 ⇒ 插件技能可见
+
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)

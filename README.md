@@ -120,7 +120,7 @@ pm2 logs synlys-agent
 
 ### 能力目录（市场）
 
-「专家 / 技能 / 插件」统一纳入能力目录，三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 默认启用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认；普通用户在左栏用户菜单「能力中心」（独立整页 `/capabilities`）自行安装/卸载。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+「专家 / 技能 / 插件」统一纳入能力目录，三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认；普通用户在左栏用户菜单「能力中心」（独立整页 `/capabilities`）自行安装/卸载。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 内置内容布局（catalog/）
 
