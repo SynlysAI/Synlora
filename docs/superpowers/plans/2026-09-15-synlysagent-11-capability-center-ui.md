@@ -113,15 +113,18 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
   },
 
   install: async (kind, itemId, config) => {
-    await api(`/api/v1/me/capabilities/${kind}/${encodeURIComponent(itemId)}`, {
-      method: 'PUT',
-      body: { installed: true },
-    })
-    // 插件：安装时若有个人配置，紧接着写配置（后端安装端点已按 schema 校验必填）
+    // 插件带个人配置时走既有 POST：它按 schema 先校验必填、通过后才落安装记录（原子）。
+    // 若改成"先 PUT 装、再补 POST 写配置"，POST 校验失败时会留下"已装但无配置"的
+    // 半装状态——PUT 已 200、前端无从回滚，运行期插件工具只会报"未配置"。
     if (kind === 'plugin' && config && Object.keys(config).length > 0) {
       await api(`/api/v1/catalog/${kind}/${encodeURIComponent(itemId)}/install`, {
         method: 'POST',
         body: { config },
+      })
+    } else {
+      await api(`/api/v1/me/capabilities/${kind}/${encodeURIComponent(itemId)}`, {
+        method: 'PUT',
+        body: { installed: true },
       })
     }
     await get().loadMarket()

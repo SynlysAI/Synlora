@@ -2090,6 +2090,10 @@ Expected: PASS。若有失败，先修到全绿再继续（不跳过、不 xfail
 `app/catalog/items.py` 的「数据目录根 `{data_dir}/catalog/`」→ `{data_dir}/public/catalog/`；
 `apps/web/backend/README.md` 与仓库根 `README.md` 里 `{data_dir}/skills`、`workspaces/` 等旧口径，
 以及 README 中 `user_capabilities` 集合的 schema 行（补 `enabled` 字段）；
+`CLAUDE.md` 与仓库根 `README.md` 里「缺省 = public + 默认启用」的旧口径（现已改为"需安装"）；
+**计划自身的订正**：Task 8/9 的示例测试原先拿公共层技能（`POST /api/v1/skills` 建的）当可安装对象，
+但 `can_install` 只认 catalog 里的内置条目，实际实现已改用真实条目（如 `data-analysis`）——
+把计划里这两处示例同步改过来，避免后来者照抄；
 `CLAUDE.md` 中「内置内容统一在宿主 `catalog/`…」一节按 Task 15 Step 2 补用户分层与安装模型说明。
 
 把"内置内容统一在宿主 catalog/ …"一节中的路径描述补上用户层：
