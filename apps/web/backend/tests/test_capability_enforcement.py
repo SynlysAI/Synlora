@@ -252,9 +252,14 @@ async def test_skill_and_expert_policies_filter_lists(
     for kind, item in (("skill", "data-analysis"), ("expert", "asst-research")):
         assert (await client.post(f"/api/v1/catalog/{kind}/{item}/install",
                                   json={}, headers=user_headers)).status_code == 201
+    # office-doc 也先安装：让它"本应可见"，下面的 hidden 才真正承担过滤职责。
+    # （若改成 public + 非默认启用，取值恰好等于缺省，策略 PUT 完全失效也会通过）
+    assert (await client.post("/api/v1/catalog/skill/office-doc/install",
+                              json={}, headers=user_headers)).status_code == 201
 
+    # hidden 是唯一"既挡得住已安装条目、又区别于新缺省"的取值
     await client.put("/api/v1/admin/catalog/skill/office-doc/policy",
-                     json={"visibility": "public", "default_enabled": False},
+                     json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)
     await client.put("/api/v1/admin/catalog/expert/asst-data/policy",
                      json={"visibility": "hidden", "default_enabled": False},

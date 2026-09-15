@@ -42,6 +42,9 @@ class CatalogPolicyRepo:
     async def get(self, kind: str, item_id: str) -> dict:
         """取条目策略（无记录返回缺省值）。
 
+        已存在但缺 `default_enabled` 字段的历史脏文档，同样按缺省语义
+        回落 False（fail-closed：不默认启用即需安装，与 all_policies 对齐）。
+
         Args:
             kind: 条目类型。
             item_id: 条目 id。
@@ -55,7 +58,7 @@ class CatalogPolicyRepo:
         return {
             "visibility": str(doc.get("visibility") or "")
             if str(doc.get("visibility") or "") in VISIBILITIES else "hidden",
-            "default_enabled": bool(doc.get("default_enabled", True)),
+            "default_enabled": bool(doc.get("default_enabled", False)),
         }
 
     async def all_policies(self) -> dict[str, dict]:

@@ -1,8 +1,8 @@
 """能力目录 API：用户侧市场（列表/安装/卸载）+ 管理员策略（列表/配置）。
 
-普通用户视角的列表与安装一律经过可见性判定：hidden 条目对用户不存在，
-public + 非默认 的条目要安装后才进入该用户的能力集（缺省 public + 默认启用，
-保证升级后行为不变）。
+普通用户视角的列表与安装一律经过可见性判定：hidden 条目对用户不存在；
+public + 非默认启用 的条目要安装后才进入该用户的能力集。平台缺省即后者：
+内置条目在市场可见（可被安装），但需安装后才可用。
 """
 from __future__ import annotations
 
@@ -39,10 +39,14 @@ def get_capability_service(request: Request):
 
 
 class PolicyBody(BaseModel):
-    """管理员策略请求体。"""
+    """管理员策略请求体。
+
+    缺省与平台缺省一致（public + 非默认启用）：只带 visibility 的 PUT
+    不应意外写成"默认启用"。
+    """
 
     visibility: str = "public"
-    default_enabled: bool = True
+    default_enabled: bool = False
 
 
 class InstallBody(BaseModel):
