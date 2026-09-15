@@ -1,7 +1,8 @@
 """内置目录条目枚举。
 
 内置项只有三个来源，全部只读（首期不支持用户自建）：
-- 专家：代码种子 SEED_ASSISTANTS（插件播种的 asst-plugin-* 跟随其插件，不算独立条目）；
+- 专家：catalog 专家包 catalog/experts/<dir>/expert.json（插件播种的 asst-plugin-*
+  专家模板跟随其插件，不算独立条目）；
 - 技能：随仓库播种到技能目录的内置技能（名字在 skill_service.BUILTIN_SKILL_NAMES 中）；
 - 插件：扫描到的插件包（随仓库 catalog/plugins/ + 数据目录 catalog/plugins/）。
 """
@@ -10,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from app.db.repos import SEED_ASSISTANTS
 from app.services.skill_service import BUILTIN_SKILL_NAMES
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ class CatalogService:
         Args:
             settings: 应用配置。
             skill_service: 技能服务（枚举已播种的内置技能）。
-            index: catalog 扫描结果（本类只用到其中的插件包）。
+            index: catalog 扫描结果（本类用到其中的专家包与插件包）。
         """
         self._settings = settings
         self._skill_service = skill_service
@@ -92,20 +92,21 @@ class CatalogService:
         return [item for kind in KINDS for item in self.list_items(kind)]
 
     def _experts(self) -> list[CatalogItem]:
-        """内置专家条目（代码种子，排除插件播种的助手）。
+        """内置专家条目（catalog 专家包，排除插件播种的助手）。
 
         Returns:
             条目列表。
         """
+        # TODO(T3): 与技能/插件统一走 CatalogIndex 的字段口径
         return sorted(
             (
                 CatalogItem(
-                    kind="expert", id=str(seed["_id"]),
-                    name=str(seed.get("name") or seed["_id"]),
-                    description=str(seed.get("description") or ""),
+                    kind="expert", id=pkg.id,
+                    name=pkg.name or pkg.id,
+                    description=pkg.description,
                 )
-                for seed in SEED_ASSISTANTS
-                if not str(seed["_id"]).startswith(EXPERT_ID_PREFIX)
+                for pkg in self._index.experts.values()
+                if not pkg.id.startswith(EXPERT_ID_PREFIX)
             ),
             key=lambda i: i.id,
         )

@@ -1,4 +1,4 @@
-"""七个 repository + 种子助手（基于 DocumentStore 的薄封装）。
+"""七个 repository（基于 DocumentStore 的薄封装）。
 
 统一模式：create 自动补 _id/created_at/updated_at；update 自动补 updated_at；
 get/list/delete 直接透传 store。
@@ -367,46 +367,3 @@ class FileRepo(BaseRepo):
     """
 
     collection = "files"
-
-
-SEED_ASSISTANTS: list[dict] = [
-    {
-        "_id": "asst-research",
-        "name": "科研助手",
-        "avatar": "🧪",
-        "description": "文献检索、数据分析、文件处理通用科研助手",
-        "system_prompt": (
-            "你是 SynlysAgent 科研助手，帮助科研人员完成文献检索、数据分析、"
-            "文件处理等任务。回答保持准确、简洁，需要时主动使用工具。"
-        ),
-        "tool_whitelist": [
-            "file.read", "file.write", "file.list",
-            "python.run", "knowledge.search", "http.request",
-        ],
-        "builtin": True,
-    },
-    {
-        "_id": "asst-data",
-        "name": "数据分析助手",
-        "avatar": "📊",
-        "description": "优先用 python.run 做统计分析与可视化",
-        "system_prompt": (
-            "你是数据分析助手。优先使用 python.run 工具对用户上传的数据做统计分析"
-            "与可视化，结果图表保存到 output/ 目录并在回复中说明结论。"
-        ),
-        "tool_whitelist": ["python.run", "file.read", "file.write", "file.list"],
-        "builtin": True,
-    },
-]
-
-
-async def seed_assistants(store: Any) -> None:
-    """逐条按 _id 幂等插入种子助手（已存在的跳过，缺失的补种自愈）。
-
-    Args:
-        store: DocumentStore 实例。
-    """
-    repo = AssistantRepo(store)
-    for seed in SEED_ASSISTANTS:
-        if await store.get("assistants", seed["_id"]) is None:
-            await repo.create(dict(seed))

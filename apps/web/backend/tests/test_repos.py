@@ -10,7 +10,6 @@ from app.db.repos import (
     ProviderRepo,
     RunRepo,
     SessionRepo,
-    seed_assistants,
 )
 
 
@@ -157,41 +156,6 @@ async def test_run_repo_thin_wrapper(store):
     upd = await repo.update(doc["_id"], {"status": "completed"})
     assert upd["status"] == "completed"
     assert await repo.delete(doc["_id"]) is True
-
-
-async def test_seed_assistants_idempotent(store):
-    await seed_assistants(store)
-    await seed_assistants(store)
-    all_docs = await store.list("assistants")
-    assert len(all_docs) == 2
-
-    research = await store.get("assistants", "asst-research")
-    assert research["builtin"] is True
-    assert research["system_prompt"].startswith("你是 SynlysAgent 科研助手")
-    assert sorted(research["tool_whitelist"]) == [
-        "file.list", "file.read", "file.write", "http.request", "knowledge.search", "python.run",
-    ]
-
-    data = await store.get("assistants", "asst-data")
-    assert data["builtin"] is True
-    assert data["system_prompt"].startswith("你是数据分析助手")
-    assert "python.run" in data["tool_whitelist"]
-    assert "http.request" not in data["tool_whitelist"]
-
-    # 种子受 builtin 保护不可删
-    repo = AssistantRepo(store)
-    with pytest.raises(ValueError, match="内置助手不可删除"):
-        await repo.delete("asst-data")
-
-
-async def test_seed_assistants_self_heals_missing(store):
-    """先插 asst-research 再跑 seed：缺失的 asst-data 被补种，已有条目不被覆盖。"""
-    await store.insert("assistants",
-                       {"_id": "asst-research", "name": "已有", "builtin": True})
-    await seed_assistants(store)
-    assert await store.get("assistants", "asst-data") is not None
-    research = await store.get("assistants", "asst-research")
-    assert research["name"] == "已有"  # 已存在条目不被种子覆盖
 
 
 async def test_project_create_and_list(store):

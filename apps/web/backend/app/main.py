@@ -20,6 +20,7 @@ from app.catalog.api import router as catalog_router
 from app.catalog.items import CatalogService
 from app.catalog.loader import catalog_roots, scan_catalog
 from app.catalog.policy import CatalogPolicyRepo
+from app.catalog.seed import seed_experts
 from app.catalog.service import CapabilityService
 from app.catalog.user_caps import UserCapabilityRepo
 from app.core.settings import Settings
@@ -30,7 +31,6 @@ from app.db.repos import (
     ProviderRepo,
     RunRepo,
     SessionRepo,
-    seed_assistants,
 )
 from app.db.store import create_store
 from app.plugins import PluginConfigStore, PluginService
@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
         file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
         capability_service=app.state.capability_service,
         plugin_config_store=plugin_config_store)
-    await seed_assistants(store)
+    await seed_experts(store, index.experts)
     yield
     await store.close()
 
