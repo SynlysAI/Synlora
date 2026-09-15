@@ -95,10 +95,15 @@ async def login(body: LoginBody, request: Request,
         raise HTTPException(401, "账号已禁用")
     role = user.get("role") if user.get("role") in VALID_ROLES else "user"
     payload = {
+        # sub 必须是本方主键（AI⁴MS 文档 _id）：workspaces/会话/项目/能力安装都按它存
         "sub": str(user.get("_id", "")),
         "username": str(user.get("username", "")),
         "role": role,
     }
+    if user.get("user_id"):
+        # AI⁴MS 侧账号 id（与 _id 不同字段）：写进 payload 供代签子平台凭证时走
+        # 快路径（省掉一次 ai4ms.users 回查）；sqlite 本地用户没有该字段
+        payload["ai4ms_user_id"] = str(user["user_id"])
     return {
         "token": issue_token(payload, settings),
         "username": payload["username"],

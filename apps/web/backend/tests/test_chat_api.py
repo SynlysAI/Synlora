@@ -1054,6 +1054,57 @@ async def test_skill_index_injected_and_tools_available(
     assert skill["content"] not in prompt
 
 
+class _FakeIdentity:
+    """假 AI⁴MS 身份服务：token_for 固定返回预设值（None = 解析不到身份）。"""
+
+    def __init__(self, token: str | None) -> None:
+        """记录预设 token。"""
+        self._token = token
+        self.calls: list[dict] = []
+
+    async def token_for(self, user_payload: dict) -> str | None:
+        """记录入参并返回预设 token。"""
+        self.calls.append(user_payload)
+        return self._token
+
+
+async def test_ai4ms_token_injected_into_context_extra(app, client, admin_headers,
+                                                       monkeypatch):
+    """代签到的 AI⁴MS 凭证进 ctx.extra["ai4ms_token"]（插件优先用它）。
+
+    打桩方式：AgentService 构造时持有身份服务引用，故替换其私有属性
+    （main.py 的 lifespan 里 app.state.ai4ms_identity 与它是同一对象）。
+    """
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    fake = _FakeIdentity("minted-tok")
+    app.state.agent_service._ai4ms_identity = fake
+
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid)
+
+    assert captured[-1]["context_extra"]["ai4ms_token"] == "minted-tok"
+    assert fake.calls[-1]["sub"] == "u-admin"  # 用当轮登录用户 payload 解析
+
+
+async def test_ai4ms_token_absent_when_identity_unresolved(app, client, admin_headers,
+                                                           monkeypatch):
+    """解析不到 AI⁴MS 账号 → 不注入该键（插件回落配置里的服务 token）。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    app.state.agent_service._ai4ms_identity = _FakeIdentity(None)
+
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid)
+
+    assert "ai4ms_token" not in captured[-1]["context_extra"]
+    assert "plugins" in captured[-1]["context_extra"]  # 其余注入不受影响
+
+
 async def test_requested_skills_filter_index(app, client, admin_headers, monkeypatch):
     """chat(requested_skills=...) 只装配选中技能（索引与工具上下文同步收窄）。"""
     provider = await _bind_provider_to_asst_data(client, admin_headers)

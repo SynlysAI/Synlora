@@ -54,18 +54,21 @@ def test_tools_registered_names():
     assert sorted(tools) == ["spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"]
 
 
-def _ctx(config: dict | None) -> ToolContext:
+def _ctx(config: dict | None, ai4ms_token: str | None = None) -> ToolContext:
     """构造带插件命名空间配置的工具上下文。
 
     Args:
         config: spec_agent 插件配置（None = 未配置）。
+        ai4ms_token: 宿主按登录用户代签的 AI⁴MS 凭证（None = 未注入）。
 
     Returns:
         ToolContext。
     """
     plugins = {"spec_agent": config} if config is not None else {}
-    return ToolContext(user_id="u", run_id="r", workspace_root=None,
-                       extra={"plugins": plugins})
+    extra: dict = {"plugins": plugins}
+    if ai4ms_token is not None:
+        extra["ai4ms_token"] = ai4ms_token
+    return ToolContext(user_id="u", run_id="r", workspace_root=None, extra=extra)
 
 
 def _patch_transport(monkeypatch, handler) -> None:
@@ -114,6 +117,61 @@ async def test_empty_token_sends_no_auth_header(monkeypatch):
     _module, tools = _load_tools()
     r = await tools["spec.nmr.forward"](_ctx({"base_url": "http://spec.local"}), {"smiles_input": "CCO"})
     assert r.ok and seen["has_auth"] is False
+
+
+async def test_dynamic_token_takes_precedence_over_config(monkeypatch):
+    """宿主代签的动态 token 优先于插件配置里的服务 token（按登录用户提交）。"""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"code": 0, "message": "ok", "data": {"items": []}})
+
+    _patch_transport(monkeypatch, handler)
+    _module, tools = _load_tools()
+    r = await tools["spec.nmr.forward"](
+        _ctx({"base_url": "http://spec.local", "token": "svc-tok"}, ai4ms_token="user-tok"),
+        {"smiles_input": "CCO"})
+    assert r.ok and seen["auth"] == "Bearer user-tok"
+
+
+async def test_config_token_fallback_when_no_dynamic_token(monkeypatch):
+    """无动态 token（未注入/解析不到身份）→ 回落到配置里的服务 token。"""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(200, json={"code": 0, "message": "ok", "data": {"items": []}})
+
+    _patch_transport(monkeypatch, handler)
+    _module, tools = _load_tools()
+    r = await tools["spec.nmr.forward"](
+        _ctx({"base_url": "http://spec.local", "token": "svc-tok"}), {"smiles_input": "CCO"})
+    assert r.ok and seen["auth"] == "Bearer svc-tok"
+
+
+async def test_upstream_401_is_actionable_error(monkeypatch):
+    """上游 401 → unauthorized + 可操作提示（不再原样透出上游 body）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"detail": "未登录或登录已失效"})
+
+    _patch_transport(monkeypatch, handler)
+    _module, tools = _load_tools()
+    r = await tools["spec.nmr.forward"](
+        _ctx({"base_url": "http://x", "token": "stale"}), {"smiles_input": "CCO"})
+    assert r.ok is False and r.error == "unauthorized"
+    assert "请在管理后台" in r.content or "AI⁴MS 账号" in r.content
+
+
+async def test_upstream_403_is_actionable_error(monkeypatch):
+    """上游 403 与 401 同口径（凭证问题归一类，别让模型以为是参数错）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="Forbidden")
+
+    _patch_transport(monkeypatch, handler)
+    _module, tools = _load_tools()
+    r = await tools["spec.nmr.search"](_ctx({"base_url": "http://x"}), {"c_shifts_input": "20"})
+    assert r.ok is False and r.error == "unauthorized"
 
 
 async def test_upstream_http_error(monkeypatch):

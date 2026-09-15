@@ -36,6 +36,7 @@ from app.db.store import create_store
 from app.plugins import PluginConfigStore, PluginService
 from app.plugins.api import router as plugins_router
 from app.services.agent_service import AgentService
+from app.services.ai4ms_identity import Ai4msIdentityService
 from app.services.project_service import ProjectService
 from app.services.skill_service import SkillService
 from app.services.tool_registry import REGISTRY
@@ -106,11 +107,15 @@ async def lifespan(app: FastAPI):
     # 暴露给目录 API 与运行期（插件配置校验取 schema、用户维度解析配置）
     app.state.plugin_config_store = plugin_config_store
     app.state.plugin_packages = index.plugins
+    # AI⁴MS 身份代签：按登录用户为子平台（Spec_Agent 等）代签短效凭证，
+    # 解析不到身份（sqlite 本地用户/匿名）时插件回落自身配置的服务 token
+    app.state.ai4ms_identity = Ai4msIdentityService(settings)
     app.state.agent_service = AgentService(
         store, settings, app.state.event_repo, app.state.skill_service,
         file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
         capability_service=app.state.capability_service,
-        plugin_config_store=plugin_config_store)
+        plugin_config_store=plugin_config_store,
+        ai4ms_identity=app.state.ai4ms_identity)
     await seed_experts(store, index.experts)
     yield
     await store.close()

@@ -63,21 +63,35 @@ apps/web/backend/catalog/plugins/<id>/
 **新增一个子平台的步骤**：
 
 1. 复制 `catalog/plugins/spec_agent/`，改 `plugin.json`（`id`/`name`/`config_schema`/`tools_module`/`expert`）
-2. 写 `tools.py`（`from synlys_harness import tool, ToolContext, ToolResult`，配置走 `ctx.extra["plugins"]["<id>"]`）
+2. 写 `tools.py`（`from synlys_harness import tool, ToolContext, ToolResult`，配置走 `ctx.extra["plugins"]["<id>"]`；需要以登录用户身份调子平台时，另见下方 `ctx.extra["ai4ms_token"]` 约定）
 3. 重启服务后在插件页安装
 
 宿主与 harness 一行不用改。
 
 **已接入**：`spec_agent`（Spec_Agent 核磁预测三件套 `spec.nmr.forward/reverse/search`；安装后自动播种「谱图解析专家」；服务端未开鉴权时凭证留空）。
 
-**获取访问凭证（Spec_Agent 开启了鉴权时）**：Spec_Agent 的 token 是 HMAC-SHA256 自签、解析时回查 `ai4ms.users`（要求 `sub` 对应用户存在且 `active`），所以需要一个**已存在的 active 账号**来签长期 token（默认 12h 的登录 token 不适合做服务集成）。用仓库里的脚本一键签发：
+**访问凭证（调用 AI⁴MS 子平台的身份）**：
+
+- **可留空**：留空时平台按**登录用户**代签短效 token（要求 Synlora 的 `AUTH_SECRET` 与目标子平台一致，生产环境已满足）；填写则为**平台级服务身份**，用于兜底——用户在 AI⁴MS 侧没有账号、或子平台与本方 secret 不一致（如本地开发）时使用。缺失/失效的典型表现是工具返回 401。
+
+**按用户身份调用（插件开发约定）**：宿主在每轮对话装配时注入 `ctx.extra["ai4ms_token"]`（当前登录用户的 AI⁴MS 代签凭证，1 小时有效；解析不到身份时该键不存在）。插件应**优先用它、回落到自身配置里的服务 token**：
+
+```python
+token = str(ctx.extra.get("ai4ms_token") or config.get("token") or "")
+if token:
+    headers["Authorization"] = f"Bearer {token}"
+```
+
+之所以要按用户：异步谱图任务会按提交者归属（否则多用户任务串号）。代签走 `app/services/ai4ms_identity.py`——先从登录 token 的 `ai4ms_user_id` 快路径取（mongodb 登录时写入），否则按用户名回查 `ai4ms.users` 的 `user_id`（带进程内缓存）；失败一律静默降级为「不注入」，绝不打断对话。
+
+**获取平台级服务凭证（需要兜底身份时）**：Spec_Agent 的 token 是 HMAC-SHA256 自签、解析时回查 `ai4ms.users`（要求 `sub` 对应用户存在且 `active`），所以需要一个**已存在的 active 账号**来签长期 token（默认 12h 的登录 token 不适合做服务集成）。用仓库里的脚本一键签发：
 
 ```bash
 conda run -n synlysagent python docker/spec-agent/mint_token.py --list          # 列出可用账号
 conda run -n synlysagent python docker/spec-agent/mint_token.py --username <账号>  # 签 365 天 token
 ```
 
-脚本自动读 Spec_Agent 的 `AUTH_SECRET` / `AUTH_MONGODB_URI`（默认 `E:/github_project/Spec_Agent/backend/.env`，可用 `--env-file` 指定），Mongo 不可达时可用 `--user-id/--username/--role` 直接指定账号。签出的 token 粘进管理后台「插件」页 → Spec_Agent → 配置 → **访问凭证**（保存即生效，无需重启；轮换时重跑脚本覆盖即可）。缺 token 时的典型表现是工具返回 `401 未登录或登录已失效`。
+脚本自动读 Spec_Agent 的 `AUTH_SECRET` / `AUTH_MONGODB_URI`（默认 `E:/github_project/Spec_Agent/backend/.env`，可用 `--env-file` 指定），Mongo 不可达时可用 `--user-id/--username/--role` 直接指定账号。签出的 token 粘进管理后台「插件」页 → Spec_Agent → 配置 → **访问凭证**（保存即生效，无需重启；轮换时重跑脚本覆盖即可）。
 
 ## 能力目录与可见性（市场机制）
 

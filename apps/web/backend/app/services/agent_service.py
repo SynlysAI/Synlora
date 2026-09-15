@@ -81,7 +81,7 @@ class AgentService:
     def __init__(self, store: Any, settings: Any, event_repo: Any,
                  skill_service: SkillService, file_repo: Any = None,
                  plugin_service: Any = None, capability_service: Any = None,
-                 plugin_config_store: Any = None) -> None:
+                 plugin_config_store: Any = None, ai4ms_identity: Any = None) -> None:
         """保存依赖。
 
         Args:
@@ -94,6 +94,8 @@ class AgentService:
             capability_service: 能力目录可见性服务（None = 不过滤，保持旧行为）。
             plugin_config_store: 插件配置存储（按用户维度解析插件配置）；None 时
                 fail-closed 不注入任何插件配置（工具报"未配置"）。
+            ai4ms_identity: AI⁴MS 身份代签服务（按登录用户代签子平台凭证）；
+                None 时不注入 ai4ms_token（插件回落自身配置的服务 token）。
         """
         self._store = store
         self._settings = settings
@@ -103,6 +105,7 @@ class AgentService:
         self._plugin_service = plugin_service
         self._capability_service = capability_service
         self._plugin_config_store = plugin_config_store
+        self._ai4ms_identity = ai4ms_identity
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
@@ -165,6 +168,20 @@ class AgentService:
                 # 解密失败：跳过该插件（工具会报未配置），不打挂整轮
                 continue
         return out
+
+    async def _ai4ms_token_extra(self, user: dict) -> dict:
+        """当前用户的 AI⁴MS 代签凭证（取不到则空 dict，由插件回落到服务 token）。
+
+        Args:
+            user: 当前登录用户的 token payload。
+
+        Returns:
+            {"ai4ms_token": "<token>"} 或 {}。
+        """
+        if self._ai4ms_identity is None:
+            return {}
+        token = await self._ai4ms_identity.token_for(user)
+        return {"ai4ms_token": token} if token else {}
 
     def _jsonl_path(self, session_id: str) -> Path:
         """会话事件文件路径（父目录自动创建）。
@@ -403,6 +420,8 @@ class AgentService:
                     # 核心不认识任何插件专属字段）
                     "plugins": (await self._visible_plugin_configs(user["sub"])
                                 if self._plugin_service is not None else {}),
+                    # 按登录用户代签的 AI⁴MS 身份凭证（插件优先用它，取不到则用插件配置里的服务 token）
+                    **await self._ai4ms_token_extra(user),
                 },
             )
             active.session = session

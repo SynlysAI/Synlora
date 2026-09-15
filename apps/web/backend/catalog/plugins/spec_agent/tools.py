@@ -91,7 +91,7 @@ async def _call_nmrserver(ctx: ToolContext, path: str, payload: dict) -> ToolRes
     Returns:
         ToolResult：content 为逐条 JSON（items）或"（未返回结果）"；失败时
         error 为 spec_agent_unconfigured / timeout / connection_error /
-        http_error / upstream_error。
+        unauthorized / http_error / upstream_error。
     """
     config = _config(ctx)
     base_url = str(config.get("base_url") or "").rstrip("/")
@@ -102,7 +102,9 @@ async def _call_nmrserver(ctx: ToolContext, path: str, payload: dict) -> ToolRes
             error="spec_agent_unconfigured",
         )
     headers: dict[str, str] = {}
-    token = str(config.get("token") or "")
+    # 凭证顺序：宿主按登录用户代签的动态 token 优先（任务按用户归属），
+    # 取不到再回落插件配置里的平台级服务 token（用户在 AI⁴MS 侧无账号时兜底）
+    token = str(ctx.extra.get("ai4ms_token") or config.get("token") or "")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
@@ -115,6 +117,15 @@ async def _call_nmrserver(ctx: ToolContext, path: str, payload: dict) -> ToolRes
         return ToolResult(ok=False, content=f"无法连接谱图服务: {exc}", error="connection_error")
     except httpx.HTTPError as exc:
         return ToolResult(ok=False, content=f"谱图服务请求失败: {exc}", error="http_error")
+    if resp.status_code in (401, 403):
+        # 凭证问题单列：上游 body（"未登录或登录已失效"）对用户/模型都不可操作，
+        # 这里给出两条实际出路，并提示模型别把它当成参数错误反复重试
+        return ToolResult(
+            ok=False,
+            content=("访问凭证无效或已过期（或当前账号在 AI⁴MS 侧不存在/被停用）。"
+                     "管理员可在管理后台「插件」页更新访问凭证；个人身份问题请联系管理员核对 AI⁴MS 账号。"),
+            error="unauthorized",
+        )
     if resp.status_code != 200:
         return ToolResult(
             ok=False,

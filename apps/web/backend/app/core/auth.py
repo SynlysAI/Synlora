@@ -60,6 +60,36 @@ def issue_token(payload: dict[str, Any], settings: Settings) -> str:
     return f"{payload_b64}.{sig}"
 
 
+def mint_ai4ms_token(user_id: str, username: str, role: str,
+                     settings: Settings, ttl_hours: int = 1) -> str:
+    """为某 AI⁴MS 账号代签一个短效 token（供调用 AI⁴MS 子平台用）。
+
+    与 issue_token 的算法一致（`{payload_b64}.{hmac_hex}`）；差别只在于 sub 用
+    AI⁴MS 的 `user_id` 字段、且有效期短（默认 1 小时）——子平台会验签并回查
+    ai4ms 用户库，因此要求本方 AUTH_SECRET 与目标子平台一致。
+
+    Args:
+        user_id: AI⁴MS 用户库里的 `user_id`（形如 u_xxx）。
+        username: 用户名。
+        role: AI⁴MS 侧角色（admin|user）。
+        settings: 应用配置（取 AUTH_SECRET）。
+        ttl_hours: 有效期小时数。
+
+    Returns:
+        `{payload_b64}.{hmac_hex}` 形式的 token。
+    """
+    now = int(time.time())
+    body = {
+        "sub": user_id, "username": username, "role": role,
+        "iat": now, "exp": now + max(1, int(ttl_hours)) * 3600,
+    }
+    payload_b64 = base64.urlsafe_b64encode(
+        json.dumps(body, ensure_ascii=False).encode()
+    ).decode().rstrip("=")
+    sig = hmac.new(_secret(settings), payload_b64.encode(), hashlib.sha256).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+
 def hash_password(password: str, salt_hex: str | None = None) -> str:
     """PBKDF2-SHA256 密码哈希（AI4MS 兼容格式 pbkdf2_sha256$260000$salt$hash）。
 
