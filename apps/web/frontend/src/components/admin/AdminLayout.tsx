@@ -1,8 +1,8 @@
 /**
- * 管理页布局：顶栏（返回工作台 + 页签切换 + 主题切换 + 用户名）+ 内容区。
+ * 管理页布局：顶栏（返回工作台 + 管理后台 + 主题切换 + 用户名）+ 左导航 + 内容区。
  *
- * 路径路由 /admin/models | /admin/assistants | /admin/skills | /admin/plugins
- * 由 App.tsx 解析后传入 tab；
+ * 路径路由 /admin/general | /admin/models | /admin/assistants | /admin/skills | /admin/plugins
+ * 由 App.tsx 解析后传入 tab；滚动只发生在右侧内容区（照 DSH SettingsRoot）；
  * 非 admin 渲染无权限页（菜单入口已隐藏，此处为直链访问兜底）。
  */
 import type { ReactNode } from 'react'
@@ -14,6 +14,7 @@ import { useDarkTheme } from '@/utils/theme'
 
 /** 页签定义：key + 路由 + 展示名。 */
 const TABS: Array<{ key: AdminTab; label: string }> = [
+  { key: 'general', label: '常规' },
   { key: 'models', label: '模型服务' },
   { key: 'assistants', label: '助手管理' },
   { key: 'skills', label: '技能管理' },
@@ -62,7 +63,7 @@ function NoPermission() {
 interface AdminLayoutProps {
   /** 当前页签（App.tsx 按 hash 解析）。 */
   tab: AdminTab
-  /** 页签内容（ModelsAdmin / AssistantsAdmin / SkillsAdmin / PluginsAdmin）。 */
+  /** 页签内容（GeneralAdmin / ModelsAdmin / AssistantsAdmin / SkillsAdmin / PluginsAdmin）。 */
   children: ReactNode
 }
 
@@ -104,28 +105,6 @@ export default function AdminLayout({ tab, children }: AdminLayoutProps) {
         </span>
         <h1 className="text-[14px] font-medium tracking-tight">管理后台</h1>
 
-        {/* 页签切换 */}
-        <nav className="ml-2 flex items-center gap-1" aria-label="管理页切换">
-          {TABS.map((t) => (
-            <a
-              key={t.key}
-              href={appRoutePath({ kind: 'admin', tab: t.key })}
-              aria-current={t.key === tab ? 'page' : undefined}
-              onClick={(e) => {
-                e.preventDefault()
-                navigate({ kind: 'admin', tab: t.key })
-              }}
-              className={`rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
-                t.key === tab
-                  ? 'bg-[var(--sa-specific-sidebar-nav-item-active)] font-medium text-[var(--sa-alias-label-primary)]'
-                  : 'text-[var(--sa-alias-label-secondary)] hover:bg-[var(--sa-alias-interactive-bg-hover)]'
-              }`}
-            >
-              {t.label}
-            </a>
-          ))}
-        </nav>
-
         <div className="flex-1" />
         <button
           type="button"
@@ -154,14 +133,43 @@ export default function AdminLayout({ tab, children }: AdminLayoutProps) {
         )}
       </header>
 
-      {/* 内容区：居中定宽容器，页面自行滚动 */}
-      <main className="min-h-0 flex-1 overflow-y-auto">
+      {/* 内容区：左导航 + 右侧内容（滚动只在右侧，照 DSH SettingsRoot） */}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
         {user?.role === 'admin' ? (
-          <div className="mx-auto w-full max-w-4xl px-6 py-6">{children}</div>
+          <>
+            <nav
+              aria-label="管理页切换"
+              className="flex w-[188px] shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--sa-alias-border-l1)] p-3"
+            >
+              {TABS.map((t) => (
+                <a
+                  key={t.key}
+                  href={appRoutePath({ kind: 'admin', tab: t.key })}
+                  aria-current={t.key === tab ? 'page' : undefined}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    navigate({ kind: 'admin', tab: t.key })
+                  }}
+                  className={`flex h-10 items-center truncate rounded-[var(--sa-radius-md)] px-3 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
+                    t.key === tab
+                      ? 'bg-[var(--sa-specific-sidebar-nav-item-active)] font-medium text-[var(--sa-alias-label-primary)]'
+                      : 'text-[var(--sa-alias-label-secondary)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)]'
+                  }`}
+                >
+                  {t.label}
+                </a>
+              ))}
+            </nav>
+            <main className="min-h-0 flex-1 overflow-y-auto">
+              <div className="mx-auto w-full max-w-4xl px-6 py-6">{children}</div>
+            </main>
+          </>
         ) : (
-          <NoPermission />
+          <main className="min-h-0 flex-1 overflow-y-auto">
+            <NoPermission />
+          </main>
         )}
-      </main>
+      </div>
 
       {/* 全局 toast */}
       <ToastHost />

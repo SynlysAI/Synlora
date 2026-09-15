@@ -5,12 +5,12 @@
  * chat-session / not-found 三态），扩展了本项目的管理页路径：
  * - `/`、`/chat`、`/chat/new` → 新对话草稿态
  * - `/chat/<id>`             → 指定会话（URL 是会话选中态的唯一事实源）
- * - `/admin/<tab>`           → 管理后台四页签
+ * - `/admin/<tab>`           → 管理后台五页签
  * - 其余                     → not-found
  */
 
-/** 管理页页签（模型服务/助手管理/技能管理/插件）。 */
-export type AdminTab = 'models' | 'assistants' | 'skills' | 'plugins'
+/** 管理页页签（常规/模型服务/助手管理/技能管理/插件）。 */
+export type AdminTab = 'general' | 'models' | 'assistants' | 'skills' | 'plugins'
 
 /** 应用路由（判别联合，kind 即分支）。 */
 export type AppRoute =
@@ -33,7 +33,7 @@ export function parseAppRoute(pathname: string): AppRoute {
   if (path === '/' || path === '/chat' || path === '/chat/new') return { kind: 'chat-new' }
   const chatMatch = path.match(/^\/chat\/([^/]+)$/)
   if (chatMatch) return { kind: 'chat-session', sessionId: decodeURIComponent(chatMatch[1]) }
-  const adminMatch = path.match(/^\/admin\/(models|assistants|skills|plugins)$/)
+  const adminMatch = path.match(/^\/admin\/(general|models|assistants|skills|plugins)$/)
   if (adminMatch) return { kind: 'admin', tab: adminMatch[1] as AdminTab }
   return { kind: 'not-found', pathname }
 }
