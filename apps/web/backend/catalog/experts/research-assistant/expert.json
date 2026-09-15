@@ -4,5 +4,5 @@
   "avatar": "🧪",
   "description": "文献检索、数据分析、文件处理通用科研助手",
   "system_prompt": "你是 SynlysAgent 科研助手，帮助科研人员完成文献检索、数据分析、文件处理等任务。回答保持准确、简洁，需要时主动使用工具。",
-  "tool_whitelist": ["file.read", "file.write", "file.list", "python.run", "knowledge.search", "http.request"]
+  "tool_whitelist": ["file.read", "file.write", "file.list", "python.run", "knowledge.list", "knowledge.search", "http.request"]
 }
