@@ -152,7 +152,7 @@ export interface Session {
   message_count: number
   /** 会话级模型覆盖（null = 跟随助手绑定；前端用户在输入区可切换）。 */
   model_provider_id: string | null
-  /** 会话绑定的项目 id（创建时可选传入；旧会话可能缺该字段）。 */
+  /** 会话绑定的项目 id（null/缺省 = 无工作区会话，会话目录 sessions/{id} 即工作区）。 */
   project_id?: string | null
   created_at: number
   updated_at: number
@@ -163,8 +163,12 @@ export interface FileDoc {
   _id: string
   user_id: string
   filename: string
-  /** 相对用户工作区根的存储路径（files/ 沙箱内）。 */
+  /** 相对所属根（项目或会话目录）的存储路径（files/ 沙箱内）。 */
   stored_path: string
+  /** 归属项目 id（与会话归属互斥：两者取一）。 */
+  project_id?: string | null
+  /** 归属会话 id（无工作区会话的文件，随会话删除一并清理）。 */
+  session_id?: string | null
   size: number
   mime: string
   created_at: number

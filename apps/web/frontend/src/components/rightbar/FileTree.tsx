@@ -1,17 +1,18 @@
 /**
- * 项目目录树（右栏工作区）。
+ * 目录树（右栏工作区）：项目目录或无工作区会话目录（treeBase 决定取数端点）。
  *
  * 结构照抄 DSH ui-sidebar-files 的 FilesBody.tsx：
  * - 嵌套 DOM 递归：每层一个 <ul>，只渲染一级条目，展开的目录内再嵌 <ul>；
- * - 每层组件自己发请求：Level 挂载时才 GET /api/v1/projects/{pid}/tree?path=…
- *   （折叠即不再请求，展开态与各层数据缓存在根组件，收起再展开不重复请求）；
+ * - 每层组件自己发请求：Level 挂载时才 GET {treeBase}?path=…
+ *   （项目 /api/v1/projects/{pid}/tree、会话 /api/v1/sessions/{sid}/tree；
+ *   折叠即不再请求，展开态与各层数据缓存在根组件，收起再展开不重复请求）；
  * - 排序与 DSH `orderEntries` 逐行对应：目录优先，同级用 Intl.Collator 自然排序；
- * - 顶部根行 = 项目名 + 刷新（DSH 的 header 行：目录灰、末段全墨；刷新丢弃
+ * - 顶部根行 = 根名 + 刷新（DSH 的 header 行：目录灰、末段全墨；刷新丢弃
  *   各层缓存并重新取已展开的层）。
  * 与 DSH 的差异：文件行不可点击打开（本项目暂无文件查看器），改为展示大小；
- * 切换项目由调用方以 key={projectId} 重挂载整棵树（等价于 DSH 按 tab 分桶）。
+ * 切换树根由调用方以 key={treeBase} 重挂载整棵树（等价于 DSH 按 tab 分桶）。
  *
- * 文件行操作：文件记录只覆盖该项目 files/ 下的上传文件（output/、tmp/ 无记录），
+ * 文件行操作：文件记录只覆盖该根 files/ 下的上传文件（output/、tmp/ 无记录），
  * 故仅当条目的 path 能对上一条记录（stored_path）时，hover 才出现下载/删除两个
  * 图标按钮（样式照抄旧 FilesPanel 的 FileRow）；其余文件行只展示大小。
  */
@@ -324,9 +325,9 @@ function Level({ path, tree }: { path: string; tree: TreeContext }): ReactNode {
 }
 
 interface FileTreeProps {
-  /** 当前项目 id（null 表示尚未选中项目）。 */
-  projectId: string | null
-  /** 项目名（顶部根行展示）。 */
+  /** 目录树端点前缀（项目 /api/v1/projects/{pid}/tree 或会话 /api/v1/sessions/{sid}/tree；null 表示无目标）。 */
+  treeBase: string | null
+  /** 根名（顶部根行展示：项目名或会话名）。 */
   rootName: string
   /** 外部刷新信号（递增即丢弃各层缓存重取，如上传成功）。 */
   refreshToken?: number
@@ -340,9 +341,9 @@ interface FileTreeProps {
   onDropFiles?: (files: File[]) => void
 }
 
-/** 项目目录树组件（右栏工作区下半部）。 */
+/** 目录树组件（右栏工作区下半部，项目目录或会话目录）。 */
 export default function FileTree({
-  projectId,
+  treeBase,
   rootName,
   refreshToken = 0,
   records = new Map<string, FileDoc>(),
@@ -365,8 +366,8 @@ export default function FileTree({
     setVersion((v) => v + 1)
   }, [])
 
-  // 切换项目不走这里：调用方以 key={projectId} 重挂载整棵树（展开态与缓存
-  // 天然清空，且不会先用新项目请求一次再被父级清掉）。
+  // 切换树根不走这里：调用方以 key={treeBase} 重挂载整棵树（展开态与缓存
+  // 天然清空，且不会先用新根请求一次再被父级清掉）。
 
   // 外部刷新信号：只丢缓存，保留展开态
   const lastRefresh = useRef(refreshToken)
@@ -379,11 +380,11 @@ export default function FileTree({
   /** 请求某层（已请求过或已缓存则直接返回）。 */
   const ensure = useCallback(
     (path: string) => {
-      if (!projectId || requested.current.has(path)) return
+      if (!treeBase || requested.current.has(path)) return
       requested.current.add(path)
       setLevels((prev) => ({ ...prev, [path]: { kind: 'loading' } }))
       const query = path ? `?path=${encodeURIComponent(path)}` : ''
-      api<TreeEntry[]>(`/api/v1/projects/${projectId}/tree${query}`)
+      api<TreeEntry[]>(`${treeBase}${query}`)
         .then((entries) => {
           setLevels((prev) => ({ ...prev, [path]: { kind: 'ready', entries } }))
         })
@@ -391,7 +392,7 @@ export default function FileTree({
           setLevels((prev) => ({ ...prev, [path]: { kind: 'failed', message: err.message } }))
         })
     },
-    [projectId],
+    [treeBase],
   )
 
   /** 展开/收起目录。 */

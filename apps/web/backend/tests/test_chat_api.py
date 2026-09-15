@@ -895,7 +895,8 @@ async def test_session_binds_project_and_uses_project_workspace(client, user_hea
 
 async def test_session_without_project_id_compatible(app, client, admin_headers,
                                                      user_headers, monkeypatch):
-    """不传 project_id：会话照常创建（project_id 为 None），发消息回落默认项目仍正常收尾。"""
+    """不传 project_id：会话照常创建（project_id 为 None），发消息不回落任何项目——
+    会话目录 sessions/{sid} 自身为工作区（files/tmp 就绪），且不补种默认项目。"""
     await _bind_provider_to_asst_data(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
     FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
@@ -907,14 +908,18 @@ async def test_session_without_project_id_compatible(app, client, admin_headers,
 
     sid = r.json()["_id"]
     await _chat_once(client, user_headers, sid)
-    # 老会话发消息时自动补种了默认项目（后续会话有项目可挂）
+    # 未绑定会话不再补种默认项目，project_id 保持 None（前端据此归入未分组区）
     projects = await app.state.project_service.list_projects("u-user")
-    assert len(projects) == 1
+    assert projects == []
+    doc = await app.state.store.get("sessions", sid)
+    assert doc.get("project_id") is None
 
-    # 反向断言（普通用户视角，与上面签 admin token 的用例互补）：事件落本人目录
+    # 反向断言（普通用户视角，与上面签 admin token 的用例互补）：事件落本人目录；
+    # 会话目录同时是工作区（files/output/tmp 已建）
     data_root = app.state.settings.data_root
     sid_dir = data_root / "users" / "u-user" / "sessions" / sid
     assert (sid_dir / "events.jsonl").exists()
+    assert (sid_dir / "files").is_dir() and (sid_dir / "tmp").is_dir()
     # 没落进他人（admin）目录
     assert not (data_root / "users" / "u-admin" / "sessions" / sid).exists()
     # 旧的扁平路径不再写入
@@ -963,13 +968,50 @@ async def test_agent_workspace_is_project_root(app, client, admin_headers,
     assert captured[-1].parent == user_dir
     assert (captured[-1] / "tmp").is_dir()  # python.run 的 cwd 落在项目内
 
-    # 2) 未绑定项目（老会话/项目已删）→ 回落第一个可用项目，仍不是用户目录
+    # 2) 未绑定项目（不选工作区）→ 会话目录自身为工作区，绝不回落别的项目
     sid2 = (await client.post("/api/v1/sessions", headers=user_headers,
                               json={"assistant_id": "asst-data"})).json()["_id"]
     await _chat_once(client, user_headers, sid2, "第二问")
-    projects = await app.state.project_service.list_projects("u-user")
-    assert captured[-1] == app.state.project_service.root_for(projects[0])
+    sessions_dir = app.state.settings.data_root / "users" / "u-user" / "sessions"
+    assert captured[-1] == sessions_dir / sid2
     assert captured[-1] != user_dir
+    assert (captured[-1] / "tmp").is_dir()  # python.run 的 cwd 落在会话目录内
+
+
+async def test_attachment_copied_into_session_root(app, client, admin_headers,
+                                                   user_headers, monkeypatch):
+    """草稿态附件落项目、会话无绑定：发送时复制进会话目录（跨根），原件不动。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+
+    # 草稿态上传：落当时选中的项目（前端 WorkspacePicker 行为）
+    pid = await _make_project(client, user_headers, "暂存项目")
+    up = await client.post(f"/api/v1/projects/{pid}/files", headers=user_headers,
+                           files=[("files", ("draft.csv", b"a\n1", "text/csv"))])
+    assert up.status_code == 201, up.text
+    fid = up.json()["results"][0]["file"]["_id"]
+
+    # 无绑定会话发消息带附件：agent 工作根是会话目录，附件须复制进去
+    sid = (await client.post("/api/v1/sessions", headers=user_headers,
+                             json={"assistant_id": "asst-data"})).json()["_id"]
+    r = await client.post(f"/api/v1/sessions/{sid}/messages", headers=user_headers,
+                          json={"text": "分析附件", "attachments": [{"file_id": fid}]})
+    assert r.status_code == 200, r.text
+    events = parse_sse(r.text)
+    user_ev = next(e for t, e in events if t == "user/message")
+    att = user_ev["payload"]["attachments"][0]
+    sid_dir = app.state.settings.data_root / "users" / "u-user" / "sessions" / sid
+    assert att["path"] == f"files/{att['filename']}"
+    assert (sid_dir / att["path"]).read_bytes() == b"a\n1"
+    # 副本记录带 session_id 归属；原件仍在项目里
+    clone = await app.state.store.get("files", att["file_id"])
+    assert clone["session_id"] == sid
+    origin = await app.state.store.get("files", fid)
+    assert origin["project_id"] == pid
+    proj_root = app.state.project_service.root_for(
+        await app.state.project_service.get("u-user", pid))
+    assert (proj_root / "files" / "draft.csv").exists()
 
 
 # ---------- 平台提示词装配 / 技能渐进披露 ----------
@@ -1242,10 +1284,10 @@ async def test_concurrent_resolve_seeds_single_default_project(app):
 
 async def test_foreign_project_id_rejected_and_fallback_stays_own(
         app, client, admin_headers, user_headers, monkeypatch):
-    """他人/不存在的 project_id：建会话 404；会话被塞他人 pid 时回落本人项目并写回。
+    """他人/不存在的 project_id：建会话 404；会话被塞他人 pid 时运行在会话目录并清掉脏 pid。
 
-    运行时靠回落兜住（不串到他人目录），但数据必须干净：脏 pid 既不落库（I-3），
-    也不让下一轮继续漂移（回落后写回会话，I-2）。
+    运行时不串他人目录、也不回落本人其它项目（未绑定的选择必须被尊重），且数据
+    干净：脏 pid 既不落库（I-3），也不让下一轮继续带着失效绑定跑（写回 None，I-2）。
     """
     admin_pid = await _make_project(client, admin_headers, "管理员项目")
     for pid in (admin_pid, "no-such-project"):
@@ -1255,7 +1297,7 @@ async def test_foreign_project_id_rejected_and_fallback_stays_own(
     # 校验失败不产生副作用：该用户没有任何会话落库
     assert await app.state.store.list("sessions", filters={"user_id": "u-user"}) == []
 
-    # 脏数据路径：直接把他人 pid 塞进会话文档，运行时必须回落到本人项目
+    # 脏数据路径：直接把他人 pid 塞进会话文档，运行时必须落在本人会话目录
     await _bind_provider_to_asst_data(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
     FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
@@ -1283,12 +1325,15 @@ async def test_foreign_project_id_rejected_and_fallback_stays_own(
     monkeypatch.setattr(agent_service_mod, "RunSession", _capturing_run_session)
     await _chat_once(client, user_headers, sid)
 
-    assert captured[-1] == app.state.project_service.root_for(
-        await app.state.project_service.get("u-user", my_pid))
+    sessions_dir = app.state.settings.data_root / "users" / "u-user" / "sessions"
+    assert captured[-1] == sessions_dir / sid  # 会话目录为工作区，不回落本人项目
     assert "u-admin" not in captured[-1].parts  # 没跑进他人目录
-    # 回落后写回会话文档：后续轮次稳定命中本人项目
+    my_root = app.state.project_service.root_for(
+        await app.state.project_service.get("u-user", my_pid))
+    assert captured[-1] != my_root
+    # 失效绑定写回 None：后续轮次稳定命中会话目录，前端归入未分组区
     doc = await app.state.store.get("sessions", sid)
-    assert doc["project_id"] == my_pid
+    assert doc["project_id"] is None
 
 
 # ---------- 切换专家（PATCH assistant_id） ----------
@@ -1912,15 +1957,16 @@ async def test_file_send_end_to_end(app, client, admin_headers, monkeypatch):
     SendFileFakeBackend.calls = 0
     sid = await _make_session(client, admin_headers)
 
-    # 先启动 run，再从 run 记录取 user 解析其默认工作区，预置产物后等服务完成
+    # 先启动 run，再从 run 记录取 user 定位会话目录（无绑定会话的工作区），
+    # 预置产物后等服务完成
     task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
                                            headers=admin_headers,
                                            json={"text": "给我报告"}))
     run_id = (await _wait_for_running_runs(app, 1))[0]
     run_doc = await app.state.store.get("runs", run_id)
-    projects = await app.state.project_service.list_projects(run_doc["user_id"])
-    root = app.state.project_service.root_for(projects[0])
-    out_dir = root / "output"
+    sid_dir = (app.state.settings.data_root / "users" / run_doc["user_id"]
+               / "sessions" / sid)
+    out_dir = sid_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.md").write_text("# 报告\n测试产物", encoding="utf-8")
     resp = await asyncio.wait_for(task, timeout=15)

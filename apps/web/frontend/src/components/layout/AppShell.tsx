@@ -16,7 +16,7 @@ import { Sidebar } from '@/components/sidebar'
 import { useAuthStore } from '@/stores/auth'
 import { useRouterStore } from '@/routing/router'
 import { FolderIcon } from '@/components/sidebar/icons'
-import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
+import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { useDarkTheme } from '@/utils/theme'
 
@@ -309,12 +309,9 @@ function ChatToolbar({
   const title = session?.title || '新对话'
   const projects = useProjectsStore((s) => s.projects)
   // 工作区取**会话绑定**的那个（session.project_id），而输入框里的选择器管的是
-  // 「下一个新会话去哪儿」，两者不是一回事。会话未绑定（旧会话）或绑定的工作区
-  // 已删时回落到默认工作区，与 Sidebar 的归组口径一致。
-  const workspace =
-    projects.find((p) => p._id === session?.project_id) ??
-    projects.find((p) => p.dir_name === DEFAULT_PROJECT_DIR) ??
-    null
+  // 「下一个新会话去哪儿」，两者不是一回事。未绑定（不选工作区）或绑定的工作区
+  // 已删时不显示工作区 chip（会话目录即工作区），与 Sidebar 未分组区口径一致。
+  const workspace = projects.find((p) => p._id === session?.project_id) ?? null
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-[var(--sa-alias-border-l1)] px-3">

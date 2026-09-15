@@ -215,7 +215,8 @@ class AgentService:
                    provider_cfg: ModelProviderConfig, text: str,
                    workspace_root: Path,
                    requested_skills: list[str] | None = None,
-                   attachments: list[dict] | None = None) -> str:
+                   attachments: list[dict] | None = None,
+                   file_ownership: dict | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
@@ -228,14 +229,17 @@ class AgentService:
                 表示未选专家——无 persona、工具放开全部内置工具。
             provider_cfg: 已解密的模型服务配置。
             text: 用户消息文本。
-            workspace_root: 工作区根目录（项目目录，由调用方经
-                ProjectService.resolve_active_project + root_for 解析后必传）。
-                必填而非回落用户目录：C6 把文件也项目作用域化后，用户目录下不会
+            workspace_root: 工作区根目录（会话绑定项目 = 项目目录；无绑定 =
+                sessions/{sid} 会话目录，由调用方解析后必传）。
+                必填而非回落用户目录：文件按工作根作用域化后，用户目录下不会
                 再有 files/，静默回落等于把 run 跑在错误目录。
             requested_skills: 本会话选中的技能名列表；None 或空列表表示全部可用。
             attachments: 随消息发送的附件元数据（[{file_id, filename, path}]，
-                path 为相对 workspace_root 的路径；调用方保证文件已在该项目内）。
+                path 为相对 workspace_root 的路径；调用方保证文件已在该根内）。
                 None/空 = 无附件。
+            file_ownership: 交付/复制产生的文件记录归属字段（{"project_id": pid}
+                或 {"session_id": sid}，与 workspace_root 对应）；None = 不带归属
+                （历史口径，下载按磁盘位置解析）。
 
         Returns:
             run_id。
@@ -393,10 +397,11 @@ class AgentService:
                     "args_preview": preview,
                 })
 
-            # file.send：复制产物进项目 files/ 沙箱 → 登记 files 集合 → 发事件
+            # file.send：复制产物进工作根 files/ 沙箱 → 登记 files 集合 → 发事件
             async def send_file_handler(payload: dict) -> ToolResult:
                 return await self._deliver_file(active, log, workspace_root,
-                                                user["sub"], payload)
+                                                user["sub"], payload,
+                                                ownership=file_ownership)
 
             session = RunSession(
                 config=AgentConfig(
@@ -559,8 +564,9 @@ class AgentService:
 
     async def _deliver_file(self, active: "ActiveRun", log: EventLog,
                             workspace_root: Path, user_id: str,
-                            payload: dict) -> ToolResult:
-        """file.send 宿主侧：产物复制进项目 files/ → 登记 files 集合 → 发 file/send 事件。
+                            payload: dict,
+                            ownership: dict | None = None) -> ToolResult:
+        """file.send 宿主侧：产物复制进工作根 files/ → 登记 files 集合 → 发 file/send 事件。
 
         复制而非登记原路径：下载端点的 stored_path 安全校验要求文件落在
         files/ 沙箱内（与上传同一约束），登记任意路径会被 404 拒绝。
@@ -571,6 +577,8 @@ class AgentService:
             workspace_root: 工作区根。
             user_id: 用户 sub。
             payload: 工具入参（path/note/tool_call_id）。
+            ownership: 文件记录归属字段（project_id/session_id）；None = 不带
+                归属（历史口径，下载按磁盘位置解析）。
 
         Returns:
             工具结果（成功 content 为给 LLM 的确认文本）。
@@ -602,6 +610,7 @@ class AgentService:
         size = target.stat().st_size
         doc = await self._file_repo.create({
             "user_id": user_id,
+            **(ownership or {}),
             "filename": target.name,
             "stored_path": target.relative_to(workspace_root).as_posix(),
             "size": size,

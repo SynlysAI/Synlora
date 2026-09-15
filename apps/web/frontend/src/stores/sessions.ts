@@ -2,8 +2,8 @@
  * 会话列表 store：CRUD 与当前选中态。
  *
  * 列表按 updated_at 倒序（后端排序）；create 成功后置为当前会话。
- * `create` 缺省不指定 project_id，由后端回落到默认工作区（侧栏「新会话」
- * 与「会话」组 `+` 都走这条路径）。
+ * `create` 缺省不指定 project_id = 无工作区会话（会话目录即工作区；侧栏顶部
+ * 「新会话」走这条路径，工作区行 `+` 传 projectId 走绑定路径）。
  * remove 删除当前会话时清空 currentId（由面板层决定后续引导）。
  */
 import { create } from 'zustand'
@@ -14,7 +14,7 @@ import { api } from '@/api/client'
 export interface CreateSessionOptions {
   /** 会话标题（缺省空串，首轮对话后由后端自动命名）。 */
   title?: string
-  /** 绑定的工作区 id；缺省不传该字段，由后端回落到默认工作区。 */
+  /** 绑定的工作区 id；缺省不传该字段 = 无工作区会话（会话目录即工作区）。 */
   projectId?: string | null
   /** 会话级模型 provider id；缺省不传该字段（= 跟随助手绑定）。 */
   modelProviderId?: string | null
@@ -70,7 +70,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
 
   create: async (assistantId, options = {}) => {
     const { title = '', projectId = null, modelProviderId = null } = options
-    // 缺省的字段一律不传：project_id 由后端回落默认工作区，
+    // 缺省的字段一律不传：不传 project_id = 无工作区会话（会话目录即工作区），
     // model_provider_id 不传 = 跟随助手绑定
     const session = await api<Session>('/api/v1/sessions', {
       method: 'POST',

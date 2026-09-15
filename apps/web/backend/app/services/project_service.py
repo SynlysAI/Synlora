@@ -349,7 +349,22 @@ class ProjectService:
         # 一处 resolve、两侧同源：resolve_in_project 内部也用 root.resolve() 判边界，
         # 再拿它做 entry.relative_to(root) 的相对基准。data_root 默认是相对路径
         # （settings.data_dir = "../data"），未解析时 relative_to 必抛 ValueError。
-        root = self.root_for(project).resolve()
+        return self.list_dir_under(self.root_for(project).resolve(), rel)
+
+    @staticmethod
+    def list_dir_under(root: Path, rel: str) -> list[dict]:
+        """列出某根目录内一级条目（项目树与会话树共用的底层）。
+
+        Args:
+            root: 根目录（已 resolve；越界判定与相对路径基准都以它为准）。
+            rel: 相对根的目录路径（空串表示根）。
+
+        Returns:
+            条目列表，每项含 name/path/is_dir/size/mtime；目录在前、同级按名排序。
+
+        Raises:
+            ValueError: 路径越界、或目标不是目录。
+        """
         target = workspace.resolve_in_project(root, rel)
         if not target.is_dir():
             raise ValueError("不是目录")

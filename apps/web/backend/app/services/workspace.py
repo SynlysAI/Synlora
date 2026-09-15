@@ -140,6 +140,33 @@ def public_skills_root(data_root: Path) -> Path:
     return data_root / "public" / "skills"
 
 
+def session_root(data_root: Path, user_id: str, session_id: str) -> Path:
+    """无工作区会话的运行根（自动创建 files/output/tmp，结构与项目目录一致）。
+
+    不选工作区的会话（project_id 为空）以 `sessions/{sid}` 自身为 agent 工作区：
+    python.run 的 cwd、沙箱挂载点、上传附件的落点都在这里；删除会话即整目录移除。
+    sid 由本系统生成（无路径成分），但仍按 project_root 同口径守卫，防脏数据越界。
+
+    Args:
+        data_root: 数据根目录。
+        user_id: 用户 sub。
+        session_id: 会话 id。
+
+    Returns:
+        {data_root}/users/{user_id}/sessions/{session_id} 路径。
+
+    Raises:
+        ValueError: session_id 为空、为 . / .. 或含路径分隔符（防止越界写出用户目录）。
+    """
+    if (not session_id or session_id in {".", ".."}
+            or "/" in session_id or "\\" in session_id):
+        raise ValueError(f"非法会话 id: {session_id!r}")
+    root = user_sessions_root(data_root, user_id) / session_id
+    for sub in PROJECT_SUBDIRS:
+        (root / sub).mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def user_skills_root(data_root: Path, user_id: str) -> Path:
     """用户自建技能根。
 

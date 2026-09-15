@@ -3,22 +3,20 @@
  *
  * 分组层级照抄 jiuwenswarm `multi-session/sidebar/ConversationSidebar.tsx`
  * 1363-1461 行（`__body` 内两个 `conversation-sidebar__group`）：
- * - 「工作区」组只列**非默认**工作区（默认工作区由「会话」组代表，对应参考项目
- *   的 `regularProjects` vs `conversationSessions`，见 948-960 行）；
- * - 「会话」组 = 默认工作区下的会话，标题右侧「+」新建会话（1434-1459 行）；
+ * - 「工作区」组列出全部工作区（对应参考项目的 `regularProjects`）；
+ * - 「会话」组 = 未绑定工作区的会话（照 jiuwen 不选项目的普通会话列表，
+ *   会话目录自身即工作区），标题右侧「+」新建会话（1434-1459 行）；
  * - 分组标题的「+」默认隐藏、标题 hover 才显现（`__section-action`）。
  *
  * 会话归属纯前端推导（后端 `GET /api/v1/sessions` 已带 `project_id`）：
- * `project_id` 指向某工作区即归入该组；为空（C5 之前的旧会话）或指向已不存在的
- * 工作区时归入默认工作区。搜索框有内容时退化为跨全部会话的扁平列表。
- *
- * 本轮去掉助手选择区：专家改为可选（未选 = 平台默认提示词），选择入口收敛到
- * 输入框的「+ → 专家」。
+ * `project_id` 指向某工作区即归入该组；为空（不选工作区的新会话）或指向已不
+ * 存在的工作区（后端发消息时已清为 null）归入「会话」未分组区。
+ * 搜索框有内容时退化为跨全部会话的扁平列表。
  */
 import { useMemo, useState } from 'react'
 import type { Session } from '@/types'
 import { useRouterStore } from '@/routing/router'
-import { DEFAULT_PROJECT_DIR, useProjectsStore } from '@/stores/projects'
+import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
 import InputDialog from './InputDialog'
@@ -36,33 +34,27 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
   const sessions = useSessionsStore((s) => s.sessions)
   const projects = useProjectsStore((s) => s.projects)
   const projectsLoaded = useProjectsStore((s) => s.loaded)
-  /** 切换「新会话目标工作区」（null = 未选 → 建会话时由后端回落默认工作区）。 */
+  /** 切换「新会话目标工作区」（null = 不使用工作区，会话目录即工作区）。 */
   const setCurrentProject = useProjectsStore((s) => s.setCurrent)
   const createProject = useProjectsStore((s) => s.create)
   const [query, setQuery] = useState('')
   /** 工作区展开态（纯 UI 状态，不落 store）。 */
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
-  // 默认工作区不单独成行（由「会话」组代表），其余全部列在「工作区」组
-  const defaultProject = projects.find((p) => p.dir_name === DEFAULT_PROJECT_DIR) ?? null
-  const workspaces = useMemo(
-    () => projects.filter((p) => p._id !== defaultProject?._id),
-    [projects, defaultProject],
-  )
+  const workspaces = useMemo(() => projects, [projects])
 
-  /** 按 project_id 把会话归入各工作区；无归属的（旧会话/工作区已删）归默认工作区。 */
+  /** 按 project_id 把会话归入各工作区；无归属的（不选工作区/工作区已删）归「会话」组。 */
   const { sessionsByProject, defaultSessions } = useMemo(() => {
     const validIds = new Set(projects.map((p) => p._id))
     const byProject: Record<string, Session[]> = {}
     const orphans: Session[] = []
-    const defaultId = defaultProject?._id ?? null
     for (const session of sessions) {
       const pid = session.project_id
-      if (!pid || pid === defaultId || !validIds.has(pid)) orphans.push(session)
+      if (!pid || !validIds.has(pid)) orphans.push(session)
       else (byProject[pid] ??= []).push(session)
     }
     return { sessionsByProject: byProject, defaultSessions: orphans }
-  }, [sessions, projects, defaultProject])
+  }, [sessions, projects])
 
   const searching = query.trim().length > 0
 
@@ -72,11 +64,11 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
    *
    * 同时把「新会话目标工作区」（输入框下方 WorkspacePicker 显示的就是它）切准：
    * - 工作区行「+」传了 projectId → 切到**那个**工作区；
-   * - 顶部「新会话」不传 → 切回**默认工作区**（而不是沿用上次的选择，
-   *   否则从别的会话点新会话，输入框下方还停在上个工作区，容易误建）。
+   * - 顶部「新会话」不传 → 切回**不使用工作区**（会话目录即工作区，
+   *   而不是沿用上次的选择，否则从别的会话点新会话，输入框下方还停在上个工作区）。
    */
   const handleNew = (projectId?: string) => {
-    setCurrentProject(projectId ?? defaultProject?._id ?? null)
+    setCurrentProject(projectId ?? null)
     // 导航到 /chat/new 草稿态（AppShell 据此把 currentId 置 null 并重置聊天态）
     useRouterStore.getState().navigate({ kind: 'chat-new' })
     onNavigate?.()

@@ -22,7 +22,7 @@ import { useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { MessageAttachment, UploadResponse } from '@/types'
 import { api } from '@/api/client'
 import { useChatStore } from '@/stores/chat'
-import { pickActiveProject, useProjectsStore } from '@/stores/projects'
+import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { toast } from '@/stores/toasts'
 import AttachMenu from './AttachMenu'
@@ -125,19 +125,30 @@ export default function Composer({ empty }: ComposerProps) {
   }, [value])
 
   /**
-   * 选中文件 → 立即上传到会话目标工作区并进附件草稿（chips 显示，随下一条消息发送）。
+   * 选中文件 → 立即上传并进附件草稿（chips 显示，随下一条消息发送）。
    *
-   * 上传目标：已有会话用**会话绑定的工作区**（agent 的工作目录），草稿态用
-   * WorkspacePicker 当前选中的目标工作区；失败项 toast 后丢弃。
+   * 上传目标（与 agent 工作根一致）：
+   * - 已有会话且绑定了工作区 → 该项目；无绑定 → 会话目录（sessions/{sid}/files）；
+   * - 草稿态 → WorkspacePicker 当前选中的工作区（未选不给传：会话还没建、
+   *   会话端点无处可落；选中项目的附件在首条消息发送时由后端复制进会话根）。
+   * 失败项 toast 后丢弃。
    */
   const handleFiles = async (list: File[]) => {
     const sessionsState = useSessionsStore.getState()
     const session = sessionsState.sessions.find((s) => s._id === sessionsState.currentId)
-    const projectId =
-      session?.project_id ?? pickActiveProject(useProjectsStore.getState())?._id ?? null
-    if (!projectId) {
-      toast('error', '请先创建或选择工作区后再上传附件')
-      return
+    const projectsState = useProjectsStore.getState()
+    let target: string
+    if (session) {
+      target = session.project_id
+        ? `/api/v1/projects/${session.project_id}/files`
+        : `/api/v1/sessions/${session._id}/files`
+    } else {
+      const pid = projectsState.currentId
+      if (!pid) {
+        toast('error', '请先选择工作区，或发送首条消息后再上传附件')
+        return
+      }
+      target = `/api/v1/projects/${pid}/files`
     }
     // 先挂「上传中」占位 chips，完成/失败后逐项更新
     const drafts = list.map((f) => ({
@@ -151,7 +162,7 @@ export default function Composer({ empty }: ComposerProps) {
     const form = new FormData()
     list.forEach((f) => form.append('files', f))
     try {
-      const res = await api<UploadResponse>(`/api/v1/projects/${projectId}/files`, {
+      const res = await api<UploadResponse>(target, {
         method: 'POST',
         form,
       })

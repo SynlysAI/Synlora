@@ -546,3 +546,103 @@ async def test_legacy_record_missing_on_disk_hidden_and_404(app, client, user_he
     assert (await client.delete("/api/v1/files/fid-ghost",
                                 headers=user_headers)).status_code == 200
     assert await app.state.store.get("files", "fid-ghost") is None
+
+
+# ---------- 会话作用域文件（无工作区会话：sessions/{sid} 即工作区） ----------
+
+
+async def _make_plain_session(client, headers) -> str:
+    """建一个不绑项目的会话，返回 sid。
+
+    Args:
+        client: httpx 异步客户端。
+        headers: 请求头。
+
+    Returns:
+        会话 _id。
+    """
+    r = await client.post("/api/v1/sessions", headers=headers, json={})
+    assert r.status_code == 201, r.text
+    return r.json()["_id"]
+
+
+def _upload_to_session(client, headers, sid: str, *items):
+    """构造会话作用域 multipart 上传请求（POST /api/v1/sessions/{sid}/files）。
+
+    Args:
+        client: httpx 异步客户端。
+        headers: 请求头。
+        sid: 会话 id。
+        items: (filename, content) 元组列表。
+
+    Returns:
+        POST 响应。
+    """
+    return client.post(f"/api/v1/sessions/{sid}/files", headers=headers,
+                       files=[("files", (name, content, "text/plain"))
+                              for name, content in items])
+
+
+async def test_session_files_lifecycle(app, client, user_headers):
+    """会话文件闭环：上传落 sessions/{sid}/files → 列表/树可见可下载 → 删除可用，
+    且不出现在任何项目的文件列表里（会话归属与项目归属互斥）。"""
+    sid = await _make_plain_session(client, user_headers)
+
+    r = await _upload_to_session(client, user_headers, sid, ("a.txt", b"session-a"))
+    assert r.status_code == 201, r.text
+    fid = r.json()["results"][0]["file"]["_id"]
+
+    # 磁盘落点：会话目录（不是任何 workspaces/）
+    sid_dir = app.state.settings.data_root / "users" / "u-user" / "sessions" / sid
+    assert (sid_dir / "files" / "a.txt").read_bytes() == b"session-a"
+
+    # 列表与树（右栏两个数据源）
+    listed = (await client.get(f"/api/v1/sessions/{sid}/files",
+                               headers=user_headers)).json()
+    assert [f["_id"] for f in listed] == [fid]
+    tree = (await client.get(f"/api/v1/sessions/{sid}/tree",
+                             headers=user_headers)).json()
+    assert [e["name"] for e in tree if e["is_dir"]] == ["files", "output", "tmp"]
+
+    # 下载走会话根解析；任何项目列表都不含它
+    assert await _download(client, user_headers, {"_id": fid}) == b"session-a"
+    for project in await app.state.project_service.list_projects("u-user"):
+        others = (await client.get(f"/api/v1/projects/{project['_id']}/files",
+                                   headers=user_headers)).json()
+        assert fid not in [f["_id"] for f in others]
+
+    assert (await client.delete(f"/api/v1/files/{fid}",
+                                headers=user_headers)).status_code == 200
+    assert not (sid_dir / "files" / "a.txt").exists()
+
+
+async def test_session_files_require_own_session(app, client, admin_headers,
+                                                  user_headers):
+    """会话文件端点校验归属：他人的会话上传/列表/树一律 404，不落任何磁盘文件。"""
+    sid = await _make_plain_session(client, admin_headers)
+    r = await _upload_to_session(client, admin_headers, sid, ("x.txt", b"x"))
+    assert r.status_code == 201, r.text
+    # u-user（另一账号）对 u-admin 的会话
+    assert (await _upload_to_session(client, user_headers, sid,
+                                     ("y.txt", b"y"))).status_code == 404
+    assert (await client.get(f"/api/v1/sessions/{sid}/files",
+                             headers=user_headers)).status_code == 404
+    assert (await client.get(f"/api/v1/sessions/{sid}/tree",
+                             headers=user_headers)).status_code == 404
+
+
+async def test_delete_session_removes_session_files(app, client, user_headers):
+    """删除会话：目录整树移除 + session_id 归属的文件记录一并删除（项目文件不动）。"""
+    sid = await _make_plain_session(client, user_headers)
+    assert (await _upload_to_session(client, user_headers, sid,
+                                     ("s.txt", b"s"))).status_code == 201
+    pid = await _new_project(client, user_headers, "keep")
+    assert (await _upload_to(client, user_headers, pid, ("p.txt", b"p"))).status_code == 201
+
+    assert (await client.delete(f"/api/v1/sessions/{sid}",
+                                headers=user_headers)).status_code == 200
+    sid_dir = app.state.settings.data_root / "users" / "u-user" / "sessions" / sid
+    assert not sid_dir.exists()
+    docs = await app.state.store.list("files", filters={"user_id": "u-user"})
+    names = {d["filename"] for d in docs}
+    assert "s.txt" not in names and "p.txt" in names

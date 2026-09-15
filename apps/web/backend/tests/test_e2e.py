@@ -48,26 +48,27 @@ def _reset_scripts():
 
 
 async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
-    """数据分析闭环：上传 → 对话 → python.run 真实执行 → 产物落盘 → 事件/计数齐备。"""
+    """数据分析闭环（无工作区会话）：上传进会话目录 → 对话 → python.run 真实执行
+    （cwd=会话 tmp/）→ 产物落会话 output/ → 事件/计数齐备。"""
     await _bind_provider_to_asst_data(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
 
-    # 1. 上传 CSV：legacy 路由解析到活跃项目（此处尚无项目，按需补种 default），
-    #    落 {data_root}/users/u-admin/workspaces/default/files/data.csv
-    r = await client.post("/api/v1/files", headers=admin_headers,
+    # 1. asst-data 会话（不绑项目：会话目录 sessions/{sid} 即工作区）
+    FakeBackend.script = []
+    sid = await _make_session(client, admin_headers, "asst-data")
+
+    # 2. 上传 CSV 到会话目录：落 {data_root}/users/u-admin/sessions/{sid}/files/data.csv
+    r = await client.post(f"/api/v1/sessions/{sid}/files", headers=admin_headers,
                           files=[("files", ("data.csv", b"a,b\n1,2\n3,4\n", "text/csv"))])
     assert r.status_code == 201, r.text
     assert r.json()["status"] == "ok"
     assert r.json()["results"][0]["file"]["filename"] == "data.csv"
 
-    # 2. asst-data 会话 + 剧本：第一幕调 python.run 读文件算均值，第二幕总结
+    # 3. 剧本：第一幕调 python.run 读文件算均值，第二幕总结；发消息收 SSE
     FakeBackend.script = [
         [ToolCallChunk(id="c1", name="python.run", arguments={"code": ANALYSIS_CODE})],
         [TextDelta(text="分析完成：a 列均值 2，b 列均值 3"), Usage()],
     ]
-    sid = await _make_session(client, admin_headers, "asst-data")
-
-    # 3. 发消息收 SSE：完整事件序列（工具真实子进程执行）
     resp = await client.post(f"/api/v1/sessions/{sid}/messages",
                              headers=admin_headers, json={"text": "分析上传的 CSV 均值"})
     assert resp.status_code == 200, resp.text
@@ -85,14 +86,15 @@ async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     assert "mean_a=2" in tool_result["content"]
     assert "mean_b=3" in tool_result["content"]
 
-    # 5. 工作区产物真实存在且内容正确：agent 跑在会话所属项目目录（此处为首个项目
-    #    = 上传时按需补种的 default），python.run 的 cwd=项目 tmp/，故 ../output
-    #    即项目 output/；第 4 步能读出均值即证明上传的 CSV 真在项目 files/ 内
-    #    （上传与 agent 同用项目目录，不再依赖「上传在前、迁移在后」的时序）
-    projects = await app.state.project_service.list_projects("u-admin")
-    result_txt = app.state.project_service.root_for(projects[0]) / "output" / "result.txt"
+    # 5. 会话目录产物真实存在且内容正确：agent 跑在 sessions/{sid}（无绑定不回落
+    #    任何项目），python.run 的 cwd=会话 tmp/，故 ../output 即会话 output/；
+    #    第 4 步能读出均值即证明上传的 CSV 真在会话 files/ 内
+    sid_dir = (app.state.settings.data_root / "users" / "u-admin" / "sessions" / sid)
+    result_txt = sid_dir / "output" / "result.txt"
     assert result_txt.exists(), f"产物未落盘: {result_txt}"
     assert result_txt.read_text(encoding="utf-8") == "mean_a=2\nmean_b=3\n"
+    # 无绑定会话不再补种默认项目
+    assert await app.state.project_service.list_projects("u-admin") == []
 
     # 6. 回放事件完整（不含瞬态 llm/delta，seq 4 缺位成洞、turn/end 收尾）+ 首条消息计数为 1
     r = await client.get(f"/api/v1/sessions/{sid}/events", headers=admin_headers)

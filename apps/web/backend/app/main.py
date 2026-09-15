@@ -11,6 +11,7 @@ from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
 from app.api.files_api import project_router as project_files_router
 from app.api.files_api import router as files_router
+from app.api.files_api import session_router as session_files_router
 from app.api.knowledge_api import router as knowledge_router
 from app.api.me_api import router as me_router
 from app.api.models_api import router as models_router
@@ -136,6 +137,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_router)
     app.include_router(files_router)
     app.include_router(project_files_router)
+    app.include_router(session_files_router)
     app.include_router(projects_router)
     app.include_router(skills_router)
     app.include_router(knowledge_router)

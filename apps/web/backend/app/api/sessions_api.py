@@ -85,29 +85,30 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
 
 
 async def _normalize_attachments(request: Request, user: dict, repos: Repos,
-                                 file_ids: list[str], project: dict) -> list[dict]:
-    """把附件 file_id 归一化为「文件在本会话项目内」的元数据列表。
+                                 file_ids: list[str], root,
+                                 ownership: dict) -> list[dict]:
+    """把附件 file_id 归一化为「文件在本会话工作根内」的元数据列表。
 
-    附件在草稿态上传时落的是**当时选中的目标项目**，而 agent 只在会话绑定的
-    项目目录里跑（workspace_root）：文件躺在别的项目时复制一份进本会话项目
-    files/ 并新落一条记录（原文件不动，仍属原项目），保证 agent 用 file 工具
-    按相对路径一定能读到。
+    附件在草稿态上传时落的是**当时选中的目标项目**，而 agent 只在会话的工作根里跑
+    （workspace_root：绑定项目 = 项目目录，无绑定 = sessions/{sid}）：文件躺在别的
+    根时复制一份进本会话根 files/ 并新落一条记录（原文件不动，仍属原处），保证
+    agent 用 file 工具按相对路径一定能读到。
 
     Args:
         request: FastAPI 请求（取 project_service）。
         user: 当前用户 payload。
         repos: repo 集中访问对象。
         file_ids: 附件文件记录 id 列表。
-        project: 会话解析出的目标项目文档。
+        root: 本会话的工作根（项目根或会话根）。
+        ownership: 副本记录的归属字段（{"project_id": pid} 或 {"session_id": sid}）。
 
     Returns:
-        [{file_id, filename, path}]（path 为相对项目根的存储路径）。
+        [{file_id, filename, path}]（path 为相对工作根的存储路径）。
 
     Raises:
         HTTPException: 任一附件不存在/非本人（404）或磁盘文件缺失（422）。
     """
     service = request.app.state.project_service
-    root = service.root_for(project)
     out: list[dict] = []
     for fid in file_ids:
         doc = await repos.file.get(fid)
@@ -115,23 +116,28 @@ async def _normalize_attachments(request: Request, user: dict, repos: Repos,
             raise HTTPException(404, f"附件不存在: {fid}")
         stored_path = str(doc.get("stored_path") or "")
         filename = str(doc.get("filename") or "")
-        # 已在本项目内：直接引用
-        if str(doc.get("project_id") or "") == str(project["_id"]):
+        # 已在本会话根内（归属字段一致）：直接引用
+        if all(str(doc.get(k) or "") == str(v) for k, v in ownership.items()):
             out.append({"file_id": fid, "filename": filename, "path": stored_path,
                         "size": int(doc.get("size") or 0)})
             continue
-        # 跨项目：定位原文件（按记录归属解析）并复制进本会话项目 files/
-        owner = None
-        if doc.get("project_id"):
-            owner = await service.get(user["sub"], str(doc["project_id"]))
-        src = service.root_for(owner) / stored_path if owner else None
+        # 跨根：定位原文件（按记录归属解析）并复制进本会话根 files/
+        if doc.get("session_id"):
+            src = workspace.user_sessions_root(
+                request.app.state.settings.data_root, user["sub"]
+            ) / str(doc["session_id"]) / stored_path
+        else:
+            owner = None
+            if doc.get("project_id"):
+                owner = await service.get(user["sub"], str(doc["project_id"]))
+            src = service.root_for(owner) / stored_path if owner else None
         if src is None or not src.is_file():
             raise HTTPException(422, f"附件文件已丢失: {filename or fid}")
         target = workspace.unique_target(root / "files", src.name)
         target.write_bytes(src.read_bytes())
         clone = await repos.file.create({
             "user_id": user["sub"],
-            "project_id": project["_id"],
+            **ownership,
             "filename": filename or src.name,
             "stored_path": target.relative_to(root).as_posix(),
             "size": int(doc.get("size") or target.stat().st_size),
@@ -295,13 +301,22 @@ async def update_session(sid: str, body: SessionUpdateBody,
 async def delete_session(sid: str, request: Request,
                          user=Depends(get_current_user),
                          repos=Depends(get_repos)) -> dict:
-    """删除会话：session doc + 全部事件副本 + JSONL 目录（忽略不存在）。"""
+    """删除会话：session doc + 全部事件副本 + 会话目录整树 + 会话文件记录。
+
+    会话目录（sessions/{sid}）对无工作区会话而言就是工作区（files/output/tmp 与
+    events.jsonl 都在其中），整目录移除即"会话删了产物一并删"；其下上传文件的
+    记录（session_id 归属）同步删除，不留孤儿记录。
+    """
     doc = await _own_session(sid, user, repos)
     for ev in await repos.event.list(filters={"session_id": sid}):
         await repos.event.delete(ev["_id"])
-    # 事件目录口径由 workspace 提供（与写入侧 AgentService._jsonl_path 同源）；
-    # uid 取会话记录自己的 owner（_own_session 已校验其属当前用户），
-    # 用会话记录的 owner，保证与写入侧口径同一个 id
+    # 会话文件记录与目录一起走：只删 session_id 归属的（项目文件记录不动）
+    for f in await repos.file.list(filters={"user_id": user["sub"]}):
+        if str(f.get("session_id") or "") == sid:
+            await repos.file.delete(f["_id"])
+    # 事件/工作区目录口径由 workspace 提供（与写入侧 AgentService._jsonl_path、
+    # files_api 会话根同源）；uid 取会话记录自己的 owner（_own_session 已校验
+    # 其属当前用户），保证与写入侧口径同一个 id
     jsonl_dir = (workspace.user_sessions_root(
         request.app.state.settings.data_root, str(doc["user_id"])) / sid)
     shutil.rmtree(jsonl_dir, ignore_errors=True)
@@ -361,31 +376,41 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     owner = doc.get("title") or (assistant or {}).get("name") or sid
     cfg = await _resolve_provider(pid, str(owner), repos)
     service = _agent_service(request)
-    # 项目解析（回落路径整体在 ProjectService 的 per-user 锁内，见 resolve_active_project）：
-    # 会话绑定的项目优先，失效/未绑定则回落到本人第一个项目，一个都没有就补种默认项目
-    project = await request.app.state.project_service.resolve_active_project(
-        user["sub"], doc.get("project_id"))
-    workspace_root = request.app.state.project_service.root_for(project)
-    # 回落后把选中的项目写回会话文档：list_for_user 按 updated_at 倒序，projects[0]
-    # 会随用户在其他项目里的改动（改名/上传）而漂移；不写回则未绑定会话每一轮可能
-    # 跑进不同目录，上一轮的 output/ 产物看似凭空消失
-    if doc.get("project_id") != project["_id"]:
-        await repos.session.update(sid, {"project_id": project["_id"]})
+    # 工作根解析：会话绑定的项目有效 → 项目目录；未绑定（不选工作区的新会话）或
+    # 绑定已失效（项目被删）→ 会话目录 sessions/{sid} 自身为工作区（文件、产物
+    # 都跟会话走，删除会话即整目录移除）。不再回落"活跃项目"：未绑定会话若跟着
+    # projects[0]（随改名/上传漂移）跑，上一轮的 output/ 产物会看似凭空消失。
+    project_service = request.app.state.project_service
+    project = None
+    if doc.get("project_id"):
+        project = await project_service.get(user["sub"], str(doc["project_id"]))
+    if project is not None:
+        workspace_root = project_service.root_for(project)
+        ownership = {"project_id": project["_id"]}
+    else:
+        workspace_root = workspace.session_root(
+            request.app.state.settings.data_root, user["sub"], sid)
+        ownership = {"session_id": sid}
+        # 绑定失效（项目已删）：清掉脏 project_id，前端据此把它归入未分组区；
+        # 未绑定的会话保持 None，不写回任何项目
+        if doc.get("project_id"):
+            await repos.session.update(sid, {"project_id": None})
 
-    # 附件归一化：文件复制进本会话项目（跨项目时），agent 按相对路径可读
+    # 附件归一化：文件复制进本会话工作根（跨根时），agent 按相对路径可读
     attachments_meta = None
     if body.attachments:
         attachments_meta = await _normalize_attachments(
-            request, user, repos, [a.file_id for a in body.attachments], project)
+            request, user, repos, [a.file_id for a in body.attachments],
+            workspace_root, ownership)
 
-    # 先 chat（可能 429）：被拒消息不计数、不生成标题、不建 run 记录，无需回滚；
-    # 但前面的项目解析可能已按需创建默认工作区 / 回写 project_id——
-    # 这些是用户可见的引导副作用（项目列表、会话绑定都会变），注释勿再声称"零副作用"
+    # 先 chat（可能 429）：被拒消息不计数、不生成标题、不建 run 记录，无需回滚。
+    # 前置步骤按需创建会话目录 / 清理失效绑定，均幂等、可安全重试。
     try:
         run_id = await service.chat(sid, user, assistant, cfg, body.text,
                                     workspace_root=workspace_root,
                                     requested_skills=body.skills,
-                                    attachments=attachments_meta)
+                                    attachments=attachments_meta,
+                                    file_ownership=ownership)
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
 
