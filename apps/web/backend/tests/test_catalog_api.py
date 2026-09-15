@@ -79,6 +79,9 @@ def test_market_lists_items_with_state(client):
     """市场列表返回条目及其安装/启用/可见状态。"""
     rows = client.get("/api/v1/market/skill", headers=HEADERS).json()
     row = next(r for r in rows if r["id"] == ITEM)
+    # 下面三行只是"平台缺省值快照"（public + 非默认启用 + 未安装），实现里写死
+    # 常量也能通过，判别力弱；本用例真正有判别力的断言是 `visible is False`
+    # （缺省不可见）。默认启用那半边分支见 test_market_item_visible_when_default_enabled。
     assert row["installed"] is False
     assert row["enabled"] is False
     assert row["visible"] is False
@@ -90,6 +93,17 @@ def test_market_lists_items_with_state(client):
     row = next(r for r in client.get("/api/v1/market/skill", headers=HEADERS).json()
                if r["id"] == ITEM)
     assert row["installed"] is True and row["enabled"] is True and row["visible"] is True
+
+
+def test_market_item_visible_when_default_enabled(client):
+    """未安装的条目：是否可见取决于平台默认启用（可见性规则的另一半分支）。"""
+    client.put(f"/api/v1/admin/catalog/skill/{ITEM}/policy",
+               json={"visibility": "public", "default_enabled": True}, headers=HEADERS)
+    row = next(r for r in client.get("/api/v1/market/skill", headers=HEADERS).json()
+               if r["id"] == ITEM)
+    assert row["installed"] is False
+    assert row["default_enabled"] is True
+    assert row["visible"] is True          # 没装也可见 ← 默认启用
 
 
 def test_market_unknown_kind_is_404(client):

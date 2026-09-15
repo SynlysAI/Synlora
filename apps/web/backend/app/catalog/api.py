@@ -106,6 +106,9 @@ async def list_catalog(kind: str | None = None,
                        service=Depends(get_capability_service)) -> list[dict]:
     """当前用户可见的能力目录（市场列表，普通用户视角不出现 hidden 条目）。
 
+    兼容旧调用方：返回三类混排且 `kind` 非法时静默退化为全类型；新调用方请用
+    `GET /api/v1/market/{kind}`（单类、非法 kind 返回 404）。
+
     Args:
         kind: 可选类型过滤（expert/skill/plugin）。
         user: 当前用户。
