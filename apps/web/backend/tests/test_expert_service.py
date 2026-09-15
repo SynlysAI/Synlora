@@ -1,4 +1,5 @@
 """用户自建专家（文件为事实源 + 实例化进 assistants）。"""
+import asyncio
 import json
 
 import pytest
@@ -59,3 +60,14 @@ async def test_instantiate_is_idempotent(svc, store):
     await store.update("assistants", "u1:chem", {"name": "管理员改过"})
     await svc.ensure_instantiated("u1")  # 已存在 → 不覆盖
     assert (await store.get("assistants", "u1:chem"))["name"] == "管理员改过"
+
+
+async def test_concurrent_instantiate_does_not_raise(svc, store):
+    """并发实例化同一批专家不该因 _id 冲突抛错（锁内串行）。"""
+    await svc.write("u1", dir_name="chem", name="化学助手", avatar="",
+                    description="demo", system_prompt="p")
+    # 先删记录，制造"文件在、记录不在"的首访态
+    await store.delete("assistants", "u1:chem")
+    results = await asyncio.gather(*[svc.ensure_instantiated("u1") for _ in range(5)])
+    assert all(r and r[0]["_id"] == "u1:chem" for r in results)
+    assert await store.get("assistants", "u1:chem") is not None

@@ -9,12 +9,15 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import shutil
 from pathlib import Path
 from typing import Any
+
+from app.db.repos import AssistantRepo
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,23 @@ class UserExpertService:
             data_root: 数据根目录。
         """
         self._store = store
+        self._repo = AssistantRepo(store)
         self._data_root = data_root
+        # 实例化是 check-then-act（get → insert），并发下两次首访会双双 get 到 None，
+        # 后者 insert 撞 _id 抛 ValueError（前端 StrictMode 双 effect / 双标签页即可触发）。
+        # 用 per-user 锁把整段串行化，照 ProjectService._lock_for 范式。
+        self._user_locks: dict[str, asyncio.Lock] = {}
+
+    def _lock_for(self, user_id: str) -> asyncio.Lock:
+        """取该用户的实例化锁（懒创建）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            该用户专属的 asyncio.Lock。
+        """
+        return self._user_locks.setdefault(user_id, asyncio.Lock())
 
     @staticmethod
     def expert_id(user_id: str, dir_name: str) -> str:
@@ -183,7 +202,8 @@ class UserExpertService:
         if expert is None:
             return False
         shutil.rmtree(self.experts_dir(user_id) / expert["dir_name"], ignore_errors=True)
-        await self._store.delete("assistants", expert_id)
+        # 走仓储删除（而非直连 store）：把 builtin 保护收在同一处口径，不靠 id 格式兜底。
+        await self._repo.delete(expert_id)
         return True
 
     async def ensure_instantiated(self, user_id: str) -> list[dict]:
@@ -193,16 +213,19 @@ class UserExpertService:
         catalog/seed.py::seed_experts 的幂等范式）：管理员或用户在助手管理页对记录的
         改动（改名、换模型等）不该被一次列表刷新顶掉。
 
+        整段在该用户的锁内执行，避免并发首访各自 insert 撞 _id。
+
         Args:
             user_id: 用户 sub。
 
         Returns:
             该用户的自建专家列表（含 _id）。
         """
-        experts = await self.list_own(user_id)
-        for expert in experts:
-            await self._ensure_record(user_id, expert)
-        return experts
+        async with self._lock_for(user_id):
+            experts = await self.list_own(user_id)
+            for expert in experts:
+                await self._ensure_record(user_id, expert)
+            return experts
 
     def _manifest_path(self, user_id: str, dir_name: str) -> Path:
         """expert.json 路径。
