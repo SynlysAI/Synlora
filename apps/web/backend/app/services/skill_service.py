@@ -142,6 +142,9 @@ class SkillService:
         self._data_root = data_root
         # 规范化额外技能根，避免同一目录的不同写法被重复扫描（口径与 add_root 一致）
         self._extra_roots: list[Path] = [Path(r).resolve() for r in (extra_roots or [])]
+        # 插件贡献的技能根（extra_roots 的子集）：扫描时技能标 source='plugin'，
+        # 供管理页过滤——插件技能统一在插件页查看，不进技能管理列表
+        self._plugin_roots: set[Path] = set()
 
     @property
     def skills_dir(self) -> Path:
@@ -172,9 +175,9 @@ class SkillService:
             user_id: 用户 sub。
 
         Returns:
-            技能字典列表（builtin 恒为 False）。
+            技能字典列表（builtin 恒为 False、source 恒为 'user'）。
         """
-        return self._scan_root(self.user_skills_dir(user_id), builtin=False)
+        return self._scan_root(self.user_skills_dir(user_id), builtin=False, source="user")
 
     def name_taken(self, name: str) -> str | None:
         """技能名是否已被任一来源占用。
@@ -287,23 +290,39 @@ class SkillService:
         shutil.rmtree(target)
         return True
 
-    def add_root(self, root: Path) -> None:
+    def add_root(self, root: Path, *, plugin: bool = False) -> None:
         """追加一个只读技能根（插件安装时调用；重复追加幂等）。
 
         Args:
             root: 技能根目录（其下每个子目录是一个技能）。
+            plugin: 该根是否由插件贡献（扫描时技能标 source='plugin'，
+                供管理页过滤到插件页统一查看）。
         """
         normalized = Path(root).resolve()
         if normalized not in self._extra_roots:
             self._extra_roots.append(normalized)
+        if plugin:
+            self._plugin_roots.add(normalized)
 
-    def _scan_root(self, root: Path, *, builtin: bool) -> list[dict]:
+    def skills_under(self, root: Path) -> list[dict]:
+        """扫描指定只读根下的技能（插件页展示附属技能清单用）。
+
+        Args:
+            root: 技能根目录（通常是 PluginPackage.skills_root）。
+
+        Returns:
+            技能字典列表（builtin=True、source='plugin'）。
+        """
+        return self._scan_root(Path(root).resolve(), builtin=True, source="plugin")
+
+    def _scan_root(self, root: Path, *, builtin: bool, source: str) -> list[dict]:
         """扫描单个技能根目录。
 
         Args:
             root: 技能根目录（不存在时返回空列表）。
             builtin: 该根是否为只读根（catalog / 插件传 True，可写公共层传 False）；
                 只读根技能不在可写目录里，故删不掉。
+            source: 技能来源标记（catalog/public/plugin/user）。
 
         Returns:
             技能字典列表。
@@ -320,6 +339,7 @@ class SkillService:
             except (ValueError, yaml.YAMLError):
                 continue
             skill["builtin"] = builtin
+            skill["source"] = source
             out.append(skill)
         return out
 
@@ -336,16 +356,18 @@ class SkillService:
             user_id: 用户 sub；None 表示不含任何用户根（管理员全局视图）。
 
         Returns:
-            技能字典列表，每项含 `builtin` 标记。
+            技能字典列表，每项含 `builtin` 与 `source`（catalog/public/plugin/user）标记。
         """
-        out = self._scan_root(self.user_skills_dir(user_id), builtin=False) if user_id else []
+        out = (self._scan_root(self.user_skills_dir(user_id), builtin=False, source="user")
+               if user_id else [])
         seen = {s["name"] for s in out}
-        for skill in self._scan_root(self.skills_dir, builtin=False):
+        for skill in self._scan_root(self.skills_dir, builtin=False, source="public"):
             if skill["name"] not in seen:
                 seen.add(skill["name"])
                 out.append(skill)
         for root in self._extra_roots:
-            for skill in self._scan_root(root, builtin=True):
+            src = "plugin" if root in self._plugin_roots else "catalog"
+            for skill in self._scan_root(root, builtin=True, source=src):
                 if skill["name"] not in seen:
                     seen.add(skill["name"])
                     out.append(skill)

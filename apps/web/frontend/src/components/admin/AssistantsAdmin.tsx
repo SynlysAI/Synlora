@@ -322,7 +322,9 @@ function AssistantFormModal({
 
 /** 助手管理页组件。 */
 export default function AssistantsAdmin() {
-  const assistants = useAdminStore((s) => s.assistants)
+  const allAssistants = useAdminStore((s) => s.assistants)
+  // 插件播种的专家（asst-plugin-*）只读且随插件联动，统一在「插件」页查看
+  const assistants = allAssistants.filter((a) => !a._id.startsWith('asst-plugin-'))
   const models = useAdminStore((s) => s.enabledModels)
   const loaded = useAdminStore((s) => s.assistantsLoaded)
   const loadAssistants = useAdminStore((s) => s.loadAssistants)

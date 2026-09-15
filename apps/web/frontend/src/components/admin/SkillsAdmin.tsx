@@ -276,7 +276,9 @@ function SkillImportModal({
 
 /** 技能管理页组件。 */
 export default function SkillsAdmin() {
-  const skills = useAdminStore((s) => s.skills)
+  const allSkills = useAdminStore((s) => s.skills)
+  // 插件技能只读且随插件联动，统一在「插件」页查看，不进本列表
+  const skills = allSkills.filter((s) => s.source !== 'plugin')
   const loaded = useAdminStore((s) => s.skillsLoaded)
   const loadSkills = useAdminStore((s) => s.loadSkills)
   const catalog = useAdminStore((s) => s.catalog)

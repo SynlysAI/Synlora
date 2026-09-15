@@ -150,7 +150,8 @@ class PluginService:
             self._registry.register(fn)
             attached.add(name)
         if package.skills_root is not None:
-            self._skill_service.add_root(package.skills_root)
+            # plugin=True：技能标 source='plugin'，管理页据此过滤到插件页统一查看
+            self._skill_service.add_root(package.skills_root, plugin=True)
 
     def _validate(self, package: PluginPackage, values: dict) -> None:
         """校验必填配置。
@@ -290,7 +291,10 @@ class PluginService:
 
         Returns:
             含 id/name/version/description/config_schema/installed/configured/
-            missing/config/secrets_set 的字典。
+            missing/config/secrets_set 的字典，另带附属内容清单：
+            skills（[{name, description}]）/ experts（[{id, name}]）/
+            tools（工具名列表）——插件的技能与专家统一在插件页查看，
+            不再混入技能/助手管理页。
         """
         package = self._packages[plugin_id]
         config = self._configs.get(plugin_id, {})
@@ -303,6 +307,11 @@ class PluginService:
             if f.get("required") and not config.get(f["key"])
         ]
         installed = plugin_id in self._installed
+        skills = (self._skill_service.skills_under(package.skills_root)
+                  if package.skills_root is not None else [])
+        experts = ([{"id": self.expert_id(plugin_id),
+                     "name": str(package.expert.get("name") or package.name)}]
+                   if package.expert else [])
         return {
             "id": package.id,
             "name": package.name,
@@ -314,6 +323,10 @@ class PluginService:
             "missing": missing,
             "config": {k: v for k, v in config.items() if not _is_secret(package, k)},
             "secrets_set": secrets_set,
+            "skills": [{"name": s["name"], "description": s["description"]}
+                       for s in skills],
+            "experts": experts,
+            "tools": sorted(self._attached.get(plugin_id, set())),
         }
 
     def list_states(self) -> list[dict]:

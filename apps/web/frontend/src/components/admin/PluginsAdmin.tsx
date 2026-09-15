@@ -254,6 +254,25 @@ export default function PluginsAdmin() {
               <div className="truncate text-[13px] text-[var(--sa-alias-label-secondary)]" title={p.description}>
                 {p.description || '无描述'}
               </div>
+              {/* 附属内容清单：插件带来的技能/专家/工具统一在此查看（不进技能/助手管理页） */}
+              {(p.skills.length > 0 || p.experts.length > 0 || p.tools.length > 0) && (
+                <div
+                  className="truncate pt-0.5 text-xs text-[var(--sa-alias-label-caption)]"
+                  title={[
+                    ...p.skills.map((s) => `技能 ${s.name}：${s.description}`),
+                    ...p.experts.map((e) => `专家 ${e.name}`),
+                    ...p.tools.map((t) => `工具 ${t}`),
+                  ].join('\n')}
+                >
+                  {[
+                    p.skills.length > 0 && `技能 ${p.skills.map((s) => s.name).join('、')}`,
+                    p.experts.length > 0 && `专家 ${p.experts.map((e) => e.name).join('、')}`,
+                    p.tools.length > 0 && `工具 ${p.tools.length} 个`,
+                  ]
+                    .filter(Boolean)
+                    .join('　·　')}
+                </div>
+              )}
             </div>
             <div className="flex shrink-0 items-center gap-2.5">
               {policySwitches(p.id)}

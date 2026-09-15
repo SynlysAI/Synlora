@@ -82,6 +82,8 @@ export interface Skill {
   content: string
   /** 内置技能不可删除（data-analysis / pdf-extraction 等）。 */
   builtin: boolean
+  /** 来源：catalog（内置目录）/ public（公共层）/ plugin（插件贡献）/ user（用户自建）。 */
+  source?: 'catalog' | 'public' | 'plugin' | 'user'
 }
 
 /** 插件配置字段 schema（对应后端 app/catalog/loader.py 的 config_schema）。 */
@@ -109,6 +111,12 @@ export interface PluginInfo {
   config: Record<string, string>
   /** 敏感字段是否已配置（true 时输入框留空表示保持不变） */
   secrets_set: Record<string, boolean>
+  /** 插件贡献的技能清单（统一在插件页查看，不进技能管理页）。 */
+  skills: Array<{ name: string; description: string }>
+  /** 插件播种的专家清单（统一在插件页查看，不进助手管理页）。 */
+  experts: Array<{ id: string; name: string }>
+  /** 插件注册的工具名列表。 */
+  tools: string[]
 }
 
 /** 能力目录条目（对应后端 app/catalog/service.py 的 market_items）。 */
