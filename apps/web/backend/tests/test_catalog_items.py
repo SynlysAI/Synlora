@@ -73,3 +73,39 @@ def test_all_items_aggregates_three_kinds(tmp_path):
     # 按 kind 顺序 expert/skill/plugin 聚合，各类内按 id 排序
     assert [i.kind for i in items] == sorted(
         (i.kind for i in items), key=("expert", "skill", "plugin").index)
+
+
+def test_non_mapping_frontmatter_does_not_raise(tmp_path):
+    """frontmatter 是合法 YAML 但非映射（标量/列表）时：不抛异常，描述留空。"""
+    catalog = tmp_path / "catalog"
+    d = catalog / "skills" / "weird-skill"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nhello\n---\n正文\n", encoding="utf-8")
+    (catalog / "experts").mkdir()
+    (catalog / "plugins").mkdir()
+
+    from app.catalog.loader import scan_catalog
+    from app.catalog.items import CatalogService
+
+    items = CatalogService(scan_catalog([catalog])).list_items("skill")
+    assert [i.id for i in items] == ["weird-skill"]
+    assert items[0].description == ""
+
+
+def test_skill_dir_name_mismatch_is_tolerable(tmp_path, caplog):
+    """目录名与 frontmatter name 不一致：以目录名为 id，仅告警。"""
+    catalog = tmp_path / "catalog"
+    d = catalog / "skills" / "dir-name"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: other-name\ndescription: 示例\n---\n正文\n", encoding="utf-8")
+    (catalog / "experts").mkdir()
+    (catalog / "plugins").mkdir()
+
+    from app.catalog.loader import scan_catalog
+    from app.catalog.items import CatalogService
+
+    with caplog.at_level("WARNING", logger="app.catalog.items"):
+        items = CatalogService(scan_catalog([catalog])).list_items("skill")
+    assert [i.id for i in items] == ["dir-name"]
+    assert any("不一致" in r.getMessage() for r in caplog.records)

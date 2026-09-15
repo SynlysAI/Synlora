@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from app.catalog.loader import SKILL_FILE
 from app.services.skill_service import parse_skill_md
 
 if TYPE_CHECKING:
@@ -118,11 +119,14 @@ class CatalogService:
         """
         out: list[CatalogItem] = []
         for pkg in self._index.skills.values():
-            md = pkg.directory / "SKILL.md"
+            md = pkg.directory / SKILL_FILE
             try:
                 meta = parse_skill_md(md.read_text(encoding="utf-8"))
                 desc = str(meta.get("description") or "")
-            except (OSError, ValueError, yaml.YAMLError):
+                if str(meta.get("name") or "") != pkg.name:
+                    logger.warning("catalog 技能目录名与 frontmatter name 不一致（以目录名为准）: %s != %s",
+                                   pkg.name, meta.get("name"))
+            except (OSError, ValueError, AttributeError, yaml.YAMLError):
                 logger.warning("catalog 技能 %s 的 SKILL.md 解析失败，描述留空", pkg.name)
                 desc = ""
             out.append(CatalogItem(kind="skill", id=pkg.name, name=pkg.name, description=desc))
