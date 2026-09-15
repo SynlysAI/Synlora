@@ -17,6 +17,7 @@ import { FormError, GrayBadge, Modal } from '@/components/admin/shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from '@/components/admin/form'
 import { toast } from '@/stores/toasts'
 import { useCatalogStore } from '@/stores/catalog'
+import MinePanel from './MinePanel'
 import type { CatalogItem } from '@/types'
 
 /** 分组定义：kind + 小标题 + 空态文案。 */
@@ -255,6 +256,9 @@ export default function CapabilityCenter() {
                 </section>
               )
             })}
+
+            {/* 我的：自建 + 已安装的能力 */}
+            {tab === 'mine' && <MinePanel />}
           </div>
         </div>
       </main>
