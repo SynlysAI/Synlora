@@ -18,7 +18,7 @@ class ProjectCreateBody(BaseModel):
 
 @router.get("")
 async def list_projects(request: Request, user=Depends(get_current_user)):
-    """列出当前用户的项目（首次访问会迁移旧布局并补种默认项目）。
+    """列出当前用户的项目（不迁移旧布局；全新用户列表为空，默认工作区在首条消息时按需创建）。
 
     Args:
         request: FastAPI 请求（取 app.state.project_service）。

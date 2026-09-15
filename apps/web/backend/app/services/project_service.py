@@ -240,6 +240,8 @@ class ProjectService:
         """重命名项目：显示名与磁盘目录名同步改。
 
         目录名按新名字重新 sanitize；与其它项目冲突时自动加后缀（重命名不会因重名失败）。
+        **默认工作区只允许改显示名，磁盘目录名恒为 `default`**（改走目录名会让记录离开
+        `default`，`_ensure_default_locked` 随后再建一条 `default`，长出第二个默认工作区）。
         **物理目录改名刻意放在记录更新之前**：改名失败（目录被占用等）就整体抛错、
         记录保持原样，避免出现「显示名已改、磁盘还是旧目录名」的不一致状态。
 
@@ -265,7 +267,10 @@ class ProjectService:
         old_dir = project["dir_name"]
         async with self._lock_for(user_id):
             await self._ensure_name_free(user_id, name, exclude_id=project_id)
-            if base == old_dir:
+            if old_dir == workspace.DEFAULT_PROJECT_DIR:
+                # 默认工作区的目录名恒为 default：只改显示名，否则会再长出第二个 default
+                new_dir = old_dir
+            elif base == old_dir:
                 new_dir = old_dir
             else:
                 taken = await self._repo.used_dir_names(user_id)

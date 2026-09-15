@@ -5,7 +5,7 @@
 
 
 async def test_list_projects_returns_empty(client, user_headers):
-    """全新用户列表为空（迁移无副作用，不补种默认项目）。"""
+    """全新用户列表为空（只读列表不落盘、不建目录）。"""
     r = await client.get("/api/v1/projects", headers=user_headers)
     assert r.status_code == 200 and r.json() == []
 

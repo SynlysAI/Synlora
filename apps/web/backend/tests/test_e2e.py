@@ -53,7 +53,7 @@ async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
 
     # 1. 上传 CSV：legacy 路由解析到活跃项目（此处尚无项目，按需补种 default），
-    #    落 {data_root}/workspaces/u-admin/default/files/data.csv
+    #    落 {data_root}/users/u-admin/workspaces/default/files/data.csv
     r = await client.post("/api/v1/files", headers=admin_headers,
                           files=[("files", ("data.csv", b"a,b\n1,2\n3,4\n", "text/csv"))])
     assert r.status_code == 201, r.text

@@ -375,7 +375,7 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             request, user, repos, [a.file_id for a in body.attachments], project)
 
     # 先 chat（可能 429）：被拒消息不计数、不生成标题、不建 run 记录，无需回滚；
-    # 但前面的项目解析可能已补种默认项目 / 迁移旧布局 / 回写 project_id——
+    # 但前面的项目解析可能已按需创建默认工作区 / 回写 project_id——
     # 这些是用户可见的引导副作用（项目列表、会话绑定都会变），注释勿再声称"零副作用"
     try:
         run_id = await service.chat(sid, user, assistant, cfg, body.text,
