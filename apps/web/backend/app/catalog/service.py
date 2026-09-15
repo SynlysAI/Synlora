@@ -3,7 +3,7 @@
 三层汇总规则：
 - hidden → 不可见（管理员后台另行可见，见 market_items(admin=True)）；
 - public + 默认启用 → 所有人可见；
-- public + 非默认 → 仅已安装者可见。
+- public + 非默认 → 仅已安装且启用者可见。
 目录里不存在的条目一律不可见（防止凭 id 绕过）。
 
 工具名映射由外部注入（PluginPackage 不含工具清单，工具是 loader 动态 import 的），
@@ -70,6 +70,9 @@ class CapabilityService:
     async def is_visible(self, user_id: str, kind: str, item_id: str) -> bool:
         """判断某用户是否可见某条目。
 
+        判定口径与 visible_ids 一致：非默认启用的条目须「已装且启用」，
+        已安装但被用户停用（enabled=False）与未安装同等不可见。
+
         Args:
             user_id: 用户 sub。
             kind: 条目类型。
@@ -85,7 +88,7 @@ class CapabilityService:
             return False
         if pol["default_enabled"]:
             return True
-        return await self.installs.is_installed(user_id, kind, item_id)
+        return await self.installs.is_enabled(user_id, kind, item_id)
 
     async def visible_ids(self, user_id: str, kind: str) -> set[str]:
         """某用户在某类下可见的全部条目 id。

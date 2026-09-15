@@ -148,6 +148,15 @@ async def test_visible_ids_matches_per_item_visibility(caps):
                 if await caps.is_visible("u1", "skill", i.id)}
     assert batch == per_item
 
+    # 停用后仍须一致（上一轮遗漏：这条不变量原先只覆盖了启用态）
+    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
+    assert await caps.visible_ids("u1", "skill") == {
+        i.id for i in caps.catalog.list_items("skill")
+        if await caps.is_visible("u1", "skill", i.id)
+    }
+    # 且该条目确实被判为不可见（防两侧同时退化为"恒可见"而假绿）
+    assert await caps.is_visible("u1", "skill", "office-doc") is False
+
 
 async def test_disabled_install_is_not_visible(caps, store):
     """已装但停用 → 与未装同等不可见，并进入技能黑名单。"""
