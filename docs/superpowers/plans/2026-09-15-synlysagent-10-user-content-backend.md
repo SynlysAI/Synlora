@@ -154,11 +154,39 @@ async def test_concurrent_first_message_creates_single_default_project(tmp_path,
 
 ```python
 async def test_user_project_cannot_take_default_dir_name(tmp_path, store):
+    """用户自建工作区永不占用 default 这个名字，default 恒留给默认工作区。
+
+    先建用户项目（此时还没有默认工作区，占用集合里一条记录都没有）：不把 default
+    钉成已占用，用户项目就会直接拿走它，默认工作区只能退成 default-2。
+    """
     service = ProjectService(store, tmp_path)
     project = await service.create_project("u1", "default")
     assert project["dir_name"] != "default"
+    user_dir = tmp_path / "users" / "u1" / "workspaces"
+    assert not (user_dir / "default").exists()  # default 没被用户项目吃掉
+    # 该用户已无项目时创建默认工作区，仍拿得到 default（未被避让成 default-2）
+    assert await service.delete_project("u1", project["_id"]) is True
     default_project = await service.resolve_active_project("u1", None)
     assert default_project["dir_name"] == "default"
+    assert (user_dir / "default").is_dir()
+
+
+async def test_rename_to_default_name_does_not_take_default_dir(tmp_path, store):
+    """把用户项目改名为 default 时同样不能占用 default 目录（改名的 create 路径）。"""
+    service = ProjectService(store, tmp_path)
+    project = await service.create_project("u1", "exp")
+    renamed = await service.rename_project("u1", project["_id"], "default")
+    assert renamed["dir_name"] != "default"
+    assert not (tmp_path / "users" / "u1" / "workspaces" / "default").exists()
+
+
+async def test_rename_default_project_keeps_default_dir(tmp_path, store):
+    """重命名默认工作区只改显示名：目录名恒为 default，否则会再长出第二个 default。"""
+    service = ProjectService(store, tmp_path)
+    project = await service.resolve_active_project("u1", None)
+    renamed = await service.rename_project("u1", project["_id"], "我的常用")
+    assert renamed["name"] == "我的常用" and renamed["dir_name"] == "default"
+    assert (tmp_path / "users" / "u1" / "workspaces" / "default").is_dir()
 
 
 async def test_default_project_reuses_orphan_default_dir(tmp_path, store):
@@ -214,8 +242,8 @@ Expected: FAIL —— 路径断言落在 `workspaces/`（旧路径）；`test_us
 ```python
                 taken = await self._repo.used_dir_names(user_id)
                 taken.discard(old_dir)  # 自己不算占用，否则会被判成冲突而加后缀
-                if base != workspace.DEFAULT_PROJECT_DIR:
-                    taken.add(workspace.DEFAULT_PROJECT_DIR)  # default 留给默认工作区
+                # default 恒留给默认工作区（无条件保留：改名成 default 时该落在 default-2）
+                taken.add(workspace.DEFAULT_PROJECT_DIR)
                 new_dir = workspace.free_dir_name(user_dir, base, taken)
 ```
 
@@ -287,6 +315,50 @@ Expected: FAIL —— 路径断言落在 `workspaces/`（旧路径）；`test_us
 6) `_create_locked` 之外还引用 `self._data_root / "workspaces" / user_id` 的地方
 （`_create_locked` 与 `rename_project`）统一改用 `self._user_workspaces_dir(user_id)`。
 `rename_project` 里的 `old_dir` 计算不变（`project["dir_name"]`）。
+
+7) 重命名**默认工作区**时钉住目录名（只改显示名）。`rename_project` 的目录名分支改为：
+
+```python
+            if old_dir == workspace.DEFAULT_PROJECT_DIR:
+                # 默认工作区的目录名恒为 default：只改显示名，否则会再长出第二个 default
+                new_dir = old_dir
+            elif base == old_dir:
+                new_dir = old_dir
+            else:
+                taken = await self._repo.used_dir_names(user_id)
+                taken.discard(old_dir)  # 自己不算占用，否则会被判成冲突而加后缀
+                # default 恒留给默认工作区（无条件保留：改名成 default 时该落在 default-2）
+                taken.add(workspace.DEFAULT_PROJECT_DIR)
+                new_dir = workspace.free_dir_name(user_dir, base, taken)
+```
+
+并在 `rename_project` 的 docstring 补一句：**默认工作区只允许改显示名，磁盘目录名恒为 `default`**。
+
+9) **大小写变体同样避让**（Windows/macOS 大小写不敏感盘上 `Default`/`DEFAULT` 与 `default` 是同一个物理目录）：
+在 `_create_locked` 与 `rename_project` 两处 `taken.add(workspace.DEFAULT_PROJECT_DIR)` 之后各补一行：
+
+```python
+            if base.casefold() == workspace.DEFAULT_PROJECT_DIR:
+                # 大小写变体（Default/DEFAULT）在大小写不敏感盘上与 default 同目录，必须避让
+                taken.add(base)
+```
+
+并加测试：
+
+```python
+async def test_case_variant_of_default_does_not_take_default_dir(tmp_path, store):
+    """Windows 大小写不敏感：Default/DEFAULT 与 default 同目录，同样必须避让。"""
+    service = ProjectService(store, tmp_path)
+    project = await service.create_project("u1", "Default")
+    assert project["dir_name"].casefold() != "default"
+```
+
+8) 顺手清掉因本任务而失效的注释口径（只改注释，不动逻辑）：
+`app/api/projects_api.py:21`「首次访问会迁移旧布局并补种默认项目」、
+`app/api/sessions_api.py:378`「补种默认项目 / 迁移旧布局」、
+`tests/test_projects_api.py:8`「迁移无副作用，不补种默认项目」、
+`tests/test_e2e.py:56` 里的旧路径 —— 统一改为当前语义（不迁移、不补种）。
+`apps/web/backend/README.md` 的 `workspaces/` 路径说明留给 Task 15 统一同步。
 
 - [ ] **Step 4: 运行测试确认通过**
 
