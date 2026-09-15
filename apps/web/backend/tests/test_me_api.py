@@ -107,12 +107,26 @@ def test_create_list_and_delete_my_expert(client):
                client.get("/api/v1/me/experts", headers=HEADERS).json())
 
 
-def test_my_expert_is_instantiated_as_assistant(client):
-    """自建专家会实例化进 assistants（否则会话里选不到它）。"""
+def test_my_experts_get_instantiates_missing_record(client):
+    """GET /me/experts 会把「文件在、记录不在」的自建专家补种进 assistants。
+
+    直接 POST 后断言不算数——那是 write() 自己写的记录；必须先抹掉记录，
+    才能证明 list_my_experts 里的 ensure_instantiated 真在起作用。
+    """
     created = client.post("/api/v1/me/experts", json=EXPERT, headers=HEADERS).json()
-    client.get("/api/v1/me/experts", headers=HEADERS)
+    expert_id = created["id"]
+
+    # 抹掉 assistants 记录，制造「文件在、记录不在」的首访态（等价于历史数据/被清理过）。
+    # 走 TestClient 的 blocking portal 调 store：与 app 同一条事件循环，避免跨 loop 用连接。
+    store = client.app.state.store
+    assert client.portal.call(store.delete, "assistants", expert_id) is True
+    assert client.portal.call(store.get, "assistants", expert_id) is None
+
+    # 已抹掉 → GET 应把它补回来（证明 ensure_instantiated 生效）
+    rows = client.get("/api/v1/me/experts", headers=HEADERS).json()
+    assert any(r["id"] == expert_id for r in rows)
     assistants = client.get("/api/v1/assistants", headers=HEADERS).json()
-    assert any(a["_id"] == created["id"] for a in assistants)
+    assert any(a["_id"] == expert_id for a in assistants)
 
 
 def test_update_my_expert(client):
