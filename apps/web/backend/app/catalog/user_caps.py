@@ -103,13 +103,12 @@ class UserCapabilityRepo:
             True 表示记录存在并已更新；未安装返回 False。
         """
         doc_id = cap_id(user_id, kind, item_id)
-        if await self._store.get(USER_CAPS_COLLECTION, doc_id) is None:
-            return False
-        await self._store.update(USER_CAPS_COLLECTION, doc_id, {"enabled": bool(enabled)})
-        return True
+        # update 为部分更新且不 upsert：记录不存在时返回 None（双后端语义一致）
+        return await self._store.update(
+            USER_CAPS_COLLECTION, doc_id, {"enabled": bool(enabled)}) is not None
 
     async def is_enabled(self, user_id: str, kind: str, item_id: str) -> bool:
-        """已安装条目是否处于启用态（未安装或脏文档按缺省 True 处理）。
+        """已安装条目是否处于启用态（历史文档缺 enabled 字段按 True 处理）。
 
         Args:
             user_id: 用户 sub。

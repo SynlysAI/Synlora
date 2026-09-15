@@ -122,3 +122,39 @@ async def test_enabled_defaults_true_for_legacy_docs(store):
     })
     repo = UserCapabilityRepo(store)
     assert await repo.is_enabled("u1", "skill", "legacy") is True
+
+
+async def test_reinstall_keeps_disabled_state(store):
+    """停用后再 install 是幂等 no-op：不凭空把 enabled 翻回 True。"""
+    repo = UserCapabilityRepo(store)
+    await repo.install("u1", "skill", "demo")
+    await repo.set_enabled("u1", "skill", "demo", False)
+    await repo.install("u1", "skill", "demo")
+    assert await repo.is_enabled("u1", "skill", "demo") is False
+
+
+async def test_set_enabled_missing_record_does_not_create_doc(store):
+    """未安装时改启用态不落库（update 不 upsert）。"""
+    repo = UserCapabilityRepo(store)
+    assert await repo.set_enabled("u1", "skill", "nope", True) is False
+    assert await store.get(USER_CAPS_COLLECTION, "u1:skill:nope") is None
+
+
+async def test_enabled_item_ids_is_kind_scoped(store):
+    """同名 id 的其它类型记录不得混进本类型的启用集。"""
+    repo = UserCapabilityRepo(store)
+    await repo.install("u1", "skill", "same")
+    await repo.install("u1", "plugin", "same")
+    await repo.set_enabled("u1", "plugin", "same", False)
+    assert await repo.enabled_item_ids("u1", "skill") == {"same"}
+    assert await repo.enabled_item_ids("u1", "plugin") == set()
+
+
+async def test_enabled_item_ids_defaults_true_for_legacy_docs(store):
+    """历史文档缺 enabled 字段时，enabled_item_ids 同样按启用计入。"""
+    await store.insert(USER_CAPS_COLLECTION, {
+        "_id": "u1:skill:legacy", "user_id": "u1", "kind": "skill",
+        "item_id": "legacy", "installed_at": 0.0,
+    })
+    repo = UserCapabilityRepo(store)
+    assert await repo.enabled_item_ids("u1", "skill") == {"legacy"}
