@@ -100,30 +100,6 @@ class CapabilitySwitchBody(BaseModel):
     enabled: bool | None = None
 
 
-@router.get("/catalog")
-async def list_catalog(kind: str | None = None,
-                       user=Depends(get_current_user),
-                       service=Depends(get_capability_service)) -> list[dict]:
-    """当前用户可见的能力目录（市场列表，普通用户视角不出现 hidden 条目）。
-
-    兼容旧调用方：返回三类混排且 `kind` 非法时静默退化为全类型；新调用方请用
-    `GET /api/v1/market/{kind}`（单类、非法 kind 返回 404）。
-
-    Args:
-        kind: 可选类型过滤（expert/skill/plugin）。
-        user: 当前用户。
-        service: 能力服务。
-
-    Returns:
-        条目列表（含 visibility/default_enabled/installed/visible）。
-    """
-    kinds = (kind,) if kind in KINDS else KINDS
-    rows: list[dict] = []
-    for k in kinds:
-        rows.extend(await service.market_items(user["sub"], k))
-    return rows
-
-
 @router.post("/catalog/{kind}/{item_id}/install", status_code=201)
 async def install_capability(kind: str, item_id: str, request: Request,
                              body: InstallBody | None = None,

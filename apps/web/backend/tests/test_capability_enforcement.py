@@ -176,8 +176,8 @@ async def test_default_policy_requires_install(
     assert not ({"科研助手", "数据分析助手", PLUGIN_EXPERT} & names)
 
     # 市场仍列出该条目（缺省 public），但 visible=False（未安装）
-    catalog = (await client.get("/api/v1/catalog", headers=user_headers)).json()
-    plugins = {r["id"]: r for r in catalog if r["kind"] == "plugin"}
+    plugins = {r["id"]: r for r in
+               (await client.get("/api/v1/market/plugin", headers=user_headers)).json()}
     assert plugins["spec_agent"]["visible"] is False
     assert plugins["spec_agent"]["default_enabled"] is False
 
@@ -259,8 +259,9 @@ async def test_hidden_plugin_absent_from_user_catalog(
                      json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)
 
-    rows = (await client.get("/api/v1/catalog", headers=user_headers)).json()
-    assert "spec_agent" not in {r["id"] for r in rows if r["kind"] == "plugin"}
+    plugin_ids = {r["id"] for r in
+                  (await client.get("/api/v1/market/plugin", headers=user_headers)).json()}
+    assert "spec_agent" not in plugin_ids
     assert (await client.post("/api/v1/catalog/plugin/spec_agent/install",
                               json={}, headers=user_headers)).status_code == 404
 
@@ -344,8 +345,8 @@ async def test_install_missing_required_config_422(app, client, user_headers):
                              json={"config": {"token": "t"}}, headers=user_headers)
     assert resp.status_code == 422 and "base_url" in resp.json()["detail"]
 
-    rows = (await client.get("/api/v1/catalog", headers=user_headers)).json()
-    row = next(r for r in rows if r["kind"] == "plugin" and r["id"] == "spec_agent")
+    rows = (await client.get("/api/v1/market/plugin", headers=user_headers)).json()
+    row = next(r for r in rows if r["id"] == "spec_agent")
     assert row["installed"] is False
 
 

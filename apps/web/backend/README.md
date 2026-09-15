@@ -133,7 +133,6 @@ user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id,
 
 | 侧 | 方法 | 路径 | 说明 |
 | --- | --- | --- | --- |
-| 用户 | `GET` | `/api/v1/catalog` | 当前用户可见的能力目录（含策略与安装状态；`hidden` 项不返回） |
 | 用户 | `GET` | `/api/v1/market/{kind}` | 市场列表（某类型下当前用户可见的可安装条目，含安装 / 启用状态） |
 | 用户 | `POST` | `/api/v1/catalog/{kind}/{item_id}/install` | 安装（写记录；插件可带个人配置 body `{"config": {...}}`） |
 | 用户 | `DELETE` | `/api/v1/catalog/{kind}/{item_id}/install` | 卸载（删记录） |
@@ -143,7 +142,7 @@ user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id,
 | 管理员 | `GET` | `/api/v1/admin/catalog` | 管理员视角目录（含 `hidden` 条目与全部策略） |
 | 管理员 | `PUT` | `/api/v1/admin/catalog/{kind}/{item_id}/policy` | 配置 `{visibility, default_enabled}` |
 
-**「市场 / 我的」两栏语义**：市场（`/market/{kind}`）是「可安装的内置条目」，我的（`/me/{skills,experts}` + 已装集合）是「我自建的能力 + 我已安装的能力」；安装后可启用 / 停用（`user_capabilities.enabled`，停用优先于默认启用）。界面入口仍为左栏底部用户菜单 →「能力中心」→ 独立整页 `/capabilities`（专家 / 技能 / 插件三分组），管理后台为整页 `/admin/*` 左侧导航列表（常规 / 模型服务 / 助手管理 / 技能管理 / 插件）。**当前界面改造尚未开始（后续计划 `docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md`），本节描述的是接口与后端能力，界面暂沿用旧版三分组安装 / 卸载形态。**
+**「市场 / 我的」两栏语义**：市场（`/market/{kind}`）是「可安装的内置条目」，我的（`/me/{skills,experts}` + 已装集合）是「我自建的能力 + 我已安装的能力」；安装后可启用 / 停用（`user_capabilities.enabled`，停用优先于默认启用）。界面入口仍为左栏底部用户菜单 →「能力中心」→ 独立整页 `/capabilities`：顶层「市场 / 我的」两栏页签，市场按专家 / 技能 / 插件三分组展示并支持安装 / 启用 / 停用 / 卸载，「我的」支持子页签过滤与自建技能 / 专家的创建 / 编辑 / 删除；管理后台为整页 `/admin/*` 左侧导航列表（常规 / 模型服务 / 助手管理 / 技能管理 / 插件）。
 
 **首期明确不做**：按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、用户自建 / 导入**插件**（技能与专家已支持用户自建）、常规设置的实际内容（外观主题已可经右上角切换，界面语言等后续提供）。
 

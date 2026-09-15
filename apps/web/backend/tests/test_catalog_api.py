@@ -47,8 +47,8 @@ def test_switch_install_then_disable(client):
     assert off.json() == {"kind": "skill", "id": ITEM,
                           "installed": True, "enabled": False}
 
-    # 停用后从可见性中被剔除（此任务用既有 /catalog 端点校验；/market 在 Task 9 提供）
-    rows = client.get("/api/v1/catalog?kind=skill", headers=HEADERS).json()
+    # 停用后从可见性中被剔除（市场列表与开关端点同源可见性判定）
+    rows = client.get("/api/v1/market/skill", headers=HEADERS).json()
     row = next(r for r in rows if r["id"] == ITEM)
     assert row["installed"] is True
     assert row["enabled"] is False

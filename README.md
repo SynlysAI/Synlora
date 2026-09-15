@@ -124,7 +124,7 @@ pm2 logs synlys-agent
 
 能力中心按「**市场 / 我的**」两栏组织：市场是「可安装的内置条目」，我的 = 用户自建能力 + 已安装能力。用户在市场安装后可**启用 / 停用**（`user_capabilities.enabled`，停用优先于默认启用）；用户还可**自建技能与专家**（落各自 `{data_dir}/users/<uid>/{skills,experts}/`，技能同名全局唯一，内置条目不可编辑、想定制请自建换名）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。
 
-**当前状态**：目录分层、安装/启用模型与用户自建的后端接口已就绪（`/api/v1/market/{kind}`、`PUT /api/v1/me/capabilities/{kind}/{id}`、`/api/v1/me/{skills,experts}`）；界面的「市场 / 我的」两栏改造**尚未开始**（见 [docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md](docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md)），用户侧入口暂沿用旧版「能力中心」（`/capabilities`）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+**当前状态**：已上线（0.9.0）——用户侧「能力中心」（`/capabilities`）为「市场 / 我的」两栏：市场按专家 / 技能 / 插件分组，支持安装 / 卸载 / 启用 / 停用；「我的」支持子页签过滤与自建技能 / 专家的创建 / 编辑 / 删除。后端接口：`/api/v1/market/{kind}`、`PUT /api/v1/me/capabilities/{kind}/{id}`、`/api/v1/me/{skills,experts}`。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 内置内容布局（catalog/）
 
@@ -170,7 +170,7 @@ npm run lint
 
 - **~~沙箱升级（多用户部署前置）~~**（✅ 0.4.0 完成）：`python.run` 执行器抽象（local/docker 可切换），docker 形态为临时容器 + 资源限额 + 断网，探测失败按 strict 回退或拒绝
 - **AI⁴MS 工具接入（项目立身之本）**：首期（Spec_Agent 核磁三件套，插件化接入）✅ 0.5.0；统一 Job 注册表（异步任务状态机 + 完成通知）→ 5 种谱图解析异步任务 / Poly_Agent / SpecLabOS 设备工作流（后者经强制审批）
-- **能力市场延续项**：用户自建技能与专家 ✅ 0.8.0（落各自 `users/<uid>/`，界面的「市场 / 我的」两栏改造待后续计划 11）；导入 / 自建**插件**、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载（首期已上线内置目录 + 管理员策略 + 用户安装 + 启用/停用，见「能力目录（市场）」）
+- **能力市场延续项**：用户自建技能与专家 ✅ 0.8.0（落各自 `users/<uid>/`），「市场 / 我的」两栏界面 ✅ 0.9.0（计划 11）；导入 / 自建**插件**、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载（首期已上线内置目录 + 管理员策略 + 用户安装 + 启用/停用，见「能力目录（市场）」）
 - **跨会话长期记忆**：工作区级记忆抽取与注入
 - **MCP adapter**：Tool Registry 加 MCP 来源，一次投入换第三方工具生态
 - **多 Agent / SwarmFlow**：声明式 team 装配（出现并行科研场景需求时启动）
