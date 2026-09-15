@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from synlys_harness import ModelProviderConfig, TextDelta, Usage
@@ -17,6 +18,8 @@ from app.services.tool_registry import REGISTRY
 SPEC_TOOLS = {"spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"}
 BUILTIN_SKILLS = {"data-analysis", "pdf-extraction", "office-doc"}
 PLUGIN_EXPERT = "谱图解析专家"
+# 随仓库的内置内容根（内置技能由 catalog/skills 只读根提供，与生产口径一致）
+REPO_CATALOG = Path(__file__).resolve().parents[1] / "catalog"
 
 
 class _NoopBackend:
@@ -447,7 +450,9 @@ async def test_startup_attaches_plugins_with_only_user_installs(store, tmp_path)
 
     service = PluginService(
         registry=registry, config_store=PluginConfigStore(store, settings.fernet_key),
-        packages=packages, skill_service=SkillService(tmp_path / "data"),
+        packages=packages,
+        skill_service=SkillService(tmp_path / "data",
+                                   extra_roots=[REPO_CATALOG / "skills"]),
         assistant_repo=AssistantRepo(store))
     await service.startup(extra_plugin_ids=await user_caps.installed_plugin_ids())
     assert "spec.nmr.forward" in registry.names

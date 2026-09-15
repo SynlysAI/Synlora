@@ -76,8 +76,13 @@ async def lifespan(app: FastAPI):
             "未发现任何内置内容（catalog/ 缺失或为空）：内置专家/技能/插件均不可用。"
             "检查部署是否遗漏 %s", catalog_roots(settings)[0])
     plugin_config_store = PluginConfigStore(store, settings.fernet_key)
-    app.state.skill_service = SkillService(settings.data_root)
-    app.state.skill_service.seed_builtins()  # 幂等：内置技能是列表能列出它们的前提
+    # 内置技能：catalog/skills 作为只读根直接提供（与插件技能根同一模式），
+    # {data_dir}/skills 退回公共层（管理员自建/导入，始终可见）
+    catalog_skills_root = catalog_roots(settings)[0] / "skills"
+    app.state.skill_service = SkillService(settings.data_root, extra_roots=[catalog_skills_root])
+    removed = app.state.skill_service.migrate_legacy_builtin_copies(catalog_skills_root)
+    if removed:
+        logger.info("已清理迁移前的内置技能旧副本: %s", removed)
     app.state.weknora_service = WeKnoraService(
         settings.weknora_base_url, settings.weknora_api_key)
     app.state.plugin_service = PluginService(

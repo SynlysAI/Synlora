@@ -134,7 +134,7 @@ async def update_skill(request: Request, name: str, body: SkillUpdateBody,
 
 @router.delete("/{name}")
 async def delete_skill(request: Request, name: str, user=Depends(require_admin)):
-    """删除技能目录。
+    """删除技能目录（只作用于可写公共层）。
 
     Args:
         request: FastAPI 请求。
@@ -145,13 +145,10 @@ async def delete_skill(request: Request, name: str, user=Depends(require_admin))
         {"ok": True}。
 
     Raises:
-        HTTPException: 409 表示内置技能不可删；404 表示技能不存在。
+        HTTPException: 404 表示技能不存在；内置技能来自只读根
+            （catalog/skills），不落公共层目录，删除同样返回 404。
     """
-    try:
-        ok = request.app.state.skill_service.delete_skill(name)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if not ok:
+    if not request.app.state.skill_service.delete_skill(name):
         raise HTTPException(status_code=404, detail="技能不存在")
     return {"ok": True}
 

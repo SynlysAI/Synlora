@@ -1,5 +1,10 @@
 """技能：磁盘 SKILL.md 的扫描/解析/写入（不入库）。
 
+内置技能由 catalog 只读根（`apps/web/backend/catalog/skills`）**直接提供**，
+与插件技能根同一模式：不落 `{data_root}/skills`、不可删（标记 `builtin=True`）。
+`{data_root}/skills` 退回**公共层**：管理员自建/导入的技能，可写可删、始终可见。
+同名时公共层优先（`list_skills` 先扫公共层再由 `seen` 去重）。
+
 字段与正文骨架遵循 jiuwen `skill-spec.md`：frontmatter 必填
 `name`（= 目录名，kebab-case）/ `description`（做什么 + 何时用），可选
 `version` / `author` / `tags` / `allowed_tools`；正文骨架
@@ -17,9 +22,6 @@ import yaml
 
 NAME_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
-BUILTIN_SKILL_NAMES = frozenset({"data-analysis", "pdf-extraction", "office-doc"})
-# 内置技能源目录（随仓库内容：apps/web/backend/catalog/skills）
-CATALOG_SKILLS_ROOT = Path(__file__).resolve().parents[2] / "catalog" / "skills"
 
 
 def parse_skill_md(text: str) -> dict:
@@ -79,14 +81,15 @@ def render_skill_md(skill: dict) -> str:
 
 
 class SkillService:
-    """{data_root}/skills 下的技能读写与扫描。"""
+    """技能扫描与读写：可写公共层（{data_root}/skills）+ 只读根（catalog / 插件）。"""
 
     def __init__(self, data_root: Path, extra_roots: list[Path] | None = None) -> None:
-        """保存数据根与额外技能根。
+        """保存数据根与只读技能根。
 
         Args:
-            data_root: 应用数据根目录。
-            extra_roots: 额外技能根（插件包的 skills/ 目录；同名时用户目录优先）。
+            data_root: 应用数据根目录（其下 skills/ 为可写公共层）。
+            extra_roots: 只读技能根（catalog/skills 与插件包的 skills/ 目录；
+                同名时公共层优先，只读根技能不可删）。
         """
         self._data_root = data_root
         # 规范化额外技能根，避免同一目录的不同写法被重复扫描（口径与 add_root 一致）
@@ -104,7 +107,7 @@ class SkillService:
         return d
 
     def add_root(self, root: Path) -> None:
-        """追加一个额外技能根（插件安装时调用；重复追加幂等）。
+        """追加一个只读技能根（插件安装时调用；重复追加幂等）。
 
         Args:
             root: 技能根目录（其下每个子目录是一个技能）。
@@ -118,7 +121,8 @@ class SkillService:
 
         Args:
             root: 技能根目录（不存在时返回空列表）。
-            builtin: 该根的技能是否标记为内置（插件技能为 True，不可删）。
+            builtin: 该根是否为只读根（catalog / 插件传 True，可写公共层传 False）；
+                只读根技能不在可写目录里，故删不掉。
 
         Returns:
             技能字典列表。
@@ -134,12 +138,12 @@ class SkillService:
                 skill = parse_skill_md(md.read_text(encoding="utf-8"))
             except (ValueError, yaml.YAMLError):
                 continue
-            skill["builtin"] = builtin or skill["name"] in BUILTIN_SKILL_NAMES
+            skill["builtin"] = builtin
             out.append(skill)
         return out
 
     def list_skills(self) -> list[dict]:
-        """扫描全部技能（用户目录 + 额外根；同名用户目录优先）。
+        """扫描全部技能（可写公共层 + 只读根；同名公共层优先）。
 
         每个根内按目录名排序；单个技能解析失败（缺 frontmatter / 名不合法 /
         YAML 语法错误）只跳过该目录，不影响其余技能。
@@ -193,7 +197,8 @@ class SkillService:
             allowed_tools: 允许的工具名列表。
 
         Returns:
-            写入后的技能字典（含 `builtin` 标记）。
+            写入后的技能字典（`builtin` 恒为 False：写入的是可写公共层，
+            非只读根来源）。
 
         Raises:
             ValueError: 技能名不是 kebab-case。
@@ -206,7 +211,8 @@ class SkillService:
         target = self.skills_dir / name
         target.mkdir(parents=True, exist_ok=True)
         (target / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
-        return {**skill, "builtin": name in BUILTIN_SKILL_NAMES}
+        # 写入的是可写公共层，不是只读根来源 ⇒ builtin 恒为 False
+        return {**skill, "builtin": False}
 
     def delete_skill(self, name: str) -> bool:
         """删除技能目录。
@@ -215,26 +221,41 @@ class SkillService:
             name: 技能名（即目录名）。
 
         Returns:
-            目录存在并已删除返回 True；名字非法或目录不存在返回 False。
-
-        Raises:
-            ValueError: 技能名属于内置技能（不可删除）。
+            公共层目录存在并已删除返回 True；名字非法或目录不存在返回 False。
+            只读根（catalog / 插件）的技能不在公共层目录里，故恒返回 False。
         """
         if not NAME_OK.match(name):
             return False
         target = self.skills_dir / name
         if not target.is_dir():
             return False
-        if name in BUILTIN_SKILL_NAMES:
-            raise ValueError("内置技能不可删除")
         shutil.rmtree(target)
         return True
 
-    def seed_builtins(self) -> None:
-        """把随仓库内容的内置技能拷到用户技能目录（幂等，不覆盖已有目录）。"""
-        if not CATALOG_SKILLS_ROOT.is_dir():
-            return
-        for src in CATALOG_SKILLS_ROOT.iterdir():
-            dst = self.skills_dir / src.name
-            if not dst.exists():
-                shutil.copytree(src, dst)
+    def migrate_legacy_builtin_copies(self, catalog_skills_root: Path) -> list[str]:
+        """清理公共技能目录里与 catalog 一致的旧内置副本（播种遗留）。
+
+        只删「同名且 SKILL.md 字节完全一致」的目录——内容不同说明管理员改过，保留。
+
+        Args:
+            catalog_skills_root: catalog 技能根（其下每个子目录是一个内置技能）。
+
+        Returns:
+            被清理的技能名列表。
+        """
+        removed: list[str] = []
+        if not catalog_skills_root.is_dir():
+            return removed
+        for src in sorted(catalog_skills_root.iterdir()):
+            src_md = src / "SKILL.md"
+            legacy_md = self.skills_dir / src.name / "SKILL.md"
+            if not src_md.is_file() or not legacy_md.is_file():
+                continue
+            try:
+                if src_md.read_bytes() != legacy_md.read_bytes():
+                    continue  # 内容不同：管理员改过，保留
+            except OSError:
+                continue
+            shutil.rmtree(self.skills_dir / src.name, ignore_errors=True)
+            removed.append(src.name)
+        return removed

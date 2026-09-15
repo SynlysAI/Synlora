@@ -46,10 +46,12 @@ async def test_import_bad_text_422(client, admin_headers):
     assert r.status_code == 422
 
 
-async def test_delete_builtin_conflict(client, admin_headers):
-    """内置技能不可删除，返回 409。"""
+async def test_delete_builtin_skill_404(client, admin_headers):
+    """内置技能来自只读根（catalog/skills），不在可写公共层 → 删除 404 且内容原样。"""
     assert (await client.delete("/api/v1/skills/data-analysis",
-                                headers=admin_headers)).status_code == 409
+                                headers=admin_headers)).status_code == 404
+    exported = await client.get("/api/v1/skills/data-analysis/export", headers=admin_headers)
+    assert exported.status_code == 200
 
 
 async def test_list_skills_without_token_401(client):

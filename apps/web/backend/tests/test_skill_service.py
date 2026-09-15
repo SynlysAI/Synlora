@@ -18,7 +18,7 @@ def test_scan_reads_frontmatter(tmp_path):
     assert skills[0]["name"] == "data-analysis"
     assert skills[0]["description"] == "数据分析"
     assert skills[0]["tags"] == ["统计"]
-    assert skills[0]["builtin"] is True
+    assert skills[0]["builtin"] is False   # 公共层技能：builtin 只由来源根（只读根）决定
 
 
 def test_write_then_read_roundtrip(tmp_path):
@@ -44,21 +44,51 @@ def test_scan_skips_broken_skill(tmp_path):
     assert SkillService(tmp_path).list_skills() == []
 
 
-def test_delete_builtin_rejected(tmp_path):
+def test_delete_public_skill_succeeds_even_if_name_matches_builtin(tmp_path):
+    """公共层技能可删（builtin 只由来源根决定，不再看硬编码名单）。"""
     _seed_one(tmp_path)
-    with pytest.raises(ValueError):
-        SkillService(tmp_path).delete_skill("data-analysis")
-
-
-def test_seed_builtins_is_idempotent(tmp_path):
     svc = SkillService(tmp_path)
-    svc.seed_builtins()
-    md = tmp_path / "skills" / "data-analysis" / "SKILL.md"
-    assert md.is_file()
-    first = md.read_text(encoding="utf-8")
-    md.write_text(first + "\n用户追加", encoding="utf-8")
-    svc.seed_builtins()                          # 二次播种不覆盖
-    assert md.read_text(encoding="utf-8").endswith("用户追加")
+    assert svc.list_skills()[0]["builtin"] is False
+    assert svc.delete_skill("data-analysis") is True
+    assert not (tmp_path / "skills" / "data-analysis").exists()
+
+
+def test_migrate_removes_identical_legacy_copies(tmp_path):
+    """迁移清理：与 catalog 字节一致的旧副本被删；内容不同（管理员改过）保留。"""
+    catalog_root = tmp_path / "catalog" / "skills"
+    (catalog_root / "office-doc").mkdir(parents=True)
+    (catalog_root / "office-doc" / "SKILL.md").write_text(
+        "---\nname: office-doc\ndescription: 生成办公文档\n---\n正文\n", encoding="utf-8")
+    (catalog_root / "data-analysis").mkdir(parents=True)
+    (catalog_root / "data-analysis" / "SKILL.md").write_text(
+        "---\nname: data-analysis\ndescription: 官方\n---\n官方正文\n", encoding="utf-8")
+
+    svc = SkillService(tmp_path / "data")
+    (svc.skills_dir / "office-doc").mkdir(parents=True)
+    (svc.skills_dir / "office-doc" / "SKILL.md").write_text(
+        (catalog_root / "office-doc" / "SKILL.md").read_text(encoding="utf-8"), encoding="utf-8")
+    (svc.skills_dir / "data-analysis").mkdir(parents=True)
+    (svc.skills_dir / "data-analysis" / "SKILL.md").write_text(
+        "---\nname: data-analysis\ndescription: 我改过的\n---\n我的正文\n", encoding="utf-8")
+
+    assert svc.migrate_legacy_builtin_copies(catalog_root) == ["office-doc"]
+    assert not (svc.skills_dir / "office-doc").exists()
+    assert (svc.skills_dir / "data-analysis").exists()
+
+
+def test_catalog_root_skills_are_readonly_and_builtin(tmp_path):
+    """catalog 根作为只读技能根：可列可读、builtin=True、删不掉。"""
+    catalog_root = tmp_path / "catalog" / "skills"
+    (catalog_root / "office-doc").mkdir(parents=True)
+    (catalog_root / "office-doc" / "SKILL.md").write_text(
+        "---\nname: office-doc\ndescription: 生成办公文档\n---\n正文\n", encoding="utf-8")
+
+    svc = SkillService(tmp_path / "data", extra_roots=[catalog_root])
+    skills = {s["name"]: s for s in svc.list_skills()}
+    assert skills["office-doc"]["builtin"] is True
+    assert svc.read_body("office-doc") == "正文"
+    assert svc.delete_skill("office-doc") is False
+    assert (catalog_root / "office-doc" / "SKILL.md").exists()
 
 
 def test_frontmatter_handles_quotes_and_fullwidth_colon(tmp_path):
