@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user
+from app.catalog.api import get_capability_service
 from app.services.skill_service import SkillNameTaken, SkillNotFound
 
 router = APIRouter(prefix="/api/v1/me", tags=["me"])
@@ -62,9 +63,12 @@ async def list_my_skills(request: Request, user=Depends(get_current_user)) -> li
     Returns:
         条目列表（source = mine|installed，含 installed/enabled/builtin；
         installed 条目额外带 revoked：管理员已下架该条目）。
+
+    Raises:
+        HTTPException: 能力服务未就绪（503）。
     """
     svc = _skill_service(request)
-    caps = getattr(request.app.state, "capability_service", None)
+    caps = get_capability_service(request)
     user_id = user["sub"]
     rows = [
         {"name": s["name"], "description": s["description"],
@@ -72,19 +76,18 @@ async def list_my_skills(request: Request, user=Depends(get_current_user)) -> li
          "installed": False, "enabled": True, "builtin": False}
         for s in svc.list_own_skills(user_id)
     ]
-    if caps is not None:
-        # 一次取回安装状态（{id: enabled}），同时得到"装没装"与"启没启用"
-        states = await caps.installs.install_states(user_id, "skill")
-        for item in caps.catalog.list_items("skill"):
-            if item.id not in states:
-                continue
-            pol = await caps.policy.get("skill", item.id)
-            rows.append({
-                "name": item.id, "description": item.description,
-                "version": "1.0", "source": "installed",
-                "installed": True, "enabled": states[item.id], "builtin": True,
-                "revoked": pol["visibility"] == "hidden",
-            })
+    # 一次取回安装状态（{id: enabled}），同时得到"装没装"与"启没启用"
+    states = await caps.installs.install_states(user_id, "skill")
+    for item in caps.catalog.list_items("skill"):
+        if item.id not in states:
+            continue
+        pol = await caps.policy.get("skill", item.id)
+        rows.append({
+            "name": item.id, "description": item.description,
+            "version": "1.0", "source": "installed",
+            "installed": True, "enabled": states[item.id], "builtin": True,
+            "revoked": pol["visibility"] == "hidden",
+        })
     return rows
 
 

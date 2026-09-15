@@ -87,6 +87,32 @@ def render_skill_md(skill: dict) -> str:
     return f"---\n{front}\n---\n\n{skill['content'].strip()}\n"
 
 
+def _persist_skill(target: Path, *, name: str, description: str, content: str,
+                   version: str, author: str, tags: list[str] | None,
+                   allowed_tools: list[str] | None) -> dict:
+    """组装技能字段并落盘 SKILL.md（自建技能的写入与更新共用，保证字段集单一来源）。
+
+    Args:
+        target: 技能目录（调用方负责校验，须为已存在或待创建的目录）。
+        name: 技能名。
+        description: 技能描述。
+        content: 正文。
+        version: 版本号。
+        author: 作者。
+        tags: 标签列表。
+        allowed_tools: 允许的工具名列表。
+
+    Returns:
+        技能字典（builtin 恒为 False）。
+    """
+    skill = {"name": name, "description": description, "content": content,
+             "version": version, "author": author,
+             "tags": tags or [], "allowed_tools": allowed_tools or []}
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
+    return {**skill, "builtin": False}
+
+
 class SkillNameTaken(ValueError):
     """技能名已被占用（用户自建 / 公共层 / 内置任一来源）。
 
@@ -201,13 +227,10 @@ class SkillService:
         if origin is not None:
             label = "公共技能" if origin == "public" else "内置技能"
             raise SkillNameTaken(f"「{name}」与{label}同名，请换一个名字")
-        skill = {"name": name, "description": description, "content": content,
-                 "version": version, "author": author,
-                 "tags": tags or [], "allowed_tools": allowed_tools or []}
-        target = self.user_skills_dir(user_id) / name
-        target.mkdir(parents=True, exist_ok=True)
-        (target / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
-        return {**skill, "builtin": False}
+        return _persist_skill(
+            self.user_skills_dir(user_id) / name, name=name, description=description,
+            content=content, version=version, author=author,
+            tags=tags, allowed_tools=allowed_tools)
 
     def update_user_skill(self, user_id: str, name: str, *, description: str,
                           content: str, version: str = "1.0", author: str = "",
@@ -241,11 +264,10 @@ class SkillService:
         target = self.user_skills_dir(user_id) / name
         if not (target / "SKILL.md").is_file():
             raise SkillNotFound(f"技能不存在或不属于你: {name}")
-        skill = {"name": name, "description": description, "content": content,
-                 "version": version, "author": author,
-                 "tags": tags or [], "allowed_tools": allowed_tools or []}
-        (target / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
-        return {**skill, "builtin": False}
+        return _persist_skill(
+            target, name=name, description=description, content=content,
+            version=version, author=author,
+            tags=tags, allowed_tools=allowed_tools)
 
     def delete_user_skill(self, user_id: str, name: str) -> bool:
         """删除某用户的自建技能目录。
