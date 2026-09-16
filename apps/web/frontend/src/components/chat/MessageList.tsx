@@ -215,7 +215,7 @@ function TurnBlock({ turn, active, assistantName, platformDefault, pendingAskId 
         <UserMessage
           text={turn.user.text}
           attachments={turn.user.attachments}
-          jobId={turn.user.jobId}
+          systemWake={turn.user.systemWake}
         />
       )}
       <div className="flex flex-col gap-1.5">

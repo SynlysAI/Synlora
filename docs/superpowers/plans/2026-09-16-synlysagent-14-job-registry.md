@@ -3233,14 +3233,20 @@ git commit -m "装配后台任务链路：连接器注册表 + 任务服务 + �
 
 按文件既有的分组与书写风格插入（先读该文件的前 20 行确认格式）。改完随本任务的构建校验一起验证。
 
-**背景（照抄对象）:** 系统注入的唤醒消息在事件流里就是一条 `user/message`，若直接按用户气泡渲染，用户会看到"自己"发了一条莫名其妙的指令。因此按 `payload.kind === 'job_completed'` 分流，渲染成居中的浅色提示条——与 `session/compaction` 的压缩提示同属"系统提示"族。
+**背景（照抄对象）:** 系统注入的唤醒消息在事件流里就是一条 `user/message`，若直接按用户气泡渲染，用户会看到"自己"发了一条莫名其妙的指令。因此按 `payload.kind === 'job_completed'` 分流，渲染成居中的浅色提示条。参考实现是 Jiuwen `ChatPanel/MessageItem.tsx` 的 system 分支（`flex justify-center` + 药丸 + `bg-secondary border border-border`）；本项目此前没有这类元素（事件类型里的 `session/compaction` 只有类型声明，前端无渲染分支），这是第一个。
 
 - [ ] **Step 1: 给视图模型加标记**
 
 修改 `apps/web/frontend/src/stores/chat.ts` 第 25 行：
 
 ```ts
-  | { kind: 'user'; text: string; attachments?: MessageAttachment[]; jobId?: string }
+  | {
+      kind: 'user'
+      text: string
+      attachments?: MessageAttachment[]
+      /** 系统唤醒消息（后台任务完成注入）：渲染成居中提示条而非用户气泡。 */
+      systemWake?: boolean
+    }
 ```
 
 - [ ] **Step 2: 投影时识别唤醒消息**
@@ -3250,20 +3256,17 @@ git commit -m "装配后台任务链路：连接器注册表 + 任务服务 + �
 ```ts
     case 'user/message': {
       // 用户消息（含 steering 插话）逐条展示；附件（已上传文件引用）随事件展示。
-      // 后台任务完成唤醒（payload.kind=job_completed）是系统注入消息，带 jobId
-      // 供渲染层分流成提示条，不显示成用户气泡
+      // 后台任务完成唤醒（payload.kind=job_completed）是系统注入消息，分流成提示条、
+      // 不显示成用户气泡。**分流只认 kind**（job_id 是数据不是标志）：若拿 job_id
+      // 是否存在当分流依据，id 缺失时唤醒原文会回落到用户气泡上屏
       const attachments = Array.isArray(payload.attachments)
         ? (payload.attachments as MessageAttachment[])
         : undefined
-      const wakeJobId =
-        payload.kind === 'job_completed' && typeof payload.job_id === 'string'
-          ? payload.job_id
-          : undefined
       const item: ChatItem = {
         kind: 'user',
         text: String(payload.text ?? ''),
         attachments,
-        ...(wakeJobId ? { jobId: wakeJobId } : {}),
+        ...(payload.kind === 'job_completed' ? { systemWake: true } : {}),
       }
       return { ...state, items: [...state.items, item] }
     }
@@ -3271,7 +3274,7 @@ git commit -m "装配后台任务链路：连接器注册表 + 任务服务 + �
 
 - [ ] **Step 3: 渲染提示条**
 
-修改 `apps/web/frontend/src/components/chat/UserMessage.tsx`，把组件改为按 `jobId` 分流（新增一个内部展示分支，沿用既有 token）：
+修改 `apps/web/frontend/src/components/chat/UserMessage.tsx`，把组件改为按 `systemWake` 分流（新增一个内部展示分支，沿用既有 token）：
 
 ```tsx
 interface UserMessageProps {
@@ -3279,16 +3282,19 @@ interface UserMessageProps {
   text: string
   /** 随消息发送的附件（可选）。 */
   attachments?: MessageAttachment[]
-  /** 后台任务完成唤醒消息的关联任务 id（有值 = 系统提示条，不是用户气泡）。 */
-  jobId?: string
+  /** 系统唤醒消息标记（true = 居中提示条，不是用户气泡）。 */
+  systemWake?: boolean
 }
 
 /** 用户消息组件（轻量气泡 + 附件行；系统唤醒消息渲染为居中提示条）。 */
-export default function UserMessage({ text, attachments, jobId }: UserMessageProps) {
-  if (jobId) {
+export default function UserMessage({ text, attachments, systemWake }: UserMessageProps) {
+  if (systemWake) {
     return (
       <div className="flex justify-center">
-        <div className="flex max-w-[85%] items-center gap-2 rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-1.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+        {/* 底色用 interactive-bg-hover（明暗都是 alpha 叠加，随宿主底色自适应）：
+            bg-layer-1 在浅色下等于页面底色 bg-base（都是 bluish-00 纯白），白底白条
+            会让药丸形状完全消失；边框照 Jiuwen 系统消息条的 bg + border 组合 */}
+        <div className="flex max-w-[85%] items-center gap-2 rounded-[var(--sa-radius-full)] border border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-interactive-bg-hover)] px-3 py-1.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
           <svg
             width="13"
             height="13"
@@ -3329,7 +3335,7 @@ export default function UserMessage({ text, attachments, jobId }: UserMessagePro
         <UserMessage
           text={turn.user.text}
           attachments={turn.user.attachments}
-          jobId={turn.user.jobId}
+          systemWake={turn.user.systemWake}
         />
       )}
 ```
@@ -3348,7 +3354,7 @@ Expected: 构建通过（`tsc -b` 无类型错误）
 git add apps/web/frontend/src/stores/chat.ts apps/web/frontend/src/components/chat/UserMessage.tsx apps/web/frontend/src/components/chat/MessageList.tsx
 git commit -m "后台任务完成消息渲染为系统提示条
 
-- user/message 带 kind=job_completed 时投影出 jobId 标记
+- user/message 带 kind=job_completed 时投影出 systemWake 标记
 - 提示条只给固定文案，任务结论由助手回答承载"
 ```
 

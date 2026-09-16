@@ -19,18 +19,21 @@ interface UserMessageProps {
   text: string
   /** 随消息发送的附件（可选）。 */
   attachments?: MessageAttachment[]
-  /** 后台任务完成唤醒消息的关联任务 id（有值 = 系统提示条，不是用户气泡）。 */
-  jobId?: string
+  /** 系统唤醒消息标记（true = 居中提示条，不是用户气泡）。 */
+  systemWake?: boolean
 }
 
 /** 用户消息组件（轻量气泡 + 附件行；系统唤醒消息渲染为居中提示条）。 */
-export default function UserMessage({ text, attachments, jobId }: UserMessageProps) {
+export default function UserMessage({ text, attachments, systemWake }: UserMessageProps) {
   // 唤醒消息的正文是给模型的指令，对用户无意义：只回固定文案，
   // 完整结论由紧随其后的助手回答承载
-  if (jobId) {
+  if (systemWake) {
     return (
       <div className="flex justify-center">
-        <div className="flex max-w-[85%] items-center gap-2 rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-1.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+        {/* 底色用 interactive-bg-hover（明暗都是 alpha 叠加，随宿主底色自适应）：
+            bg-layer-1 在浅色下等于页面底色 bg-base（都是 bluish-00 纯白），白底白条
+            会让药丸形状完全消失；边框照 Jiuwen 系统消息条的 bg + border 组合 */}
+        <div className="flex max-w-[85%] items-center gap-2 rounded-[var(--sa-radius-full)] border border-[var(--sa-alias-border-l1)] bg-[var(--sa-alias-interactive-bg-hover)] px-3 py-1.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
           <svg
             width="13"
             height="13"
