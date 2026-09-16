@@ -270,7 +270,7 @@ async def test_refresh_advances_status_via_status_map(store):
                                      user={"sub": "u1"}, session_id="s1", ctx_extra={})
     job_id = submitted.data["job_id"]
     doc = await service.refresh(await service.get(job_id))
-    assert doc["status"] in ("pending", "running", "completed")
+    assert doc["status"] == "pending"  # 首态 queued 映射回 pending（同状态重复刷新不炸、不倒退）
     # 连推三次必然到 completed
     for _ in range(3):
         doc = await service.refresh(await service.get(job_id))
@@ -304,6 +304,21 @@ async def test_refresh_ignores_unmapped_status(store):
     doc = await service.refresh(await service.get(submitted.data["job_id"]))
     assert doc["status"] == "pending"
     assert doc["last_raw_status"] == "weird"
+
+
+async def test_refresh_fails_job_when_connector_gone(store):
+    """连接器消失（插件被卸载）时任务判失败并落结束时间。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    # 模拟插件被卸载：连接器从注册表消失
+    reg._items.pop("k")  # noqa: SLF001
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "failed"
+    assert "k" in doc["error"]
+    assert doc.get("ended_at")
 
 
 async def test_terminal_job_is_not_refreshed(store):
@@ -341,6 +356,27 @@ async def test_cancel_marks_cancelled(store):
     assert result.ok is True
     doc = await service.get(submitted.data["job_id"])
     assert doc["status"] == "cancelled"
+
+
+async def test_cancel_without_external_ack(store):
+    """外部系统未受理取消时仍收敛本地状态，文案区分未确认。"""
+    class RefusingConnector(FakeConnector):
+        async def cancel(self, external_id, ctx):
+            return False
+
+    service, reg = _job_service(store)
+    reg.register(RefusingConnector("k", plugin_id="p1", script=["queued"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    result = await service.handle({"action": "cancel",
+                                   "job_id": submitted.data["job_id"]},
+                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert result.ok is True
+    assert "未确认" in result.content
+    doc = await service.get(submitted.data["job_id"])
+    assert doc["status"] == "cancelled"
+    assert doc["cancel_accepted"] is False
 
 
 async def test_cancel_terminal_job_is_rejected(store):

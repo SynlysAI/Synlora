@@ -313,11 +313,13 @@ class JobService:
         if doc is None or str(doc.get("user_id")) != user_id:
             return ToolResult(ok=False, content=f"任务不存在: {job_id}",
                               error="not_found")
-        status = JobStatus(doc["status"])
-        if is_terminal(status):
+        # 与 describe 同一口径：脏状态（缺失/未知字符串）一律当作"非终态"，
+        # 不裸转换 JobStatus（KeyError/ValueError 会以内部报错文本逃到模型侧）
+        raw_status = str(doc.get("status", ""))
+        if is_terminal(raw_status):
             return ToolResult(
                 ok=False,
-                content=f"任务已结束（{status.value}），无需取消。",
+                content=f"任务已结束（{raw_status}），无需取消。",
                 error="already_finished")
         registered = self._connectors.get(str(doc.get("kind", "")))
         accepted = False
