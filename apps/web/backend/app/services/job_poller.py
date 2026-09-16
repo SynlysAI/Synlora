@@ -60,7 +60,11 @@ class JobPoller:
         _LOGGER.info("任务轮询器已停止")
 
     async def _loop(self) -> None:
-        """定时 tick；单轮异常只记日志，不退出循环。"""
+        """定时 tick；单轮异常只记日志，不退出循环。
+
+        周期为「tick 耗时 + interval」：tick 内的外部调用会叠加到间隔上；
+        当前 tick 只做 DB 往返，漂移可忽略。
+        """
         while True:
             try:
                 await self.tick()
