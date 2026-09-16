@@ -856,14 +856,31 @@ class JobConnectorRegistry:
 
         Args:
             connector: 连接器实例。
-            status_map: 外部状态原文（小写）→ 统一状态。
+            status_map: 外部状态原文 → 统一状态；键在注册时统一归一为
+                小写并去首尾空白，调用方大小写可随意。
 
         Raises:
-            ValueError: kind 为空或已被注册。
+            ValueError: kind 为空、连接器未实现协议（缺 submit/poll/cancel
+                或它们不是 async def）、或该 kind 已被注册。
+
+        Note:
+            `isinstance` 配 @runtime_checkable 只校验成员**存在性**，因此额外
+            用 iscoroutinefunction 校验三个方法是异步的——漏写 async 的连接器
+            若放行，会在轮询 `await` 时才抛 TypeError，而那条路径只累计失败
+            计数、任务永不终结，故障点离出错点很远。
         """
         kind = str(getattr(connector, "kind", "")).strip()
         if not kind:
             raise ValueError("连接器 kind 不能为空")
+        if not isinstance(connector, JobConnector):
+            raise ValueError(
+                f"连接器未实现 JobConnector 协议（需 kind/plugin_id 与 "
+                f"submit/poll/cancel 三个异步方法）: {type(connector).__name__}")
+        for method in ("submit", "poll", "cancel"):
+            if not inspect.iscoroutinefunction(getattr(connector, method)):
+                raise ValueError(
+                    f"连接器方法必须是 async def: "
+                    f"{type(connector).__name__}.{method}")
         if kind in self._items:
             raise ValueError(f"任务类型已注册: {kind}")
         normalized = {str(k).strip().lower(): v
@@ -883,6 +900,17 @@ class JobConnectorRegistry:
 def _new_external_id() -> str:
     """生成测试用外部 id。"""
     return "fake-" + uuid.uuid4().hex[:8]
+
+
+# FakeConnector 状态脚本的标准映射（注册 fake 连接器时直接用它，
+# 避免手写映射时漏项——漏映射会让该状态被静默忽略、任务永不终结）
+FAKE_STATUS_MAP: dict[str, JobStatus] = {
+    "queued": JobStatus.PENDING,
+    "doing": JobStatus.RUNNING,
+    "done": JobStatus.COMPLETED,
+    "failed": JobStatus.FAILED,
+    "cancelled": JobStatus.CANCELLED,
+}
 
 
 class FakeConnector:
@@ -980,6 +1008,11 @@ git commit -m "新增任务连接器协议与注册表
 **Files:**
 - Create: `apps/web/backend/app/services/job_service.py`
 - Test: `apps/web/backend/tests/test_job_service.py`（追加）
+
+> 本任务及其后的测试在注册 `FakeConnector` 时，**优先用 `FAKE_STATUS_MAP`**
+> （Task 4 提供的标准映射常量），而不是手写 `{"done": JobStatus.COMPLETED}`——
+> 手写漏项会让对应状态被静默忽略、任务永不终结。下面的用例里若见到手写映射，
+> 等价于 `FAKE_STATUS_MAP` 的子集，两种写法都可通过。
 
 - [ ] **Step 1: 写失败测试**
 
