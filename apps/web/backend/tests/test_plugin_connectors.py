@@ -281,3 +281,62 @@ async def test_fetch_error_empty_when_no_error_payload(connectors, monkeypatch):
     raman = next(c for c in connectors if c.kind == "spec.task.raman")
     text = await raman.fetch_error("T-9", {"config": {"base_url": "http://spec.test"}})
     assert text == ""
+
+
+def _capture_bodies(monkeypatch, module):
+    """把上游请求体收集起来，返回 (收集列表, MockTransport 处理器)。"""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/files/upload":
+            return httpx.Response(200, json={"code": 0, "data": {"file_id": "F1"}})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"code": 0,
+                                         "data": {"task_id": "T-1",
+                                                  "status": "PENDING"}})
+
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(handler))
+    return bodies
+
+
+async def test_raman_submit_injects_default_mode(connectors, workspace, monkeypatch):
+    """Raman 未指定 mode 时注入默认 function_groups。
+
+    上游 mode 默认值是 greedy_decode，而 Raman 实现不支持它——不兜默认值的话
+    每次提交都必然白跑一趟上游再失败。
+    """
+    module = _load_module()
+    bodies = _capture_bodies(monkeypatch, module)
+    raman = next(c for c in connectors if c.kind == "spec.task.raman")
+    await raman.submit({"path": "sample.nmr"}, _ctx(workspace))
+    assert bodies[0]["params"]["mode"] == "function_groups"
+
+
+async def test_raman_submit_keeps_explicit_mode(connectors, workspace, monkeypatch):
+    """显式指定 mode 时不被默认值覆盖（含显式传 greedy_decode）。"""
+    module = _load_module()
+    bodies = _capture_bodies(monkeypatch, module)
+    raman = next(c for c in connectors if c.kind == "spec.task.raman")
+    await raman.submit({"path": "sample.nmr", "params": {"mode": "retrieval", "k": 5}},
+                       _ctx(workspace))
+    assert bodies[0]["params"]["mode"] == "retrieval"
+    assert bodies[0]["params"]["k"] == 5
+
+
+async def test_raman_submit_fills_empty_mode(connectors, workspace, monkeypatch):
+    """mode 传了空串也按未指定处理（空串不是有效模式）。"""
+    module = _load_module()
+    bodies = _capture_bodies(monkeypatch, module)
+    raman = next(c for c in connectors if c.kind == "spec.task.raman")
+    await raman.submit({"path": "sample.nmr", "params": {"mode": ""}},
+                       _ctx(workspace))
+    assert bodies[0]["params"]["mode"] == "function_groups"
+
+
+async def test_ir_submit_does_not_inject_mode(connectors, workspace, monkeypatch):
+    """IR 不注入 mode：上游默认 greedy_decode 对 IR 有效，不替上游做选择。"""
+    module = _load_module()
+    bodies = _capture_bodies(monkeypatch, module)
+    ir = next(c for c in connectors if c.kind == "spec.task.ir")
+    await ir.submit({"path": "sample.nmr"}, _ctx(workspace))
+    assert "mode" not in bodies[0]["params"]

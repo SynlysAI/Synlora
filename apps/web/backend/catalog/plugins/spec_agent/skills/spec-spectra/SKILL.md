@@ -1,7 +1,7 @@
 ---
 name: spec-spectra
 description: 谱图解析异步任务（NMR / IR / GPC / Raman / LC-MS）。用户要求解析谱图文件、给出谱峰或分子量分布时使用；用 job.submit 提交，完成后系统会通知你。含五种任务的完整参数表与默认值。
-version: "1.1"
+version: "1.2"
 author: AI⁴MS
 tags:
   - 谱图
@@ -20,7 +20,7 @@ job.submit(
   kind="spec.task.raman",              # 任务类型，见下表
   params={
     "path": "files/sample.txt",        # 必填：工作区内的相对路径
-    "params": {"mode": "beam_search"}, # 可选：透传给上游的任务参数对象
+    "params": {"x0": 200, "x1": 3500}, # 可选：透传给上游的任务参数对象
   },
   label="样品 A 的拉曼解析")            # 可选：给用户看的简述
 ```
@@ -103,37 +103,37 @@ job.submit(kind="spec.task.ir", params={
 
 参数与 IR 相同，但有**两个必须注意的差异**：
 
-| 参数 | 默认值 | Raman 注意事项 |
+| 参数 | 实际默认值 | Raman 注意事项 |
 |---|---|---|
-| `mode` | `"greedy_decode"` | **Raman 不支持 `greedy_decode`**，见下 |
+| `mode` | `"function_groups"` | 平台兜的默认值，见下（上游自己的默认值是 Raman 不支持的） |
 | `k` | `3` | 同 IR |
 | `x0` / `x1` | `400.0` / `4000.0` | 同 IR |
 | `transmittance` | `false` | **Raman 不能设为 `true`**（会报错） |
 | `device` | `"auto"` | 同 IR |
 
-### 提交 Raman 必须显式指定 mode
+### Raman 的 mode（平台已兜默认值）
 
-上游 `mode` 的默认值是 `greedy_decode`，**而 Raman 的实现不支持它**——不传
-`mode` 一定失败，返回 `暂不支持Raman的greedy_decode模式`。所以 Raman 每次都要显式传。
+上游 `mode` 的默认值是 `greedy_decode`，**而 Raman 的实现不支持它**——不指定
+就会失败。所以平台在你没给 `mode` 时**会自动补 `function_groups`**：
 
-**Raman 当前只有一个可直接使用的模式**：
+**Raman 直接提交即可，不需要手动传 `mode`**：
+
+```
+job.submit(kind="spec.task.raman",
+           params={"path": "files/sample.txt"},
+           label="样品 A 的拉曼解析")
+```
+
+如果要换解析方式，可以显式指定：
 
 | mode | 可用性 | 说明 |
 |---|---|---|
-| `function_groups` | ✅ 可用 | 官能团识别 |
+| `function_groups` | ✅ 平台默认值 | 官能团识别 |
 | `retrieval` | ⚠️ 资源齐备但未实测 | 库检索，配合 `k` 用 |
-| `beam_search` | ❌ 当前部署缺模型文件 | 需要 `raman_generation.pth`，该文件在当前部署中缺失 |
-| `greedy_decode` | ❌ 上游不支持 | 就是上面那个默认值 |
+| `beam_search` | ❌ 当前部署缺模型文件 | 需要 `raman_generation.pth`，该文件缺失 |
+| `greedy_decode` | ❌ 上游不支持 | 显式传了也会失败（平台不会替你改掉显式传的值） |
 
-**默认就用 `function_groups`**。不要传 `greedy_decode`，也不要原样重试——先看
-`job.status` 返回的失败原因再决定怎么改。
-
-```
-job.submit(kind="spec.task.raman", params={
-  "path": "files/sample.txt",
-  "params": {"mode": "function_groups"}},
-  label="样品 A 的拉曼解析")
-```
+失败时先看 `job.status` 返回的原因再决定要不要改参数重试，不要原样重提。
 
 ---
 

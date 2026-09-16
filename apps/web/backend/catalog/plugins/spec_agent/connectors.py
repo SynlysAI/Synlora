@@ -49,20 +49,23 @@ class SpectraTaskConnector:
     Attributes:
         kind: 本平台的任务类型（如 spec.task.nmr）。
         endpoint: 上游 URL 路径段（nmr/ir/gpc/raman/lcms）——决定实际行为。
+        default_mode: 上游 `mode` 缺省时补的值；空串 = 不补（沿用上游默认）。
         status_map: 上游状态原文 → 统一状态。
     """
 
     plugin_id = PLUGIN_ID
 
-    def __init__(self, kind: str, endpoint: str) -> None:
+    def __init__(self, kind: str, endpoint: str, default_mode: str = "") -> None:
         """初始化。
 
         Args:
             kind: 本平台任务类型。
             endpoint: 上游 URL 路径段。
+            default_mode: 调用方未指定 `mode` 时补的默认模式；空串 = 不补。
         """
         self.kind = kind
         self.endpoint = endpoint
+        self.default_mode = default_mode
         self.status_map = dict(SPEC_STATUS_MAP)
 
     # ---------- 连接器协议 ----------
@@ -88,7 +91,7 @@ class SpectraTaskConnector:
             file_id = await self._upload(client, base_url, headers, target)
             body = {
                 "input": {"input_type": "file_id", "file_id": file_id},
-                "params": params.get("params") or {},
+                "params": self._upstream_params(params),
             }
             try:
                 resp = await client.post(
@@ -211,6 +214,27 @@ class SpectraTaskConnector:
         return False
 
     # ---------- 内部 ----------
+
+    def _upstream_params(self, params: dict) -> dict:
+        """整理透传给上游的任务参数对象。
+
+        Args:
+            params: 工具传入的参数（取其中的嵌套 `params` 对象）。
+
+        Returns:
+            交给上游的 params 对象。
+
+        Note:
+            `default_mode` 非空且调用方没给 `mode`（缺字段或空串）时补上默认值。
+            上游 `IrRamanTaskParams.mode` 的默认值是 `greedy_decode`，而 Raman 的
+            实现不支持它——不补默认值的话，Raman 只要调用方漏传 `mode` 就必然
+            白跑一趟上游再失败。**只在缺省时补**：调用方显式传的值一律尊重
+            （哪怕是会失败的 `greedy_decode`，也不该被我们悄悄换掉）。
+        """
+        upstream = dict(params.get("params") or {})
+        if self.default_mode and not upstream.get("mode"):
+            upstream["mode"] = self.default_mode
+        return upstream
 
     def _conn(self, ctx: dict) -> tuple[str, dict[str, str]]:
         """取上游地址与请求头。
@@ -359,10 +383,13 @@ class SpectraTaskConnector:
 
 
 # 本插件贡献的连接器（宿主 PluginService 挂载时注册）
+# Raman 兜默认 mode：上游默认值 greedy_decode 是 Raman 明确不支持的（见
+# analysis/raman/main.py 的 raise），漏传就必然失败；IR 的默认值有效，不补
 CONNECTORS = [
     SpectraTaskConnector("spec.task.nmr", "nmr"),
     SpectraTaskConnector("spec.task.ir", "ir"),
     SpectraTaskConnector("spec.task.gpc", "gpc"),
-    SpectraTaskConnector("spec.task.raman", "raman"),
+    SpectraTaskConnector("spec.task.raman", "raman",
+                         default_mode="function_groups"),
     SpectraTaskConnector("spec.task.lcms", "lcms"),
 ]
