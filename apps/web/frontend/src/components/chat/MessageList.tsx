@@ -211,7 +211,13 @@ function TurnBlock({ turn, active, assistantName, platformDefault, pendingAskId 
 
   return (
     <section className="mt-6 first:mt-0">
-      {turn.user && <UserMessage text={turn.user.text} attachments={turn.user.attachments} />}
+      {turn.user && (
+        <UserMessage
+          text={turn.user.text}
+          attachments={turn.user.attachments}
+          jobId={turn.user.jobId}
+        />
+      )}
       <div className="flex flex-col gap-1.5">
         {hasHeader && (
           <TurnHeader name={assistantName} platformDefault={platformDefault} active={active} />

@@ -22,7 +22,7 @@ import { useSessionsStore } from './sessions'
 
 /** 聊天条目视图模型（由会话事件投影）。 */
 export type ChatItem =
-  | { kind: 'user'; text: string; attachments?: MessageAttachment[] }
+  | { kind: 'user'; text: string; attachments?: MessageAttachment[]; jobId?: string }
   | { kind: 'reasoning'; text: string }
   | {
       kind: 'assistant'
@@ -210,11 +210,22 @@ export function reduceEvent(state: ChatProjection, ev: SessionEvent): ChatProjec
     case 'turn/start':
       return { ...state, turnStartTs: ev.ts }
     case 'user/message': {
-      // 用户消息（含 steering 插话）逐条展示；附件（已上传文件引用）随事件展示
+      // 用户消息（含 steering 插话）逐条展示；附件（已上传文件引用）随事件展示。
+      // 后台任务完成唤醒（payload.kind=job_completed）是系统注入消息，带 jobId
+      // 供渲染层分流成提示条，不显示成用户气泡
       const attachments = Array.isArray(payload.attachments)
         ? (payload.attachments as MessageAttachment[])
         : undefined
-      const item: ChatItem = { kind: 'user', text: String(payload.text ?? ''), attachments }
+      const wakeJobId =
+        payload.kind === 'job_completed' && typeof payload.job_id === 'string'
+          ? payload.job_id
+          : undefined
+      const item: ChatItem = {
+        kind: 'user',
+        text: String(payload.text ?? ''),
+        attachments,
+        ...(wakeJobId ? { jobId: wakeJobId } : {}),
+      }
       return { ...state, items: [...state.items, item] }
     }
     case 'llm/delta':

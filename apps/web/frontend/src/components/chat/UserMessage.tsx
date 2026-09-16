@@ -19,10 +19,38 @@ interface UserMessageProps {
   text: string
   /** 随消息发送的附件（可选）。 */
   attachments?: MessageAttachment[]
+  /** 后台任务完成唤醒消息的关联任务 id（有值 = 系统提示条，不是用户气泡）。 */
+  jobId?: string
 }
 
-/** 用户消息组件（轻量气泡 + 附件行）。 */
-export default function UserMessage({ text, attachments }: UserMessageProps) {
+/** 用户消息组件（轻量气泡 + 附件行；系统唤醒消息渲染为居中提示条）。 */
+export default function UserMessage({ text, attachments, jobId }: UserMessageProps) {
+  // 唤醒消息的正文是给模型的指令，对用户无意义：只回固定文案，
+  // 完整结论由紧随其后的助手回答承载
+  if (jobId) {
+    return (
+      <div className="flex justify-center">
+        <div className="flex max-w-[85%] items-center gap-2 rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-1.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="shrink-0 opacity-70"
+            aria-hidden="true"
+          >
+            <circle cx="10" cy="10" r="7.2" />
+            <path d="M10 6.4v4.2l2.6 1.6" />
+          </svg>
+          <span className="min-w-0 truncate">后台任务已完成，正在汇总结果…</span>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="flex items-end justify-end">
       <div className="max-w-[75%] rounded-[var(--sa-radius-lg)] rounded-br-[var(--sa-radius-sm)] bg-[var(--sa-alias-interactive-bg-active)] px-3.5 py-2 text-[15px] leading-relaxed text-[var(--sa-alias-label-primary)]">
