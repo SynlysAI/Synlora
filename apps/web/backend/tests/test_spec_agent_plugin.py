@@ -42,10 +42,12 @@ def test_manifest_is_valid_and_complete():
     assert [f["key"] for f in pkg.config_schema] == ["base_url", "token"]
     assert pkg.config_schema[0]["required"] is True
     assert pkg.config_schema[1]["secret"] is True
-    assert pkg.skills == ["spec-nmr"]
+    assert pkg.skills == ["spec-nmr", "spec-spectra"]
     assert pkg.skills_root is not None
+    assert pkg.connectors_module == "connectors.py"
     assert pkg.expert["name"] == "谱图解析专家"
     assert "spec.nmr.forward" in pkg.expert["tool_whitelist"]
+    assert "job.submit" in pkg.expert["tool_whitelist"]
 
 
 def test_tools_registered_names():
@@ -309,3 +311,32 @@ def test_skill_file_parses():
     md = REPO_PLUGINS / "spec_agent" / "skills" / "spec-nmr" / "SKILL.md"
     skill = parse_skill_md(md.read_text(encoding="utf-8"))
     assert skill["name"] == "spec-nmr" and "核磁" in skill["description"]
+
+
+def test_plugin_declares_connectors_and_skill():
+    """spec_agent 插件声明连接器模块与谱图任务技能。"""
+    plugin_dir = REPO_PLUGINS / "spec_agent"
+    manifest = json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))
+    assert manifest["connectors_module"] == "connectors.py"
+    assert "spec-spectra" in manifest["skills"]
+    skill = plugin_dir / "skills" / "spec-spectra" / "SKILL.md"
+    assert skill.is_file()
+    text = skill.read_text(encoding="utf-8")
+    for kind in ("spec.task.nmr", "spec.task.ir", "spec.task.gpc",
+                 "spec.task.raman", "spec.task.lcms"):
+        assert kind in text
+
+
+def test_real_plugin_registers_all_five_kinds():
+    """真实插件包经 loader + 注册表能挂出 5 个 kind（防声明漏配的静默失效）。"""
+    from app.catalog.loader import load_plugin_connectors
+    from app.services.job_connectors import JobConnectorRegistry
+
+    package = scan_catalog([REPO_CATALOG]).plugins["spec_agent"]
+    assert package.connectors_module == "connectors.py"
+
+    reg = JobConnectorRegistry()
+    for connector in load_plugin_connectors(package):
+        reg.register(connector)
+    assert reg.kinds == ["spec.task.gpc", "spec.task.ir", "spec.task.lcms",
+                         "spec.task.nmr", "spec.task.raman"]

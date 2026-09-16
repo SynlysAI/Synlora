@@ -5,6 +5,7 @@
   "description": "核磁（NMR）谱图解析：正向预测（结构→谱）、反向预测（谱→结构）与谱图数据库检索",
   "author": "AI⁴MS",
   "tools_module": "tools.py",
+  "connectors_module": "connectors.py",
   "config_schema": [
     {
       "key": "base_url",
@@ -24,7 +25,7 @@
       "description": "调用 Spec_Agent 的 Bearer token；留空表示不发送认证头"
     }
   ],
-  "skills": ["spec-nmr"],
+  "skills": ["spec-nmr", "spec-spectra"],
   "expert": {
     "name": "谱图解析专家",
     "avatar": "🔬",
@@ -34,6 +35,10 @@
       "spec.nmr.forward",
       "spec.nmr.reverse",
       "spec.nmr.search",
+      "job.submit",
+      "job.status",
+      "job.list",
+      "job.cancel",
       "file.read",
       "file.write",
       "file.list",
