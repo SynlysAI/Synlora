@@ -100,14 +100,14 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
     setExpanded((m) => ({ ...m, [projectId]: !m[projectId] }))
 
   return (
-    <div className="flex h-full flex-col gap-2 p-2.5">
+    <div className="flex h-full flex-col gap-2 px-3 py-1.5">
       {/* 新会话主按钮（DSH 式：描边低调按钮） */}
       <button
         type="button"
         onClick={() => void handleNew()}
-        className="flex shrink-0 items-center justify-center gap-1.5 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-[7px] text-[13px] font-medium text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-base)] hover:border-[var(--sa-alias-border-l3)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+        className="flex h-9.5 shrink-0 items-center justify-center gap-1.5 rounded-[12px] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-4 text-sm font-medium text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-base)] hover:border-[var(--sa-alias-border-l3)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
       >
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
           <path d="M8 3v10M3 8h10" />
         </svg>
         新会话
@@ -136,7 +136,7 @@ export default function Sidebar({ onNavigate }: SidebarProps) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="搜索会话"
           aria-label="搜索会话"
-          className="w-full rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] py-1.5 pl-7.5 pr-2 text-[13px] text-[var(--sa-alias-label-primary)] outline-none transition-colors placeholder:text-[var(--sa-alias-label-caption)] focus:border-[var(--sa-alias-button-ghost-active-border)]"
+          className="h-7.5 w-full rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] pl-7.5 pr-2 text-sm text-[var(--sa-alias-label-primary)] outline-none transition-colors placeholder:text-[var(--sa-alias-label-caption)] focus:border-[var(--sa-alias-button-ghost-active-border)]"
         />
       </div>
 

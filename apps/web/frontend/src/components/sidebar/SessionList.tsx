@@ -113,7 +113,7 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
             if (e.key === 'Escape') setEditing(false)
           }}
           onBlur={() => void commitRename()}
-          className={`w-full rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-button-ghost-active-border)] bg-[var(--sa-specific-input-major)] py-1.5 text-[13px] text-[var(--sa-alias-label-primary)] outline-none ${
+          className={`h-8 w-full rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-button-ghost-active-border)] bg-[var(--sa-specific-input-major)] text-sm text-[var(--sa-alias-label-primary)] outline-none ${
             indent ? 'pl-8 pr-2.5' : 'px-2.5'
           }`}
         />
@@ -122,7 +122,7 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
           type="button"
           onClick={onSelect}
           title={session.title}
-          className={`relative flex w-full items-center rounded-[var(--sa-radius-sm)] py-[7px] text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
+          className={`relative flex h-8 w-full items-center rounded-[var(--sa-radius-sm)] text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
             indent ? 'pl-8 pr-2.5' : 'px-2.5'
           } ${
             active
@@ -139,11 +139,11 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
               className="absolute left-0 top-1/2 h-[14px] w-[2.5px] -translate-y-1/2 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
             />
           )}
-          <span className="min-w-0 flex-1 truncate pr-2 text-[13px] text-[var(--sa-alias-label-primary)]">
+          <span className="min-w-0 flex-1 truncate pr-2 text-sm text-[var(--sa-alias-label-primary)]">
             {session.title || '新对话'}
           </span>
           {/* 时间：悬停 / 键盘聚焦时淡出，把位置让给右侧「⋯」（两者交叉淡入淡出） */}
-          <span className="shrink-0 text-[11px] text-[var(--sa-alias-label-caption)] transition-opacity duration-[var(--sa-duration-fast)] group-hover:opacity-0 group-focus-within:opacity-0">
+          <span className="shrink-0 text-xs text-[var(--sa-alias-label-caption)] transition-opacity duration-[var(--sa-duration-fast)] group-hover:opacity-0 group-focus-within:opacity-0">
             {formatRelativeTime(session.updated_at)}
           </span>
         </button>
@@ -176,7 +176,7 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
               setDraft(session.title)
               setEditing(true)
             }}
-            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-sm text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
           >
             <EditIcon className="h-3.5 w-3.5 shrink-0" />
             重命名
@@ -184,7 +184,7 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
           <button
             type="button"
             onClick={() => void toggleArchive()}
-            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-sm text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
           >
             <ArchiveIcon className="h-3.5 w-3.5 shrink-0" />
             {session.archived ? '取消归档' : '归档'}
@@ -196,7 +196,7 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
               setDeleteError(null)
               setConfirmOpen(true)
             }}
-            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
+            className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-sm text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
           >
             <DeleteIcon className="h-3.5 w-3.5 shrink-0" />
             删除
@@ -310,7 +310,7 @@ export default function SessionList({
           type="button"
           aria-expanded
           onClick={() => setRestOpen(false)}
-          className="px-2.5 py-1.5 text-left text-[12px] text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
+          className="h-7 px-2.5 text-left text-xs text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
         >
           收起
         </button>
@@ -319,7 +319,7 @@ export default function SessionList({
           type="button"
           aria-expanded={false}
           onClick={() => setRestOpen(true)}
-          className="px-2.5 py-1.5 text-left text-[12px] text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
+          className="h-7 px-2.5 text-left text-xs text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
         >
           展开其余 {restCount} 个会话
         </button>

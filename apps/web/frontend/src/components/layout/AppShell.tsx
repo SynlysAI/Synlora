@@ -21,8 +21,8 @@ import { useSessionsStore } from '@/stores/sessions'
 import { useDarkTheme } from '@/utils/theme'
 
 /** 左栏宽度默认值与拖拽钳制范围（px）。 */
-const LEFT_DEFAULT = 260
-const LEFT_MIN = 200
+const LEFT_DEFAULT = 280
+const LEFT_MIN = 240
 const LEFT_MAX = 400
 /** 右栏宽度默认值与拖拽钳制范围（px）。 */
 const RIGHT_DEFAULT = 320
@@ -148,7 +148,7 @@ function UserMenu() {
 
   /** 下拉菜单项样式。 */
   const itemClass =
-    'flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] ' +
+    'flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-sm ' +
     'text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] ' +
     'hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)]'
 
@@ -162,14 +162,14 @@ function UserMenu() {
         onClick={() => setOpen((v) => !v)}
         className="flex min-w-0 items-center gap-2 rounded-[var(--sa-radius-md)] px-1.5 py-1.5 text-left transition-colors duration-200 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
       >
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-interactive-bg-active)] text-[12px] font-medium text-[var(--sa-alias-label-primary)]">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-interactive-bg-active)] text-xs font-medium text-[var(--sa-alias-label-primary)]">
           {user.username[0]}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium text-[var(--sa-alias-label-primary)]">
+          <span className="block truncate text-sm font-medium text-[var(--sa-alias-label-primary)]">
             {user.username}
           </span>
-          <span className="block text-[11px] text-[var(--sa-alias-label-caption)]">
+          <span className="block text-xs text-[var(--sa-alias-label-caption)]">
             {user.role === 'admin' ? '管理员' : '用户'}
           </span>
         </span>
@@ -268,7 +268,7 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
         <Sidebar />
       </div>
       {/* 底部：主题切换 + 用户菜单（Jiuwen 式设置区） */}
-      <div className="flex items-center gap-1 border-t border-[var(--sa-alias-border-l1)] p-2">
+      <div className="flex items-center gap-1 border-t border-[var(--sa-alias-border-l1)] px-3 py-2">
         <div className="min-w-0 flex-1">
           <UserMenu />
         </div>

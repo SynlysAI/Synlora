@@ -24,14 +24,14 @@ interface SectionHeadingProps {
 /** 分组标题行组件。 */
 export default function SectionHeading({ label, actionLabel, onAction, className = '' }: SectionHeadingProps) {
   return (
-    <div className={`group/section flex h-6 shrink-0 items-center justify-between px-2 ${className}`}>
-      <span className="truncate text-xs leading-none text-[var(--sa-alias-label-caption)]">{label}</span>
+    <div className={`group/section flex h-8 shrink-0 items-center justify-between px-2 ${className}`}>
+      <span className="truncate text-sm leading-none text-[var(--sa-alias-label-caption)]">{label}</span>
       <button
         type="button"
         onClick={onAction}
         aria-label={actionLabel}
         title={actionLabel}
-        className="pointer-events-none flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-caption)] opacity-0 transition-opacity duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)] focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/section:pointer-events-auto group-hover/section:opacity-100"
+        className="pointer-events-none flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-caption)] opacity-0 transition-opacity duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)] hover:text-[var(--sa-alias-label-primary)] focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/section:pointer-events-auto group-hover/section:opacity-100"
       >
         <PlusIcon className="h-4 w-4" />
       </button>

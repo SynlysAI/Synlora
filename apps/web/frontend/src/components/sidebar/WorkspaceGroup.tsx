@@ -125,7 +125,7 @@ function WorkspaceRow({
           onClick={onToggle}
           aria-expanded={expanded}
           title={project.name}
-          className="flex min-h-9 w-full items-center gap-1.5 rounded-[var(--sa-radius-md)] px-2 pr-14 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)]"
+          className="flex h-8.5 w-full items-center gap-1.5 rounded-[var(--sa-radius-md)] px-2 pr-14 text-left text-sm text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)]"
         >
           {expanded ? (
             <FolderFoldIcon className="h-3.5 w-3.5 shrink-0" />
@@ -182,7 +182,7 @@ function WorkspaceRow({
                 setRenameError(null)
                 setRenameOpen(true)
               }}
-              className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+              className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-sm text-[var(--sa-alias-label-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
             >
               <EditIcon className="h-3.5 w-3.5 shrink-0" />
               重命名
@@ -195,7 +195,7 @@ function WorkspaceRow({
                 setDeleteError(null)
                 setConfirmOpen(true)
               }}
-              className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-[13px] text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
+              className="flex w-full items-center gap-2 rounded-[var(--sa-radius-sm)] px-2.5 py-1.5 text-left text-sm text-[var(--sa-alias-state-error-primary)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-alias-interactive-bg-hover-danger)]"
             >
               <DeleteIcon className="h-3.5 w-3.5 shrink-0" />
               删除
