@@ -1209,6 +1209,24 @@ async def test_ai4ms_token_injected_into_context_extra(app, client, admin_header
     assert fake.calls[-1]["sub"] == "u-admin"  # 用当轮登录用户 payload 解析
 
 
+async def test_context_extra_carries_wake_source_key(app, client, admin_headers,
+                                                     monkeypatch):
+    """普通发消息时 context_extra 必带 wake_source 空 dict。
+
+    跨包 key 契约：宿主写 `context_extra["wake_source"]`、harness 按同一字面量
+    读它；拼错时两边各自测试都会全绿（宿主只断言自己写了、harness 只断言
+    读不到时的默认行为），故在此钉死这个 key 名。
+    """
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
+    captured = _capture_run_args(monkeypatch)
+    sid = await _make_session(client, admin_headers)
+    await _chat_once(client, admin_headers, sid)
+
+    assert captured[-1]["context_extra"]["wake_source"] == {}
+
+
 async def test_ai4ms_token_absent_when_identity_unresolved(app, client, admin_headers,
                                                            monkeypatch):
     """解析不到 AI⁴MS 账号 → 不注入该键（插件回落配置里的服务 token）。"""

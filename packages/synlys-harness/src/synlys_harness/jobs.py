@@ -67,5 +67,7 @@ def job_wake_kind(wake_source: dict) -> str:
 
     Returns:
         "job_completed"；来源非任务唤醒时返回空串。
+
+    返回的字面量与前端的渲染判定绑定，改名需同步改前端。
     """
     return "job_completed" if wake_source.get("job_id") else ""

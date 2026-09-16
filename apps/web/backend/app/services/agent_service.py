@@ -65,6 +65,14 @@ class TooManyRuns(Exception):
     """并发运行数超限（会话级互斥：同会话已有进行中消息；或用户级上限）。"""
 
 
+class WakeTargetGone(RuntimeError):
+    """唤醒目标已消失（会话被删除）——通知无接收方，调用方应静默跳过。
+
+    继承 RuntimeError 以兼容既有的宽捕获，但语义上属正常的业务情形
+    （任务挂起期间用户删了会话），不是编程错误。
+    """
+
+
 class ActiveRun:
     """一次进行中的对话运行（queue 供 SSE 消费，done 标记收尾完成）。"""
 
@@ -570,6 +578,10 @@ class AgentService:
         Args:
             repos: repo 集中访问对象（解析会话装配用）。
             project_service: 项目服务（解析会话工作根用）。
+
+        说明：repos / project_service 在 AgentService 构造前即已就绪，本可进构造
+        签名；做成 setter 是为了与 set_run_finished_hook 对称、让装配阶段的接线
+        集中在一处。代价是漏接线时失败点推迟到 wake() 运行期（会抛 RuntimeError）。
         """
         self._repos = repos
         self._project_service = project_service
@@ -589,6 +601,46 @@ class AgentService:
         """
         return bool(self._active_by_session.get(session_id))
 
+    async def wake(self, session_id: str, text: str, job_id: str = "") -> str:
+        """以系统通知文本启动一轮新 run（后台任务完成后唤醒 agent）。
+
+        Args:
+            session_id: 会话 id。
+            text: 注入的用户消息文本（系统生成的通知）。
+            job_id: 关联任务 id（写入事件 payload 供前端渲染提示条）。
+
+        Returns:
+            新 run 的 run_id。
+
+        Raises:
+            RuntimeError: 未注入运行时依赖（装配漏接线，属编程错误）。
+            WakeTargetGone: 会话已被删除（任务挂起期间用户删了会话）——通知
+                已无接收方，调用方应静默跳过而非按故障告警。
+            NoUsableProvider: 会话无可用模型服务（调用方应放弃本轮并告警）。
+            TooManyRuns: 会话已有进行中的 run（调用方应改为排队）。
+
+        Note:
+            NoUsableProvider 继承自 RuntimeError，因此调用方若需区分两类失败，
+            必须**先捕获 NoUsableProvider、再捕获 RuntimeError**。
+
+        与 send_message 的差异：不传 requested_skills / attachments（二者是请求级
+        参数、不落库），因此唤醒轮使用全部可用技能，且不带附件。
+        """
+        if self._repos is None or self._project_service is None:
+            raise RuntimeError("唤醒不可用：未注入运行时依赖 set_runtime_deps")
+        doc = await self._repos.session.get(session_id)
+        if doc is None:
+            raise WakeTargetGone(f"唤醒目标已不存在: {session_id}")
+        user = {"sub": str(doc["user_id"])}
+        runtime = await resolve_session_runtime(
+            self._settings, self._project_service, self._repos, doc, user)
+        return await self.chat(
+            session_id, user, runtime.assistant, runtime.provider_cfg, text,
+            workspace_root=runtime.workspace_root,
+            file_ownership=runtime.ownership,
+            enabled_plugins=doc.get("enabled_plugins"),
+            wake_source={"job_id": job_id} if job_id else None)
+
     async def _notify_run_finished(self, session_id: str) -> None:
         """运行收尾通知（内部；失败不上抛，避免影响 run 清理）。
 
@@ -602,37 +654,6 @@ class AgentService:
             await hook(session_id)
         except Exception:  # noqa: BLE001 回调失败不得影响 run 终态清理
             _LOGGER.warning("运行结束回调失败 session=%s", session_id, exc_info=True)
-
-    async def wake(self, session_id: str, text: str, job_id: str = "") -> str:
-        """以系统通知文本启动一轮新 run（后台任务完成后唤醒 agent）。
-
-        Args:
-            session_id: 会话 id。
-            text: 注入的用户消息文本（系统生成的通知）。
-            job_id: 关联任务 id（写入事件 payload 供前端渲染提示条）。
-
-        Returns:
-            新 run 的 run_id。
-
-        Raises:
-            RuntimeError: 未注入运行时依赖，或会话不存在。
-            NoUsableProvider: 会话无可用模型服务（调用方应放弃本轮并告警）。
-            TooManyRuns: 会话已有进行中的 run（调用方应改为排队）。
-        """
-        if self._repos is None or self._project_service is None:
-            raise RuntimeError("唤醒不可用：未注入运行时依赖 set_runtime_deps")
-        doc = await self._repos.session.get(session_id)
-        if doc is None:
-            raise RuntimeError(f"唤醒失败：会话不存在 {session_id}")
-        user = {"sub": str(doc["user_id"])}
-        runtime = await resolve_session_runtime(
-            self._settings, self._project_service, self._repos, doc, user)
-        return await self.chat(
-            session_id, user, runtime.assistant, runtime.provider_cfg, text,
-            workspace_root=runtime.workspace_root,
-            file_ownership=runtime.ownership,
-            enabled_plugins=doc.get("enabled_plugins"),
-            wake_source={"job_id": job_id} if job_id else None)
 
     async def cancel(self, run_id: str) -> bool:
         """取消运行（仅用户显式停止；SSE 断连不走此路径）。

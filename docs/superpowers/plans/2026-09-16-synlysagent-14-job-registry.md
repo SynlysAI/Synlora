@@ -3065,7 +3065,8 @@ Expected: FAIL — `AttributeError: 'State' object has no attribute 'job_service
         provider=app.state.provider_repo, assistant=app.state.assistant_repo,
         session=app.state.session_repo, run=app.state.run_repo,
         file=app.state.file_repo, event=app.state.event_repo)
-    app.state.agent_service.set_repos(app.state.repos)
+    app.state.agent_service.set_runtime_deps(
+        app.state.repos, app.state.project_service)
     app.state.agent_service.set_run_finished_hook(
         app.state.job_service.drain_pending)
 

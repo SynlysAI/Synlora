@@ -115,7 +115,7 @@ async def test_wake_starts_run_with_system_text(agent_service, session_doc,
     async def fake_resolve(settings, project_service, repos, doc, user):
         return SimpleNamespace(assistant=None, provider_cfg=object(),
                                workspace_root=tmp_path,
-                               ownership={"session_id": doc["_id"]})
+                               ownership={"session_id": "sid-x"})
 
     monkeypatch.setattr(agent_service, "chat", fake_chat)
     monkeypatch.setattr("app.services.agent_service.resolve_session_runtime",
@@ -126,3 +126,23 @@ async def test_wake_starts_run_with_system_text(agent_service, session_doc,
     assert captured["session_id"] == session_doc["_id"]
     assert captured["text"] == "任务完成通知"
     assert captured["kwargs"]["wake_source"] == {"job_id": "job-1"}
+    # 装配解析的结果必须原样透传给 chat（两条路径共用同一工作根与归属——
+    # 这正是 Task 7 抽 session_runtime 要保证的；漏传会跑在错误目录）
+    assert captured["kwargs"]["workspace_root"] is tmp_path
+    assert captured["kwargs"]["file_ownership"] == {"session_id": "sid-x"}
+    assert "enabled_plugins" in captured["kwargs"]
+
+
+async def test_wake_raises_when_deps_missing(agent_service, session_doc):
+    """未注入运行时依赖时 wake 拒绝（fail-closed）。"""
+    with pytest.raises(RuntimeError):
+        await agent_service.wake(session_doc["_id"], "x")
+
+
+async def test_wake_raises_target_gone_for_deleted_session(agent_service, store):
+    """会话已删除走 WakeTargetGone（正常的业务情形，调用方静默跳过）。"""
+    from app.services.agent_service import WakeTargetGone
+
+    agent_service.set_runtime_deps(_repos(store), SimpleNamespace())
+    with pytest.raises(WakeTargetGone):
+        await agent_service.wake("no-such-session", "x")

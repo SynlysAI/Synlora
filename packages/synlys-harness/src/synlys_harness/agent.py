@@ -169,8 +169,11 @@ class RunSession:
         # 系统唤醒（后台任务完成触发的本轮）：标记来源，前端据此渲染成系统
         # 提示条而非用户气泡；不标则与真人发言无法区分
         wake_source = (self._context_extra or {}).get("wake_source") or {}
-        if wake_source:
-            user_payload.update({"kind": job_wake_kind(wake_source), **wake_source})
+        # 只取需要的键（不 spread wake_source：那会覆盖 text 等既有键，且其真值
+        # 判据与 job_wake_kind 的 job_id 判据不一致，{"job_id": ""} 会写出空 kind）
+        if wake_source.get("job_id"):
+            user_payload["kind"] = job_wake_kind(wake_source)
+            user_payload["job_id"] = str(wake_source["job_id"])
         if attachments:
             user_payload["attachments"] = attachments
         yield await self._emit(EventType.USER_MESSAGE, user_payload)
