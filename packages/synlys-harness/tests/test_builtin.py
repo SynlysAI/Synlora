@@ -778,6 +778,23 @@ async def test_job_submit_validates_arguments(tmp_path):
     assert calls == []
 
 
+async def test_job_submit_rejects_null_arguments(tmp_path):
+    """显式传 null 与传空串同义（不能被 str(None) 变成 "None" 绕过校验）。"""
+    calls: list[dict] = []
+
+    async def handler(payload: dict):
+        calls.append(payload)
+        return ToolResult(ok=True, content="ok")
+
+    pipe = _setup()
+    ctx = _ctx(tmp_path, extra={"job_handler": handler})
+    null_kind = await pipe.run("job.submit", ctx, {"kind": None, "params": {}})
+    assert null_kind.ok is False and null_kind.error == "invalid_arguments"
+    null_job = await pipe.run("job.status", ctx, {"job_id": None})
+    assert null_job.ok is False and null_job.error == "invalid_arguments"
+    assert calls == []
+
+
 async def test_job_submit_forwards_payload(tmp_path):
     """submit 把 action/kind/params/label/tool_call_id 原样交给宿主 handler。"""
     seen: list[dict] = []

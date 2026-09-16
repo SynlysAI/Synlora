@@ -811,7 +811,7 @@ async def job_submit(ctx: ToolContext, args: dict) -> ToolResult:
     handler = _job_handler(ctx)
     if handler is None:
         return _no_jobs()
-    kind = str(args.get("kind", "")).strip()
+    kind = str(args.get("kind") or "").strip()
     if not kind:
         return ToolResult(ok=False, content="kind 不能为空", error="invalid_arguments")
     params = args.get("params")
@@ -822,7 +822,7 @@ async def job_submit(ctx: ToolContext, args: dict) -> ToolResult:
         "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
         "kind": kind,
         "params": params,
-        "label": str(args.get("label", ""))[:200],
+        "label": str(args.get("label") or "")[:200],
     })
 
 
@@ -842,7 +842,7 @@ async def job_status(ctx: ToolContext, args: dict) -> ToolResult:
     handler = _job_handler(ctx)
     if handler is None:
         return _no_jobs()
-    job_id = str(args.get("job_id", "")).strip()
+    job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")
     return await handler({
@@ -855,12 +855,11 @@ async def job_status(ctx: ToolContext, args: dict) -> ToolResult:
 @tool(
     name="job.list",
     description="列出本会话提交过的后台任务（含状态与结果摘要），用于汇报整体进度。",
-    parameters={"type": "object", "properties": {}},
+    parameters={"type": "object", "properties": {}, "required": []},
     timeout_s=30,
 )
 async def job_list(ctx: ToolContext, args: dict) -> ToolResult:
     """列出本会话的任务（宿主经 ctx.extra 注入 job_handler）。"""
-    del args  # 无参数
     handler = _job_handler(ctx)
     if handler is None:
         return _no_jobs()
@@ -883,7 +882,7 @@ async def job_cancel(ctx: ToolContext, args: dict) -> ToolResult:
     handler = _job_handler(ctx)
     if handler is None:
         return _no_jobs()
-    job_id = str(args.get("job_id", "")).strip()
+    job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")
     return await handler({
