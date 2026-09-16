@@ -117,17 +117,26 @@ class SpectraTaskConnector:
             上游状态原文（如 "RUNNING"）。
 
         Raises:
-            JobPollFailed: 网络/上游异常（宿主保持原状态、下轮重试）。
+            JobPollFailed: 查询失败（网络异常、上游 4xx/5xx、非 JSON 或
+                code != 0、以及未配置服务地址）。一律以上述异常抛出——若静默
+                返回空串，宿主会当成"未映射状态"而保持原状态且不记失败计数，
+                任务会永久挂起、用户与日志都无感知。
         """
-        base_url, headers = self._conn(ctx)
-        async with self._client(REQUEST_TIMEOUT_S) as client:
-            try:
+        try:
+            base_url, headers = self._conn(ctx)
+            async with self._client(REQUEST_TIMEOUT_S) as client:
                 resp = await client.get(
                     f"{base_url}/api/v1/tasks/{external_id}", headers=headers)
-            except httpx.HTTPError as exc:
-                raise JobPollFailed(f"查询任务状态失败: {exc}") from exc
-        data = self._unwrap(resp, "查询任务状态", raise_on_error=False)
-        return str((data or {}).get("status") or "")
+            data = self._unwrap(resp, "查询任务状态")
+            return str((data or {}).get("status") or "")
+        except JobPollFailed:
+            raise
+        except JobSubmitFailed as exc:
+            # _conn 的配置缺失与 _unwrap 的通用失败都抛 JobSubmitFailed，
+            # 在查询路径一律转成 JobPollFailed（宿主对两者的处理不同）
+            raise JobPollFailed(str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise JobPollFailed(f"查询任务状态失败: {exc}") from exc
 
     async def fetch_result(self, external_id: str, ctx: dict) -> str:
         """取任务结果并序列化为文本（仅成功终态由宿主调用）。

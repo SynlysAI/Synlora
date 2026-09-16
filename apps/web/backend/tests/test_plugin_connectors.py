@@ -130,6 +130,37 @@ async def test_poll_returns_raw_status(connectors, monkeypatch):
     assert await nmr.poll("T-9", {"config": {"base_url": "http://spec.test"}}) == "RUNNING"
 
 
+async def test_poll_raises_on_http_failure(connectors, monkeypatch):
+    """查询失败一律抛 JobPollFailed（静默返回空串会让任务永久挂起）。"""
+    from app.services.job_connectors import JobPollFailed
+
+    module = _load_module()
+    nmr = next(c for c in connectors if c.kind == "spec.task.nmr")
+    ctx = {"config": {"base_url": "http://spec.test"}}
+
+    # 401 凭证过期
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(
+        lambda r: httpx.Response(401)))
+    with pytest.raises(JobPollFailed):
+        await nmr.poll("T-9", ctx)
+
+    # 500
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(
+        lambda r: httpx.Response(500, text="boom")))
+    with pytest.raises(JobPollFailed):
+        await nmr.poll("T-9", ctx)
+
+    # code != 0
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"code": 1, "message": "任务不存在"})))
+    with pytest.raises(JobPollFailed):
+        await nmr.poll("T-9", ctx)
+
+    # 未配置服务地址（_conn 抛 JobSubmitFailed → 查询路径转 JobPollFailed）
+    with pytest.raises(JobPollFailed):
+        await nmr.poll("T-9", {"config": {}})
+
+
 async def test_fetch_result_serializes_payload(connectors, monkeypatch):
     """fetch_result 把上游 result 对象序列化为文本。"""
     def handler(request: httpx.Request) -> httpx.Response:
