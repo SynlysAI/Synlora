@@ -8,6 +8,13 @@
 
 **Tech Stack:** Python 3.12 / pydantic v2 / FastAPI / asyncio（`DocumentStore` sqlite+mongodb 双后端）/ pytest（`asyncio_mode = "auto"`）；conda 环境 `synlysagent`。
 
+**执行进度（分支 `feat/job-registry`）**：Task 1–5 ✅ 完成；Task 6 起待做。分支上的实现以代码为准，本文档中嵌入的代码块已随审查修正同步。
+
+**执行期的接线约定（审查中发现的真实坑，重跑本文档时必须遵守）**：
+- Task 5 已定义公开的 `refresh` / `cancel` 占位，Task 6 **只替换函数体**，不得新增同名方法（否则 `describe` 可能继续调旧的恒 None 实现，而测试直调新方法会全绿通过）
+- 注册 `FakeConnector` 优先用 `FAKE_STATUS_MAP`；手写映射漏项会让状态被静默忽略
+- Task 2 的测试 tripwire 依赖 fake 脚本首态映射出**不同于 pending** 的状态，否则断言不会真正变红
+
 **范围说明（重要）:** 本计划**不含**真实 Spec_Agent 异步接口对接（那是 C2）。为让本计划可独立端到端验收，Task 4 提供一个**测试用 Connector**（`FakeConnector`，纯内存，不依赖外部系统），并在测试中用它跑通"提交 → 轮询 → 完成唤醒"全链路。
 
 ---
@@ -1087,10 +1094,15 @@ async def test_submit_failure_maps_to_tool_error(store):
 
 
 async def test_status_and_list_render_summary(store):
-    """status/list 返回人类可读摘要，含任务 ID 与状态。"""
+    """status/list 返回人类可读摘要，含任务 ID 与状态。
+
+    脚本首态取 "doing"（映射 running）而非 "queued"（映射回 pending）：
+    后者即使 Task 6 落地真实刷新，状态仍是 pending，下面的
+    `"状态: pending"` 断言就不会变红——那是"静默失效"而不是守卫。
+    """
     service, reg = _job_service(store)
-    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued", "done"]),
-                 status_map={"queued": JobStatus.PENDING, "done": JobStatus.COMPLETED})
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["doing", "done"]),
+                 status_map=FAKE_STATUS_MAP)
     submitted = await service.handle(
         {"action": "submit", "kind": "k", "params": {}, "label": "试算"},
         user={"sub": "u1"}, session_id="s1", ctx_extra={})
@@ -1098,6 +1110,7 @@ async def test_status_and_list_render_summary(store):
     one = await service.handle({"action": "status", "job_id": job_id},
                                user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert one.ok is True and job_id in one.content
+    assert "状态: pending" in one.content  # Task 5 契约：status 不触发刷新
     many = await service.handle({"action": "list"},
                                 user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert many.ok is True and "试算" in many.content
@@ -1137,6 +1150,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'app.services.job_servi
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -1356,10 +1370,30 @@ class JobService:
         if doc is None or str(doc.get("user_id")) != user_id:
             return ToolResult(ok=False, content=f"任务不存在: {job_id}",
                               error="not_found")
-        if refresh and not is_terminal(JobStatus(doc["status"])):
-            doc = await self.refresh(doc) or doc
+        # is_terminal 对裸字符串宽容（不抛），无需 JobStatus() 包装——包装会让
+        # 库里的脏状态直穿到工具层
+        if refresh and not is_terminal(doc.get("status")):
+            refreshed = await self.refresh(doc)
+            if refreshed is not None:
+                doc = refreshed
         return ToolResult(ok=True, content=self._render(doc),
-                          data={"job_id": doc["_id"], "status": doc["status"]})
+                          data={"job_id": doc.get("_id", ""),
+                                "status": doc.get("status", "")})
+
+    async def refresh(self, doc: dict) -> dict | None:
+        """向外部系统拉一次最新状态并落库（Task 6 填入真实逻辑）。
+
+        Args:
+            doc: 任务文档。
+
+        Returns:
+            更新后的文档；本任务恒返回 None（调用方沿用原文档）。
+        """
+        return None
+
+    async def cancel(self, job_id: str, *, user_id: str) -> ToolResult:
+        """取消任务（Task 6 填入真实逻辑；当前 fail-closed 拒绝）。"""
+        return ToolResult(ok=False, content="取消功能尚未提供", error="not_implemented")
 
     async def render_list(self, session_id: str, *, user_id: str) -> ToolResult:
         """列出本会话任务（供模型汇报整体进度）。"""
@@ -1374,8 +1408,13 @@ class JobService:
     @staticmethod
     def _render(doc: dict) -> str:
         """任务文档 → 一行摘要（给 LLM 与用户看）。"""
-        parts = [f"[{doc['_id']}] {doc.get('label') or doc.get('kind')}",
-                 f"状态: {doc.get('status')}"]
+        parts = [f"[{doc['_id']}] {doc.get('label') or doc.get('kind')}"]
+        # params digest：label 可选，缺省时同类任务除 job_id 外完全同形，
+        # 模型在上下文被压缩后难以区分
+        if doc.get("params"):
+            params = json.dumps(doc["params"], ensure_ascii=False, default=str)
+            parts.append(f"参数: {_clip(params, 200)}")
+        parts.append(f"状态: {doc.get('status')}")
         if doc.get("error"):
             parts.append(f"错误: {_clip(str(doc['error']), 400)}")
         if doc.get("result"):
@@ -1408,6 +1447,18 @@ git commit -m "新增 JobService：任务提交与查询
 
 **Files:**
 - Modify: `apps/web/backend/app/services/job_service.py`
+
+> **接线前提（Critical，务必先读）**：Task 5 已定义了两个占位方法 —— 公开的
+> `async def refresh(self, doc)` 与 `async def cancel(self, job_id, *, user_id)`，
+> 且 `describe()` 已经调用 `self.refresh(doc)`。
+> 因此本任务是**替换这两个方法的函数体**，而不是新增同名方法：
+> - 不要再定义第二个 `refresh` / `cancel`，否则会出现"旧占位被新定义遮蔽"或
+>   反之的静默分叉（`describe` 调到恒返回 None 的旧实现，而测试直接调新方法
+>   全绿通过）
+> - 替换 `refresh` 时保留签名与"返回更新后文档；失败/无变化时返回什么"的语义
+>   （Task 5 的调用点是 `if refreshed is not None: doc = refreshed`，所以返回
+>   `None` 表示"没有新信息、沿用原文档"）
+> - 替换 `cancel` 时把 `not_implemented` 的占位实现整段删掉
 - Test: `apps/web/backend/tests/test_job_service.py`（追加）
 
 - [ ] **Step 1: 写失败测试**
