@@ -4,7 +4,7 @@
  * 结构：顶栏 + 左导航（专家/技能/插件，照 AdminLayout 的 nav）+ 右侧内容。
  * 右侧按路由渲染列表页（本文件内）或详情页（CapabilityDetail）。
  *
- * 列表页：顶部「市场 | 我的」页签（组件内 state，照 jiuwen ConnectorMarket 的
+ * 列表页：顶部「市场 | 我的」页签（state 在壳层，照 jiuwen ConnectorMarket 的
  * topTab——范围是同一列表的过滤视图，不是独立资源）+ 搜索（前端过滤）+
  * 卡片网格（card-grid-auto，照 jiuwen）。
  *
@@ -17,6 +17,7 @@ import { PageTopBar, ToastHost } from '@/components/layout'
 import { errorText } from '@/components/admin/form'
 import { toast } from '@/stores/toasts'
 import { useCatalogStore } from '@/stores/catalog'
+import { useMyCapabilitiesStore } from '@/stores/myCapabilities'
 import { useRouterStore } from '@/routing/router'
 import type { CapabilityKind, AppRoute } from '@/routing/route'
 import type { CatalogItem, MyCapability } from '@/types'
@@ -101,6 +102,8 @@ export default function CapabilityCenter({ route }: { route: AppRoute }) {
     route.kind === 'capabilities' || route.kind === 'capability-detail'
       ? route.capabilityKind
       : 'expert'
+  // 页签提到壳层：进详情页会卸载列表页、返回时再重建，state 放列表页内会被重置为「市场」
+  const [tab, setTab] = useState<'market' | 'mine'>('market')
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
@@ -139,7 +142,7 @@ export default function CapabilityCenter({ route }: { route: AppRoute }) {
           {route.kind === 'capability-detail' ? (
             <CapabilityDetail capabilityKind={route.capabilityKind} itemId={route.itemId} />
           ) : (
-            <CapabilityList capabilityKind={capabilityKind} />
+            <CapabilityList capabilityKind={capabilityKind} tab={tab} onTabChange={setTab} />
           )}
         </main>
       </div>
@@ -149,13 +152,17 @@ export default function CapabilityCenter({ route }: { route: AppRoute }) {
 }
 
 /** 列表页（市场 / 我的）。 */
-function CapabilityList({ capabilityKind }: { capabilityKind: CapabilityKind }) {
+function CapabilityList({ capabilityKind, tab, onTabChange }: {
+  capabilityKind: CapabilityKind
+  /** 页签由壳层持有：列表页会随「进详情/返回」卸载重建，放这里会被重置。 */
+  tab: 'market' | 'mine'
+  onTabChange: (tab: 'market' | 'mine') => void
+}) {
   const byKind = useCatalogStore((s) => s.byKind)
   const loadMarket = useCatalogStore((s) => s.loadMarket)
   const install = useCatalogStore((s) => s.install)
   const setEnabled = useCatalogStore((s) => s.setEnabled)
 
-  const [tab, setTab] = useState<'market' | 'mine'>('market')
   const [marketQuery, setMarketQuery] = useState('')
   const [mineQuery, setMineQuery] = useState('')
   /** 需要先填配置再安装的插件（null 关闭）。 */
@@ -207,6 +214,9 @@ function CapabilityList({ capabilityKind }: { capabilityKind: CapabilityKind }) 
     setBusy(`${item.kind}:${item.id}`)
     try {
       await setEnabled(item.kind, item.id, !item.enabled)
+      // 我的列表与市场是两个 store，启停后必须各自刷新，否则徽标与子页签过滤不会更新。
+      // 写已落库，重拉失败只影响刷新，不该报成"操作失败"（下次加载自愈）。
+      await useMyCapabilitiesStore.getState().loadMine().catch(() => undefined)
       toast('success', item.enabled ? `已停用 ${item.name}` : `已启用 ${item.name}`)
     } catch (err) {
       toast('error', errorText(err))
@@ -226,7 +236,7 @@ function CapabilityList({ capabilityKind }: { capabilityKind: CapabilityKind }) 
               type="button"
               aria-selected={tab === key}
               role="tab"
-              onClick={() => setTab(key)}
+              onClick={() => onTabChange(key)}
               className={
                 tab === key
                   ? 'rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-[5px] text-[13px] font-medium text-[var(--sa-alias-label-primary)]'
