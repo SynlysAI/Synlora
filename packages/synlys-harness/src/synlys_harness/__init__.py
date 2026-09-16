@@ -8,6 +8,7 @@ from .jobs import (
     JobStatus,
     can_transition,
     is_terminal,
+    job_wake_kind,
 )
 from .models.backend import (
     LLMBackend, ModelProviderConfig, OpenAICompatibleBackend, ReasoningDelta,
@@ -34,7 +35,8 @@ from .types import (
 
 __all__ = [
     "RunSession", "EventLog", "Compactor", "derive_messages", "build_system_prompt",
-    "JobStatus", "ACTIVE_STATUSES", "TERMINAL_STATUSES", "can_transition", "is_terminal",
+    "JobStatus", "ACTIVE_STATUSES", "TERMINAL_STATUSES", "can_transition",
+    "is_terminal", "job_wake_kind",
     "ToolRegistry", "tool", "ToolPipeline", "register_builtin_tools",
     "CodeExecutor", "LocalCodeExecutor", "DockerCodeExecutor", "FailingExecutor",
     "DEFAULT_LOCAL_EXECUTOR", "resolve_executor", "run_python",

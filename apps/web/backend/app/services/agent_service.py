@@ -43,6 +43,7 @@ from synlys_harness import (
 )
 
 from app.services import workspace
+from app.services.session_runtime import resolve_session_runtime
 from app.services.skill_service import SkillService
 from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGISTRY
 
@@ -115,6 +116,11 @@ class AgentService:
         # python.run 沙箱执行器（首次使用时解析一次：local 直返；docker 探测
         # daemon+镜像，失败按 strict 拒绝或弱回退 local-weak 并告警）
         self._executor: CodeExecutor | None = None
+        # 运行结束回调（任务唤醒靠它 drain 待唤醒队列）
+        self._on_run_finished: Any = None
+        # 唤醒路径所需的运行时依赖（装配阶段经 set_runtime_deps 注入）
+        self._repos: Any = None
+        self._project_service: Any = None
 
     async def _code_executor(self) -> CodeExecutor:
         """解析（一次）沙箱执行器并缓存。
@@ -221,7 +227,8 @@ class AgentService:
                    requested_skills: list[str] | None = None,
                    attachments: list[dict] | None = None,
                    file_ownership: dict | None = None,
-                   enabled_plugins: list[str] | None = None) -> str:
+                   enabled_plugins: list[str] | None = None,
+                   wake_source: dict | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
@@ -249,6 +256,9 @@ class AgentService:
                 在本轮生效——工具、配置注入、技能索引按它收窄，未启用插件的
                 播种专家按未选处理。None 与空列表同为"未启用任何插件"；
                 内置工具不受影响。
+            wake_source: 系统唤醒来源（{"job_id": ...}）；非空时本轮首条
+                user/message 事件带 kind=job_completed 标记，供前端渲染成
+                系统提示条而非用户气泡。
 
         Returns:
             run_id。
@@ -449,6 +459,9 @@ class AgentService:
                 hooks=hooks,
                 workspace_root=workspace_root,
                 context_extra={
+                    # 系统唤醒来源（任务完成唤醒本轮时非空；harness 据此把
+                    # user/message 事件标成 job_completed 提示条）
+                    "wake_source": wake_source or {},
                     "http_allowed_hosts": self._settings.allowed_hosts,
                     # python.run 执行器（部署级注入，缺省工具回落本机执行）
                     "code_executor": await self._code_executor(),
@@ -547,6 +560,79 @@ class AgentService:
             session_runs = self._active_by_session.get(session_id)
             if session_runs is not None:
                 session_runs.discard(run_id)  # 释放会话占位（空集合保留，量级=会话数）
+            # 运行结束通知：占位已释放后才回调，避免回调内 is_busy 误判为忙
+            # （唤醒队列据此决定立即唤醒还是继续排队）
+            await self._notify_run_finished(session_id)
+
+    def set_runtime_deps(self, repos: Any, project_service: Any) -> None:
+        """注入唤醒路径所需依赖（repo 组合与项目服务）。
+
+        Args:
+            repos: repo 集中访问对象（解析会话装配用）。
+            project_service: 项目服务（解析会话工作根用）。
+        """
+        self._repos = repos
+        self._project_service = project_service
+
+    def set_run_finished_hook(self, hook: Any) -> None:
+        """注入运行结束回调（签名 async (session_id) -> None）。"""
+        self._on_run_finished = hook
+
+    def is_busy(self, session_id: str) -> bool:
+        """该会话当前是否有进行中的 run。
+
+        Args:
+            session_id: 会话 id。
+
+        Returns:
+            有活跃 run 为 True。
+        """
+        return bool(self._active_by_session.get(session_id))
+
+    async def _notify_run_finished(self, session_id: str) -> None:
+        """运行收尾通知（内部；失败不上抛，避免影响 run 清理）。
+
+        Args:
+            session_id: 会话 id。
+        """
+        hook = self._on_run_finished
+        if hook is None:
+            return
+        try:
+            await hook(session_id)
+        except Exception:  # noqa: BLE001 回调失败不得影响 run 终态清理
+            _LOGGER.warning("运行结束回调失败 session=%s", session_id, exc_info=True)
+
+    async def wake(self, session_id: str, text: str, job_id: str = "") -> str:
+        """以系统通知文本启动一轮新 run（后台任务完成后唤醒 agent）。
+
+        Args:
+            session_id: 会话 id。
+            text: 注入的用户消息文本（系统生成的通知）。
+            job_id: 关联任务 id（写入事件 payload 供前端渲染提示条）。
+
+        Returns:
+            新 run 的 run_id。
+
+        Raises:
+            RuntimeError: 未注入运行时依赖，或会话不存在。
+            NoUsableProvider: 会话无可用模型服务（调用方应放弃本轮并告警）。
+            TooManyRuns: 会话已有进行中的 run（调用方应改为排队）。
+        """
+        if self._repos is None or self._project_service is None:
+            raise RuntimeError("唤醒不可用：未注入运行时依赖 set_runtime_deps")
+        doc = await self._repos.session.get(session_id)
+        if doc is None:
+            raise RuntimeError(f"唤醒失败：会话不存在 {session_id}")
+        user = {"sub": str(doc["user_id"])}
+        runtime = await resolve_session_runtime(
+            self._settings, self._project_service, self._repos, doc, user)
+        return await self.chat(
+            session_id, user, runtime.assistant, runtime.provider_cfg, text,
+            workspace_root=runtime.workspace_root,
+            file_ownership=runtime.ownership,
+            enabled_plugins=doc.get("enabled_plugins"),
+            wake_source={"job_id": job_id} if job_id else None)
 
     async def cancel(self, run_id: str) -> bool:
         """取消运行（仅用户显式停止；SSE 断连不走此路径）。

@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 
 from .compaction import Compactor
 from .events import EventLog
+from .jobs import job_wake_kind
 from .models.backend import LLMBackend, ReasoningDelta, TextDelta, ToolCallChunk, Usage
 from .session import derive_messages
 from .tools.pipeline import ToolPipeline
@@ -165,6 +166,11 @@ class RunSession:
             "run_id": self._run_id,
         })
         user_payload: dict = {"text": user_text}
+        # 系统唤醒（后台任务完成触发的本轮）：标记来源，前端据此渲染成系统
+        # 提示条而非用户气泡；不标则与真人发言无法区分
+        wake_source = (self._context_extra or {}).get("wake_source") or {}
+        if wake_source:
+            user_payload.update({"kind": job_wake_kind(wake_source), **wake_source})
         if attachments:
             user_payload["attachments"] = attachments
         yield await self._emit(EventType.USER_MESSAGE, user_payload)

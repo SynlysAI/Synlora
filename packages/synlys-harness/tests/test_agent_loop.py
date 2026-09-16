@@ -36,7 +36,8 @@ class FakeBackend:
             yield ev
 
 
-def _session(backend, hooks=None, max_steps=25, workspace_root=None) -> RunSession:
+def _session(backend, hooks=None, max_steps=25, workspace_root=None,
+             context_extra=None) -> RunSession:
     reg = ToolRegistry()
     reg.register(add)
     log = EventLog()
@@ -44,7 +45,7 @@ def _session(backend, hooks=None, max_steps=25, workspace_root=None) -> RunSessi
     return RunSession(
         config=cfg, registry=reg, pipeline=ToolPipeline(registry=reg),
         backend=backend, event_log=log, user_id="u1", run_id="r1",
-        hooks=hooks, workspace_root=workspace_root,
+        hooks=hooks, workspace_root=workspace_root, context_extra=context_extra,
     )
 
 
@@ -326,6 +327,28 @@ async def test_context_extra_reaches_tools(tmp_path):
     events = [ev async for ev in session.run("探测")]
     assert EventType.TOOL_RESULT in [e.type for e in events]
     assert seen.get("http_allowed_hosts") == ["api.example.com"]
+
+
+async def test_wake_source_marks_user_message_as_job_completed():
+    """任务完成唤醒：首条 user/message 带 kind=job_completed 与 job_id，供前端渲染提示条。"""
+    backend = FakeBackend([[TextDelta(text="收到")]])
+    session = _session(backend, context_extra={"wake_source": {"job_id": "j1"}})
+    events = await _collect(session, "任务完成通知")
+    user_events = [e for e in events if e.type is EventType.USER_MESSAGE]
+    assert user_events[0].payload["kind"] == "job_completed"
+    assert user_events[0].payload["job_id"] == "j1"
+    # 标记不污染 LLM 投影：正文仍是通知原文
+    msgs = derive_messages(session._log.events)
+    assert [m.content for m in msgs if m.role.value == "user"] == ["任务完成通知"]
+
+
+async def test_no_wake_source_keeps_plain_user_message():
+    """普通用户发言（无 wake_source）：user/message 不带 kind 字段。"""
+    backend = FakeBackend([[TextDelta(text="收到")]])
+    session = _session(backend)
+    events = await _collect(session, "你好")
+    user_events = [e for e in events if e.type is EventType.USER_MESSAGE]
+    assert "kind" not in user_events[0].payload
 
 
 async def test_reasoning_flow_delta_and_final():

@@ -57,3 +57,15 @@ def can_transition(src: JobStatus, dst: JobStatus) -> bool:
 def is_terminal(status: JobStatus) -> bool:
     """是否为终态状态（终态在流转表中无出边，即不再变化）。"""
     return status in TERMINAL_STATUSES
+
+
+def job_wake_kind(wake_source: dict) -> str:
+    """系统唤醒消息的 kind 标记（前端据此渲染提示条）。
+
+    Args:
+        wake_source: 宿主注入的唤醒来源（{"job_id": ...}）。
+
+    Returns:
+        "job_completed"；来源非任务唤醒时返回空串。
+    """
+    return "job_completed" if wake_source.get("job_id") else ""
