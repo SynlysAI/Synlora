@@ -1,4 +1,4 @@
-"""PluginService 编排测试：安装、配置更新、上下文注入、专家播种。"""
+"""PluginService 编排测试：安装、配置更新、上下文注入、专家播种、连接器注册。"""
 from __future__ import annotations
 
 import json
@@ -11,6 +11,7 @@ from app.catalog.loader import scan_catalog
 from app.db.repos import AssistantRepo
 from app.plugins.config_store import PluginConfigStore
 from app.plugins.service import PluginService
+from app.services.job_connectors import JobConnectorRegistry, make_fake_connector
 from app.services.skill_service import SkillService
 
 TOOLS_SOURCE = '''
@@ -25,12 +26,42 @@ async def demo_hello(ctx: ToolContext, args: dict) -> ToolResult:
     return ToolResult(ok=True, content="hi")
 '''
 
+# 插件包内的连接器模块：与真实插件同构（只依赖 synlys_harness，不 import 宿主 app.*）
+CONNECTORS_SOURCE = '''
+"""测试插件连接器。"""
+from synlys_harness import JobStatus
+
+
+class _DemoConnector:
+    """示例连接器：只声明状态词汇表，不做真实网络调用。"""
+
+    kind = "demo.task"
+    plugin_id = "demo"
+    status_map = {"done": JobStatus.COMPLETED}
+
+    async def submit(self, params: dict, ctx: dict) -> str:
+        """返回假外部 id。"""
+        return "ext-1"
+
+    async def poll(self, external_id: str, ctx: dict) -> str:
+        """固定返回终态原文。"""
+        return "done"
+
+    async def cancel(self, external_id: str, ctx: dict) -> bool:
+        """固定受理取消。"""
+        return True
+
+
+CONNECTORS = [_DemoConnector()]
+'''
+
 MANIFEST = {
     "id": "demo",
     "name": "示例插件",
     "version": "1.0.0",
     "description": "测试插件",
     "tools_module": "tools.py",
+    "connectors_module": "connectors.py",
     "config_schema": [
         {"key": "base_url", "label": "服务地址", "type": "text", "required": True},
         {"key": "token", "label": "凭证", "type": "password", "secret": True},
@@ -46,24 +77,28 @@ MANIFEST = {
 
 @pytest.fixture
 def packages(tmp_path) -> dict:
-    """造一个含工具/技能/专家模板的插件包并扫描。"""
+    """造一个含工具/技能/专家模板/连接器的插件包并扫描。"""
     pkg_dir = tmp_path / "plugins" / "demo"
     (pkg_dir / "skills" / "demo-skill").mkdir(parents=True)
     (pkg_dir / "plugin.json").write_text(
         json.dumps(MANIFEST, ensure_ascii=False), encoding="utf-8")
     (pkg_dir / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
+    (pkg_dir / "connectors.py").write_text(CONNECTORS_SOURCE, encoding="utf-8")
     (pkg_dir / "skills" / "demo-skill" / "SKILL.md").write_text(
         "---\nname: demo-skill\ndescription: 示例技能\n---\n正文\n", encoding="utf-8")
     return scan_catalog([tmp_path]).plugins
 
 
-def _service(store, packages, tmp_path) -> tuple[PluginService, ToolRegistry, SkillService]:
+def _service(store, packages, tmp_path,
+             job_connectors: JobConnectorRegistry | None = None
+             ) -> tuple[PluginService, ToolRegistry, SkillService]:
     """组装 PluginService 及其依赖。
 
     Args:
         store: DocumentStore fixture。
         packages: 扫描到的插件包。
         tmp_path: 数据根。
+        job_connectors: 任务连接器注册表；缺省 None（验证未接入后台任务的宿主路径）。
 
     Returns:
         (service, registry, skill_service)。
@@ -74,7 +109,8 @@ def _service(store, packages, tmp_path) -> tuple[PluginService, ToolRegistry, Sk
     config_store = PluginConfigStore(store, Fernet.generate_key().decode())
     service = PluginService(
         registry=registry, config_store=config_store, packages=packages,
-        skill_service=skill_service, assistant_repo=AssistantRepo(store))
+        skill_service=skill_service, assistant_repo=AssistantRepo(store),
+        job_connectors=job_connectors)
     return service, registry, skill_service
 
 
@@ -254,3 +290,50 @@ async def test_repeated_startup_does_not_warn_on_own_tools(store, packages, tmp_
         await service2.startup()  # 二次重放
     assert [r for r in caplog.records if "已被其它来源注册" in r.getMessage()] == []
     assert "demo.hello" in registry2.names
+
+
+async def test_attach_registers_plugin_connectors(store, packages, tmp_path):
+    """挂载插件时把其连接器注册进 JobConnectorRegistry（幂等）。"""
+    reg = JobConnectorRegistry()
+    service, _, _ = _service(store, packages, tmp_path, job_connectors=reg)
+
+    assert service.ensure_attached("demo") is True
+    assert "demo.task" in reg.kinds
+
+    service.ensure_attached("demo")  # 幂等：重复挂载不报错、不重复注册
+    assert [k for k in reg.kinds if k.startswith("demo.")] == ["demo.task"]
+
+
+async def test_startup_registers_connectors_of_installed_plugin(store, packages, tmp_path):
+    """重启恢复：已安装插件在 startup 重放时注册连接器（不报冲突告警）。"""
+    reg = JobConnectorRegistry()
+    service, _, _ = _service(store, packages, tmp_path, job_connectors=reg)
+    await service.startup()
+    await service.install("demo", {"base_url": "http://x", "token": "t"})
+
+    reg2 = JobConnectorRegistry()
+    service2, _, _ = _service(store, packages, tmp_path, job_connectors=reg2)
+    await service2.startup()
+    assert reg2.kinds == ["demo.task"]
+
+
+async def test_attach_connector_conflict_is_skipped(store, packages, tmp_path, caplog):
+    """kind 已被其它来源注册时告警跳过，不抛异常、不覆盖原有连接器。"""
+    reg = JobConnectorRegistry()
+    reg.register(make_fake_connector("demo.task", plugin_id="other"))
+    service, _, _ = _service(store, packages, tmp_path, job_connectors=reg)
+
+    with caplog.at_level("WARNING", logger="app.plugins.service"):
+        service.ensure_attached("demo")  # 不抛
+
+    assert reg.get("demo.task").connector.plugin_id == "other"  # 原有未被覆盖
+    assert [r for r in caplog.records if "已被其它来源注册" in r.getMessage()]
+
+
+async def test_attach_without_job_registry_is_noop(store, packages, tmp_path):
+    """未注入 job_connectors 时静默跳过（保持既有装配向后兼容）。"""
+    service, registry, _ = _service(store, packages, tmp_path, job_connectors=None)
+
+    service.ensure_attached("demo")  # 不抛
+
+    assert "demo.hello" in registry.names

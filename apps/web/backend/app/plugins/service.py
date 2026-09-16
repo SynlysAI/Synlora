@@ -4,14 +4,19 @@
 1. 注册其工具到共享注册表（未安装 = 工具对 LLM 不可见）；
 2. 挂上其技能根（技能留在插件目录，不复制进用户技能目录）；
 3. 把解密配置缓存进内存，运行期按命名空间注入 ctx.extra["plugins"]；
-4. 按 manifest 的专家模板播种一个助手（内置、带 plugin_id 溯源）。
+4. 按 manifest 的专家模板播种一个助手（内置、带 plugin_id 溯源）；
+5. 注册其声明的任务连接器（manifest 的 connectors_module，接后台任务）。
 """
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.catalog.loader import PluginPackage, load_plugin_tools
+from app.catalog.loader import (
+    PluginPackage,
+    load_plugin_connectors,
+    load_plugin_tools,
+)
 
 if TYPE_CHECKING:
     from synlys_harness import ToolRegistry
@@ -28,7 +33,7 @@ class PluginService:
 
     def __init__(self, registry: "ToolRegistry", config_store: "PluginConfigStore",
                  packages: dict[str, PluginPackage], skill_service: Any,
-                 assistant_repo: Any) -> None:
+                 assistant_repo: Any, job_connectors: Any = None) -> None:
         """保存依赖。
 
         Args:
@@ -37,18 +42,23 @@ class PluginService:
             packages: 扫描到的插件包（{id: PluginPackage}）。
             skill_service: 技能服务（挂插件技能根）。
             assistant_repo: 助手 repo（播种专家）。
+            job_connectors: 任务连接器注册表（插件声明的连接器注册于此）；
+                None 时跳过（未接入后台任务的宿主）。
         """
         self._registry = registry
         self._config_store = config_store
         self._packages = packages
         self._skill_service = skill_service
         self._assistant_repo = assistant_repo
+        self._job_connectors = job_connectors
         self._configs: dict[str, dict] = {}
         # 安装状态（库事实：存在配置记录）与运行期配置缓存分离——密钥轮换导致
         # 单条解密失败时，_configs 会缺项，但插件仍应报告"已安装"。
         self._installed: set[str] = set()
         # 本会话已由本服务挂载的工具名（{插件 id: {工具名}}），用于区分 startup 重放与跨插件冲突。
         self._attached: dict[str, set[str]] = {}
+        # 本服务已注册的连接器 kind（{插件 id: {kind}}），用途同上但对象是连接器
+        self._attached_connectors: dict[str, set[str]] = {}
 
     @staticmethod
     def expert_id(plugin_id: str) -> str:
@@ -152,6 +162,36 @@ class PluginService:
         if package.skills_root is not None:
             # plugin=<id>：技能标 source='plugin' 且带归属，管理页/会话开关据此过滤
             self._skill_service.add_root(package.skills_root, plugin=package.id)
+        self._attach_connectors(package)
+
+    def _attach_connectors(self, package: PluginPackage) -> None:
+        """注册插件声明的任务连接器（幂等；未注入注册表时静默跳过）。
+
+        与工具注册同口径：注册是"能力可用性"（进程级，谁装都该挂），可见性
+        过滤由 CapabilityService 另算；被其它来源占用的 kind 告警跳过。
+
+        Args:
+            package: 插件包。
+        """
+        if self._job_connectors is None:
+            return
+        attached = self._attached_connectors.setdefault(package.id, set())
+        for connector in load_plugin_connectors(package):
+            kind = str(getattr(connector, "kind", "")).strip()
+            if not kind or kind in attached:
+                continue  # 无名或本插件已注册（startup 重放），静默跳过
+            if kind in self._job_connectors.kinds:
+                logger.warning("任务类型 %s 已被其它来源注册，跳过插件 %s 的同名连接器",
+                               kind, package.id)
+                continue
+            try:
+                self._job_connectors.register(connector)
+            except ValueError as exc:
+                # 连接器形状/映射不合法：告警跳过，不阻断插件挂载
+                logger.warning("插件 %s 的连接器 %s 注册失败: %s",
+                               package.id, kind, exc)
+                continue
+            attached.add(kind)
 
     def _validate(self, package: PluginPackage, values: dict) -> None:
         """校验必填配置。

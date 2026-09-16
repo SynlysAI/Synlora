@@ -97,10 +97,13 @@ async def lifespan(app: FastAPI):
         logger.info("已清理迁移前的内置技能旧副本: %s", removed)
     app.state.weknora_service = WeKnoraService(
         settings.weknora_base_url, settings.weknora_api_key)
+    # 任务连接器注册表：必须先于 PluginService（插件在其挂载时注册连接器）
+    app.state.job_connectors = JobConnectorRegistry()
     app.state.plugin_service = PluginService(
         registry=REGISTRY, config_store=plugin_config_store, packages=index.plugins,
         skill_service=app.state.skill_service,
         assistant_repo=app.state.assistant_repo,
+        job_connectors=app.state.job_connectors,
     )
     # 挂载范围除公共安装外，还含"有用户个人安装记录"的插件：注册是能力可用性
     # （进程级，谁装都该挂），可见性过滤由 CapabilityService 另行按用户计算
@@ -127,14 +130,9 @@ async def lifespan(app: FastAPI):
         capability_service=app.state.capability_service,
         plugin_config_store=plugin_config_store,
         ai4ms_identity=app.state.ai4ms_identity)
-    # 后台任务：连接器注册表 → 任务服务 → 轮询器。
-    # 注意：registry 在此处创建（晚于 plugin_service.startup()），当前没有插件
-    # 扩展点，连接器只能**运行期注册**（测试与将来的 Spec_Agent 接入都走这条路）。
-    # 若将来要让插件在 startup 期注册，需把本行上提到 plugin_service.startup() 之前
-    # 并把 registry 透传进去。
-    # 唤醒回调双向接线：JobService → AgentService.wake；
-    # AgentService run 结束 → JobService.drain_pending
-    app.state.job_connectors = JobConnectorRegistry()
+    # 后台任务：任务服务 → 轮询器。连接器注册表在 PluginService 之前已建
+    # （插件在其挂载时注册连接器）。唤醒回调双向接线在此完成：
+    # JobService → AgentService.wake；AgentService run 结束 → JobService.drain_pending
     # repo 聚合（唤醒路径解析会话装配用）：唯一构造点，deps.get_repos 复用本对象
     app.state.repos = Repos(
         provider=app.state.provider_repo, assistant=app.state.assistant_repo,
