@@ -1626,11 +1626,12 @@ git commit -m "Spec_Agent 谱图异步任务端到端验收与文档
 
 ## 验收清单（全部任务完成后逐条核对）
 
-- [ ] `cd packages/synlys-harness && conda run -n synlysagent python -m pytest -q` 全绿
-- [ ] `cd apps/web/backend && conda run -n synlysagent python -m pytest -q` 全绿
-- [ ] `cd apps/web/frontend && npm run build` 通过（本计划不改前端，作回归）
+- [x] `cd packages/synlys-harness && conda run -n synlysagent python -m pytest -q` 全绿
+- [x] `cd apps/web/backend && conda run -n synlysagent python -m pytest -q` 全绿
+- [x] `cd apps/web/frontend && npm run build` 通过（本计划不改前端，作回归）
 - [ ] **真机验证（需 Spec_Agent 可达）**：管理后台「插件」页把 `spec_agent` 的服务地址填成 `http://10.26.15.93:8001`（凭证按需）→ 装上并启用 → 新建会话选「谱图解析专家」→ 上传一个谱图文件 → 让模型解析 → 观察：工具卡显示 `job.submit`、任务 ID 返回、若干秒后会话出现"后台任务已完成"提示条、模型给出解析结论
-- [ ] 版本号升到 `0.12.0-beta.1`（`app/version.py` 与 `frontend/package.json` 同步；新增能力、向下兼容）
+- [x] 版本号升到 `0.12.0-beta.1`（`app/version.py` 与 `frontend/package.json` 同步；新增能力、向下兼容）
+- [x] 全链路自动化验收（Task 7）：`tests/test_jobs_e2e.py::test_spec_agent_plugin_end_to_end` 以 MockTransport 模拟上游，跑通「读工作区文件 → 上传换 file_id → 提任务 → 轮询 SUCCESS → `fetch_result` 回填 → 会话收到一条 `kind=job_completed` 唤醒消息」
 
 ## 明确不做（留给后续）
 
@@ -1638,3 +1639,8 @@ git commit -m "Spec_Agent 谱图异步任务端到端验收与文档
 - **任务进度百分比**：上游 `progress` 字段已在响应里，但本平台状态机只有五态、无进度维度
 - **`kind` 可见性收窄**：C1 审查记的遗留——`job.submit` 未按插件可见性过滤 `kind`，接了真连接器后需要补（用 `CapabilityService` 按 `connector.plugin_id` 收窄 `kinds`）
 - **任务独立面板**：目前只在对话流里提示，无任务列表页
+- **轮询失败无上限**：`JobPoller` 无失败计数上限、`JobService` 也不据 `poll_failures` 判失败。
+  凭证过期（401）这类不可自愈的失败会让任务**永久停在 pending/running**——修复后至少会累计
+  `poll_failures` 与 `last_poll_error`，但这两个字段**没有 API 出口**，用户侧仍无感知。建议后续
+  补"连续失败 N 次判失败"并把 `last_poll_error` 透出到 job 查询响应。
+- **插件文案**：插件的 `system_prompt` 未提及异步能力（仅 `description` 同步了），人设措辞属产品决策

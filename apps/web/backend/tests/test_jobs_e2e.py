@@ -89,3 +89,86 @@ async def test_wake_wrapper_does_not_swallow_domain_errors(app, monkeypatch):
 
     monkeypatch.setattr(app.state.agent_service, "wake", other)
     await wake_cb("s1", "text", "job-1")  # 不抛
+
+
+async def test_spec_agent_plugin_end_to_end(app, session_id, tmp_path, monkeypatch):
+    """插件连接器走完整链路：提交 → 轮询成功 → 结果回填 → 会话收到唤醒消息。"""
+    import importlib.util
+    import sys
+    from pathlib import Path as _Path
+
+    import httpx
+
+    # 1) 让插件的连接器模块走 MockTransport，模拟 Spec_Agent 的端点
+    plugin_dir = (_Path(__file__).resolve().parents[1]
+                  / "catalog" / "plugins" / "spec_agent")
+    name = "spec_agent_connectors_e2e"
+    spec = importlib.util.spec_from_file_location(name, plugin_dir / "connectors.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/api/v1/files/upload":
+            return httpx.Response(200, json={"code": 0, "data": {"file_id": "F1"}})
+        if request.url.path.endswith("/tasks/nmr"):
+            return httpx.Response(200, json={"code": 0,
+                                             "data": {"task_id": "T1",
+                                                      "status": "PENDING"}})
+        if request.url.path == "/api/v1/tasks/T1":
+            return httpx.Response(200, json={"code": 0,
+                                             "data": {"task_id": "T1",
+                                                      "status": "SUCCESS"}})
+        if request.url.path == "/api/v1/tasks/T1/result":
+            return httpx.Response(200, json={"code": 0,
+                                             "data": {"task_id": "T1",
+                                                      "status": "SUCCESS",
+                                                      "result": {"peaks": [1.2]}}})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(handler))
+
+    # 2) 注册插件连接器（模拟宿主挂载路径：这里直接注册到运行中的 registry）
+    for connector in module.CONNECTORS:
+        app.state.job_connectors.register(connector)
+
+    # 2b) 落公共插件配置：轮询路径不带本轮 ctx，按 job 的 user_id 从配置存储重解析
+    # （等价于管理后台「插件」页安装时填写服务地址，缺了它轮询会因无 base_url 失败）
+    await app.state.plugin_config_store.save(
+        "spec_agent", {"base_url": "http://spec.test"},
+        app.state.plugin_service.package("spec_agent").config_schema)
+
+    # 3) 造工作区文件 + 插件配置（base_url 指向 Mock 上游）
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "sample.nmr").write_bytes(b"data")
+
+    result = await app.state.job_service.handle(
+        {"action": "submit", "kind": "spec.task.nmr",
+         "params": {"path": "sample.nmr"}, "label": "端到端 NMR"},
+        user={"sub": "u-user"}, session_id=session_id,
+        ctx_extra={"workspace_root": str(workspace),
+                   "plugins": {"spec_agent": {"base_url": "http://spec.test"}}})
+    assert result.ok is True
+
+    # 4) 一轮 tick：状态推到 SUCCESS 并回填结果
+    await app.state.job_poller.tick()
+    doc = await app.state.job_service.get(result.data["job_id"])
+    assert doc["status"] == "completed"
+    assert "peaks" in (doc.get("result") or "")
+
+    # 5) 唤醒消息落进会话
+    import asyncio
+    wake: list = []
+    for _ in range(40):
+        events = await app.state.event_repo.list_events(session_id)
+        wake = [e for e in events if e.type.value == "user/message"
+                and e.payload.get("kind") == "job_completed"]
+        if wake:
+            break
+        await asyncio.sleep(0.05)
+    assert len(wake) == 1
+    assert "/api/v1/files/upload" in calls and "/api/v1/tasks/nmr" in calls

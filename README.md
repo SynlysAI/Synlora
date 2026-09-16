@@ -4,9 +4,9 @@
 
 类 Claude/DeepSeek Harness 的科研智能体 Web 平台：三栏对话工作台，通过对话形式使用各助手（谱图解析、高分子研发、数据分析、文件处理等），每个用户拥有独立沙箱（文件工作区 + 受限 Python 执行），管理员可在页面上配置模型与助手。作为 AI⁴MS 生态的独立子平台部署，现有 AI⁴MS 能力后续通过 Tool Registry 接入。
 
-平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回、完成自动唤醒 agent）。
+平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回、完成自动唤醒 agent）。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪与汇总结果。
 
-- 版本：0.11.0-beta.1（内测版）
+- 版本：0.12.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -182,10 +182,10 @@ npm run lint
 | **B 多人用之前必须** | 管理员用户管理页 · LLM 用量配额 · run 崩溃恢复 · 应用容器化 · 备份与数据迁移 | 不做则开放多人有实质风险 |
 | **C 能力纵深** | 统一 Job 注册表（最高优先）→ Spec_Agent 异步任务 → SpecLabOS 设备工作流 → 跨会话长期记忆 → MCP adapter → 多 Agent / SwarmFlow | AI⁴MS 生态接入主线 |
 
-**进展**：统一 Job 注册表（C1）✅ 已实现——后台任务提交即返回、轮询器同步状态、终态自动唤醒 agent；下一步 Spec_Agent 异步谱图任务（C2）建在其上。
+**进展**：统一 Job 注册表（C1）✅ 已实现——后台任务提交即返回、轮询器同步状态、终态自动唤醒 agent；Spec_Agent 异步谱图任务（C2）✅ 已实现——插件连接器接入 5 类谱图解析（NMR/IR/GPC/Raman/LC-MS），走通「上传 → 提交 → 轮询 → 结果回填 → 唤醒」全链路；下一步 SpecLabOS 设备工作流（C3）建在其上。
 
 完整计划（含每项的做法与验收标准）见 [docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md](docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md)；06 号 backlog 保留为历史记录。
 
-**已完成的主要演进**：沙箱 Docker 化（0.4.0）· AI⁴MS 首期接入（Spec_Agent 同步三件套 + 按登录用户代签凭证，0.5.0）· 能力市场三层可见性模型（0.6.0）· 内置内容统一 `catalog/`（0.7.0）· 用户自建技能与专家（0.8.0）· 能力中心「市场 / 我的」两栏（0.9.0）· 能力中心左导航 + 卡片 + 详情页改版（0.10.0）· 统一 Job 注册表（0.11.0）。
+**已完成的主要演进**：沙箱 Docker 化（0.4.0）· AI⁴MS 首期接入（Spec_Agent 同步三件套 + 按登录用户代签凭证，0.5.0）· 能力市场三层可见性模型（0.6.0）· 内置内容统一 `catalog/`（0.7.0）· 用户自建技能与专家（0.8.0）· 能力中心「市场 / 我的」两栏（0.9.0）· 能力中心左导航 + 卡片 + 详情页改版（0.10.0）· 统一 Job 注册表（0.11.0）· Spec_Agent 五类谱图异步任务（0.12.0）。
 
 **当前明确不做**：按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、用户自建插件、双进程 headless 运行时、移动端适配。

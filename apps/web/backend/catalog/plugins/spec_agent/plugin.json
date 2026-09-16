@@ -2,7 +2,7 @@
   "id": "spec_agent",
   "name": "Spec_Agent 谱图解析",
   "version": "1.0.0",
-  "description": "核磁（NMR）谱图解析：正向预测（结构→谱）、反向预测（谱→结构）与谱图数据库检索",
+  "description": "谱图解析：核磁（NMR）正反向预测与库检索，以及 NMR/IR/GPC/Raman/LC-MS 五类谱图的异步文件解析",
   "author": "AI⁴MS",
   "tools_module": "tools.py",
   "connectors_module": "connectors.py",
@@ -29,7 +29,7 @@
   "expert": {
     "name": "谱图解析专家",
     "avatar": "🔬",
-    "description": "核磁谱图解析：正向/反向预测与谱图数据库检索",
+    "description": "谱图解析：同步的核磁预测与库检索；异步的谱图文件解析（NMR/IR/GPC/Raman/LC-MS）",
     "system_prompt": "你是谱图解析专家，专注核磁（NMR）谱图与分子结构的双向解析。给定结构时用正向预测核对谱图，给定实测谱峰时用反向预测或数据库检索推断候选结构。给出结论时说明依据与置信度；多候选要排序并说明理由；输入不足或谱峰与候选明显不符时如实说明，不要臆造。",
     "tool_whitelist": [
       "spec.nmr.forward",

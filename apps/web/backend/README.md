@@ -102,11 +102,29 @@ conda run -n synlysagent python docker/spec-agent/mint_token.py --username <账�
 - **轮询**：进程内 `JobPoller` 每 5 秒把未完成任务的状态从子平台同步回来（`app/services/job_poller.py`）。agent 侧不轮询，避免浪费 step。
 - **唤醒**：任务进入终态（completed/failed/cancelled）时自动向所属会话注入一条系统消息并起新一轮对话，模型据此整合结果并向用户汇报；会话正忙则先排队，等本轮结束后补发。
 - **状态机**：`pending → running → completed/failed/cancelled`（harness `jobs.py`）；子平台状态由连接器映射，**未映射或查询失败一律保持原状态**，不倒退、不误判失败。
-- **连接器**：新增一个子平台的异步任务 = 在插件内实现 `JobConnector`（`submit`/`poll`/`cancel` + 状态映射）并注册到 `JobConnectorRegistry`，宿主零改动。当前 registry 在 lifespan 中创建（**无插件扩展点，只能运行期注册**；`FakeConnector` 供测试与本地演示）。
+- **连接器**：新增一个子平台的异步任务 = 在插件内实现 `JobConnector`（`submit`/`poll`/`cancel` + 状态映射），插件挂载时由宿主注册进 `JobConnectorRegistry`（**扩展点见下**），宿主零改动（`FakeConnector` 供测试与本地演示）。
 - **查询**：`GET /api/v1/jobs`（当前用户，可按 `session_id` 过滤）、`GET /api/v1/jobs/{job_id}`；提交与取消不单独开 API，只经对话工具（单一入口）。
 - **`job.*` 是平台交互工具**：与 `ask_user`/`file.send` 一样无条件追加到助手白名单，因此配了工具白名单的专家（如「谱图解析专家」）同样可用。
 
 **单实例前提**：轮询器与待唤醒队列都是进程内状态，与既有的 `workers=1` 约束一致；多副本会导致同一任务被重复轮询与重复唤醒。待唤醒队列为内存态，进程重启会丢失尚未补发的完成通知（已接受）。
+
+**连接器扩展点（插件接入异步任务）**：插件目录放 `connectors.py` 并在 `plugin.json`
+声明 `"connectors_module": "connectors.py"`，模块级导出 `CONNECTORS = [连接器实例, ...]`。
+宿主在挂载插件时把它们注册进 `JobConnectorRegistry`（幂等；kind 跨插件重名告警跳过；
+形状不合法只告警、**绝不让启动失败**）。连接器需实现 `kind` / `plugin_id` /
+`status_map`（外部状态原文 → 统一状态，携带 `status_map` 属性即可，注册时自动取用）
+与 `submit` / `poll` / `cancel` 三个异步方法；可选实现
+`fetch_result(external_id, ctx) -> str`，宿主在任务成功终态调用它并把返回文本写入
+job 的 `result`（会出现在唤醒消息里）。
+
+连接器的调用上下文（`ctx`）由宿主填充：
+`{"config": 插件配置, "ai4ms_token": 用户代签凭证, "workspace_root": 用户工作区根}`。
+`poll` 失败应抛 `JobPollFailed`（宿主保持原状态、累计 `poll_failures` 并记
+`last_poll_error`）；**不要静默返回空**——那会让任务永久挂起且无诊断痕迹。
+
+**已接入**：`spec_agent` 插件的 5 种谱图异步任务（`spec.task.nmr/ir/gpc/raman/lcms`）——
+读工作区谱图文件 → 上传换 file_id → 提交任务 → 轮询 → 取结果。上游只接受 `file_id`
+提交（故连接器必须拿到 `workspace_root`）；上游无取消接口，取消是本地停止跟踪。
 
 ## 能力目录与可见性（市场机制）
 
