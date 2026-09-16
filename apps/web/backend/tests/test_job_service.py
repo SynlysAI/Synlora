@@ -117,3 +117,102 @@ async def test_fake_status_map_covers_all_script_states():
     """标准映射必须覆盖 FakeConnector 的 cancel 态（漏了它取消观察不到）。"""
     assert FAKE_STATUS_MAP["cancelled"] is JobStatus.CANCELLED
     assert make_fake_connector("k", script=["queued"]).kind == "k"
+
+
+from app.db.repos import JobRepo
+from app.services.job_service import JobService
+
+
+def _job_service(store, **kwargs):
+    """构造最小可用的 JobService（无插件/身份服务，走 FakeConnector）。"""
+    reg = JobConnectorRegistry()
+    service = JobService(repo=JobRepo(store), connectors=reg, **kwargs)
+    return service, reg
+
+
+async def test_submit_creates_pending_job(store):
+    """提交后落库一条 pending 任务，内容含外部 id 与摘要。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued"]),
+                 status_map=FAKE_STATUS_MAP)
+    result = await service.handle(
+        {"action": "submit", "kind": "k", "params": {"a": 1}, "label": "试算"},
+        user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert result.ok is True
+    assert "任务 ID" in result.content
+    job_id = result.data["job_id"]
+    doc = await service.get(job_id)
+    assert doc["status"] == "pending"
+    assert doc["session_id"] == "s1"
+    assert doc["user_id"] == "u1"
+    assert doc["external_id"].startswith("fake-")
+
+
+async def test_submit_unknown_kind_is_readable_error(store):
+    """未注册的任务类型给出可读错误，不抛异常。"""
+    service, _ = _job_service(store)
+    result = await service.handle(
+        {"action": "submit", "kind": "nope", "params": {}},
+        user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert result.ok is False
+    assert result.error == "unknown_job_kind"
+    assert "nope" in result.content
+
+
+async def test_submit_passes_plugin_config_and_token(store):
+    """提交时把该插件的配置与用户代签 token 交给连接器。"""
+    service, reg = _job_service(store)
+    conn = make_fake_connector("k", plugin_id="spec_agent", script=["queued"])
+    reg.register(conn, status_map=FAKE_STATUS_MAP)
+    await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1",
+        ctx_extra={"plugins": {"spec_agent": {"base_url": "http://x"}},
+                   "ai4ms_token": "tok-1"})
+    assert conn.submitted[0]["ctx"]["config"] == {"base_url": "http://x"}
+    assert conn.submitted[0]["ctx"]["ai4ms_token"] == "tok-1"
+
+
+async def test_submit_failure_maps_to_tool_error(store):
+    """连接器提交失败 → ok=False 且错误码可辨识（不落库半成品）。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", fail_submit="上游拒绝"),
+                 status_map=FAKE_STATUS_MAP)
+    result = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert result.ok is False
+    assert result.error == "submit_failed"
+    assert "上游拒绝" in result.content
+    assert await service.list_for_session("s1") == []
+
+
+async def test_status_and_list_render_summary(store):
+    """status/list 返回人类可读摘要，含任务 ID 与状态。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued", "done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}, "label": "试算"},
+        user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    one = await service.handle({"action": "status", "job_id": job_id},
+                               user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert one.ok is True and job_id in one.content
+    many = await service.handle({"action": "list"},
+                                user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert many.ok is True and "试算" in many.content
+
+
+async def test_status_of_foreign_job_is_not_visible(store):
+    """别人的任务查不到（按 user_id 校验，不泄露存在性）。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    other = await service.handle({"action": "status", "job_id": job_id},
+                                 user={"sub": "u2"}, session_id="s2", ctx_extra={})
+    assert other.ok is False and other.error == "not_found"
