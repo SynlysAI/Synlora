@@ -11,12 +11,12 @@ import shutil
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
-from synlys_harness import ModelProviderConfig
 
 from app.api.assistants_api import _validate_provider
 from app.api.deps import Repos, get_current_user, get_repos
 from app.services import workspace
 from app.services.agent_service import AgentService, TooManyRuns
+from app.services.session_runtime import resolve_session_runtime
 
 router = APIRouter(prefix="/api/v1", tags=["sessions"])
 
@@ -48,40 +48,6 @@ async def _own_session(sid: str, user: dict, repos: Repos) -> dict:
     if doc is None or doc.get("user_id") != user["sub"]:
         raise HTTPException(404, "会话不存在")
     return doc
-
-
-async def _resolve_provider(provider_id: str | None, owner_desc: str,
-                            repos: Repos) -> ModelProviderConfig:
-    """解析模型服务 id 为后端配置（解密 api_key）。
-
-    Args:
-        provider_id: 模型服务 id（会话级覆盖或助手绑定，调用方已按优先级取好）。
-        owner_desc: 归属描述（助手/会话名，未指定 id 时的 422 提示用）。
-        repos: repo 集中访问对象。
-
-    Returns:
-        ModelProviderConfig。
-
-    Raises:
-        HTTPException: 未指定/不存在/已停用/解密失败（422）。
-    """
-    if not provider_id:
-        raise HTTPException(422, f"未指定模型服务: {owner_desc}")
-    try:
-        decrypted = await repos.provider.get_decrypted(provider_id)
-    except RuntimeError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    if decrypted is None:
-        raise HTTPException(422, f"模型服务不存在: {provider_id}")
-    if not decrypted.get("enabled"):
-        raise HTTPException(422, f"模型服务已停用: {decrypted.get('name', provider_id)}")
-    return ModelProviderConfig(
-        name=str(decrypted.get("name", "")),
-        base_url=str(decrypted.get("base_url", "")),
-        api_key=str(decrypted.get("api_key", "")),
-        model_id=str(decrypted.get("model_id", "")),
-        multimodal=bool(decrypted.get("multimodal")),
-    )
 
 
 async def _normalize_attachments(request: Request, user: dict, repos: Repos,
@@ -396,38 +362,13 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             并发超限（429）。
     """
     doc = await _own_session(sid, user, repos)
-    # 助手指针失效（未选专家/专家已删）不报错，交 chat 走无 persona 路径
-    assistant = await repos.assistant.get(doc.get("assistant_id") or "")
-    # 模型优先级：会话级覆盖 > 助手绑定 > 第一个启用模型（回落）。回落只作用于
-    # 本次发送、**不写回会话**——查看会话必须零写入（否则 updated_at 变"刚刚"，
-    # 侧栏时间/排序漂移）；口径与前端 ModelPicker 的 explicitId 一致
-    pid = doc.get("model_provider_id") or (assistant or {}).get("model_provider_id")
-    if not pid:
-        enabled = [p for p in await repos.provider.list() if p.get("enabled")]
-        if enabled:
-            pid = enabled[0]["_id"]
-    owner = doc.get("title") or (assistant or {}).get("name") or sid
-    cfg = await _resolve_provider(pid, str(owner), repos)
+    # 助手 / 模型 / 工作根 / 归属的解析口径与任务唤醒共用（session_runtime）
+    runtime = await resolve_session_runtime(request.app.state, repos, doc, user)
+    assistant = runtime.assistant
+    cfg = runtime.provider_cfg
+    workspace_root = runtime.workspace_root
+    ownership = runtime.ownership
     service = _agent_service(request)
-    # 工作根解析：会话绑定的项目有效 → 项目目录；未绑定（不选工作区的新会话）或
-    # 绑定已失效（项目被删）→ 会话目录 sessions/{sid} 自身为工作区（文件、产物
-    # 都跟会话走，删除会话即整目录移除）。不再回落"活跃项目"：未绑定会话若跟着
-    # projects[0]（随改名/上传漂移）跑，上一轮的 output/ 产物会看似凭空消失。
-    project_service = request.app.state.project_service
-    project = None
-    if doc.get("project_id"):
-        project = await project_service.get(user["sub"], str(doc["project_id"]))
-    if project is not None:
-        workspace_root = project_service.root_for(project)
-        ownership = {"project_id": project["_id"]}
-    else:
-        workspace_root = workspace.session_root(
-            request.app.state.settings.data_root, user["sub"], sid)
-        ownership = {"session_id": sid}
-        # 绑定失效（项目已删）：清掉脏 project_id，前端据此把它归入未分组区；
-        # 未绑定的会话保持 None，不写回任何项目
-        if doc.get("project_id"):
-            await repos.session.update(sid, {"project_id": None})
 
     # 附件归一化：文件复制进本会话工作根（跨根时），agent 按相对路径可读
     attachments_meta = None
