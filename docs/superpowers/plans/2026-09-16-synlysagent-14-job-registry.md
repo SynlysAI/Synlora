@@ -83,12 +83,13 @@ class JobConnector(Protocol):
 
 ```python
 """后台任务状态机单测。"""
-import pytest
+import json
 
 from synlys_harness.jobs import (
     ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     JobStatus,
+    _ALLOWED_TRANSITIONS,
     can_transition,
     is_terminal,
 )
@@ -137,9 +138,30 @@ def test_running_cannot_go_back_to_pending():
 
 
 def test_status_value_is_string():
-    """状态值即持久化字符串（DB 里存小写短横线形式）。"""
-    assert JobStatus.PENDING.value == "pending"
-    assert JobStatus.COMPLETED.value == "completed"
+    """状态值即持久化字符串（全小写、与成员名一致）。"""
+    for status in JobStatus:
+        assert status.value == status.name.lower()
+        assert isinstance(status.value, str)
+
+
+def test_accepts_plain_strings_from_persistence():
+    """持久层读回的是裸字符串：同状态幂等与流转判断都要正常工作。
+
+    用 json 往返造两个内容相同的**不同对象**——直接写字面量会被 CPython
+    interning 成同一对象，`is` 的缺陷就抓不到了。
+    """
+    src = json.loads('"pending"')
+    dst = json.loads('"pending"')
+    assert src is not dst
+    assert can_transition(src, dst) is True
+    assert can_transition("pending", "running") is True
+    assert can_transition("running", "pending") is False
+    assert can_transition("completed", "failed") is False
+
+
+def test_transition_table_covers_all_states():
+    """流转表必须覆盖全部状态（漏配会静默 fail-closed）。"""
+    assert set(_ALLOWED_TRANSITIONS) == set(JobStatus)
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -158,7 +180,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'synlys_harness.jobs'`
 """后台任务（Job）状态机：异步长任务的统一生命周期定义。
 
 机制归 harness、存储归宿主：本模块只定义状态集合与合法流转；任务文档的
-持久化、外部系统对接与完成唤醒由宿主实现（app/services/job_service.py）。
+持久化、外部系统对接与完成唤醒由宿主实现。
 """
 from __future__ import annotations
 
@@ -168,10 +190,10 @@ import enum
 class JobStatus(str, enum.Enum):
     """任务生命周期状态（Connector 负责把外部系统状态映射到其中一种）。"""
 
-    PENDING = "pending"      # 已提交，外部系统排队中
-    RUNNING = "running"      # 外部系统执行中
-    COMPLETED = "completed"  # 成功完成
-    FAILED = "failed"        # 执行失败
+    PENDING = "pending"      # 已提交、等待执行
+    RUNNING = "running"      # 执行中
+    COMPLETED = "completed"  # 成功结束
+    FAILED = "failed"        # 失败结束
     CANCELLED = "cancelled"  # 已取消
 
 
@@ -181,7 +203,7 @@ TERMINAL_STATUSES = frozenset({
 ACTIVE_STATUSES = frozenset({JobStatus.PENDING, JobStatus.RUNNING})
 
 # 合法流转表：终态无出边；同状态在 can_transition 里单独放行（幂等）
-_ALLOWED: dict[JobStatus, frozenset[JobStatus]] = {
+_ALLOWED_TRANSITIONS: dict[JobStatus, frozenset[JobStatus]] = {
     JobStatus.PENDING: frozenset({JobStatus.RUNNING, *TERMINAL_STATUSES}),
     JobStatus.RUNNING: frozenset(TERMINAL_STATUSES),
     JobStatus.COMPLETED: frozenset(),
@@ -191,26 +213,28 @@ _ALLOWED: dict[JobStatus, frozenset[JobStatus]] = {
 
 
 def can_transition(src: JobStatus, dst: JobStatus) -> bool:
-    """判断状态流转是否合法。
+    """判断状态流转是否合法（同状态幂等合法；终态不可迁移到任何其他状态）。
 
     Args:
-        src: 当前状态。
-        dst: 目标状态。
+        src: 当前状态（JobStatus 成员，或从持久层读回的等值字符串）。
+        dst: 目标状态（同上）。
 
     Returns:
-        同状态视为幂等合法；终态不可迁移到任何其他状态。
+        是否允许该流转；未知/非法值一律 False（fail-closed）。
 
-    Note:
-        查询失败/超时导致的"状态未知"不得写入本表——调用方应保持原状态，
-        避免把一次网络抖动变成状态倒退。
+    查询失败/超时导致的"状态未知"不得写入本表——调用方应保持原状态，
+    避免把一次网络抖动变成状态倒退。
+
+    比较用 `==` 而非 `is`：JobStatus 是 str 混入枚举，"持久层读回的裸字符串"
+    与枚举成员值相等但不是同一对象，用 `is` 会让同状态幂等判断静默失效。
     """
-    if src is dst:
+    if src == dst:
         return True
-    return dst in _ALLOWED.get(src, frozenset())
+    return dst in _ALLOWED_TRANSITIONS.get(src, frozenset())
 
 
 def is_terminal(status: JobStatus) -> bool:
-    """是否终态（终态任务不再轮询、不再唤醒）。"""
+    """是否为终态状态（终态在流转表中无出边，即不再变化）。"""
     return status in TERMINAL_STATUSES
 ```
 
