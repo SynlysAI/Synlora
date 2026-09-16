@@ -318,6 +318,24 @@ class RunRepo(BaseRepo):
 
     collection = "runs"
 
+    async def abort_stale(self, ended_at: float) -> int:
+        """把残留的 status=running 记录收敛为 aborted。
+
+        进程重启后这些 run 必死（run 是进程内 asyncio task），但记录会永远
+        停在 running；而 `chat()` 用 DB 计数判 `MAX_RUNS_PER_USER`，残留累积
+        会把用户永久顶在"该用户已有 N 个运行中的对话"上，连重启都救不回。
+
+        Args:
+            ended_at: 结束时间戳（调用方传 `time.time()`）。
+
+        Returns:
+            被清理的记录数。
+        """
+        docs = await self.list(filters={"status": "running"})
+        for doc in docs:
+            await self.update(doc["_id"], {"status": "aborted", "ended_at": ended_at})
+        return len(docs)
+
 
 class SessionRepo(BaseRepo):
     """会话元数据（user_id/assistant_id/title/archived/message_count）。"""

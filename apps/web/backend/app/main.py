@@ -1,5 +1,6 @@
 """Synlora Web 后端入口。"""
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -72,6 +73,11 @@ async def lifespan(app: FastAPI):
     app.state.assistant_repo = AssistantRepo(store)
     app.state.session_repo = SessionRepo(store)
     app.state.run_repo = RunRepo(store)
+    # 进程重启后 run 记录会残留 running（run 是进程内 task，重启即死），
+    # 而并发上限按 DB 计数判——不清理会让用户被"运行中的对话"永久封顶
+    stale = await app.state.run_repo.abort_stale(time.time())
+    if stale:
+        logger.info("已清理重启前残留的进行中 run: %d 条", stale)
     app.state.file_repo = FileRepo(store)
     app.state.event_repo = EventRepo(store)
     app.state.project_service = ProjectService(store, settings.data_root)

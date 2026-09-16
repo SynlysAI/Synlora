@@ -233,3 +233,20 @@ async def test_job_repo_update_status(store):
     updated = await repo.update(job["_id"], {"status": "running"})
     assert updated["status"] == "running"
     assert updated["updated_at"] >= job["updated_at"]
+
+
+async def test_run_repo_abort_stale(store):
+    """把残留的 status=running 收敛为 aborted，已完成的不动。"""
+    repo = RunRepo(store)
+    stale = await repo.create({"_id": "r-stale", "session_id": "s1",
+                               "user_id": "u1", "status": "running",
+                               "started_at": 1.0})
+    done = await repo.create({"_id": "r-done", "session_id": "s1",
+                              "user_id": "u1", "status": "completed",
+                              "started_at": 1.0})
+    n = await repo.abort_stale(ended_at=99.0)
+    assert n == 1
+    assert (await repo.get("r-stale"))["status"] == "aborted"
+    assert (await repo.get("r-stale"))["ended_at"] == 99.0
+    assert (await repo.get("r-done"))["status"] == "completed"   # 不误伤
+    assert stale["_id"] and done["_id"]
