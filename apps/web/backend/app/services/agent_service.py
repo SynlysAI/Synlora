@@ -143,6 +143,9 @@ class AgentService:
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
+        # run 来源：run_id → "chat"（用户发起）| "wake"（后台任务唤醒）。
+        # 唤醒轮是可让位的自动轮，与用户消息不同权，见 _yieldable
+        self._run_kind: dict[str, str] = {}
         # 后台驱动 task 的强引用（事件循环仅持弱引用，防 task 被 GC 中断）
         self._bg: set[asyncio.Task] = set()
         # python.run 沙箱执行器（首次使用时解析一次：local 直返；docker 探测
@@ -304,14 +307,13 @@ class AgentService:
         # 绝不兜底成字面量目录名——那会让多个用户共用 users/anonymous/ 且与
         # DB 里记录的 user_id 不一致
         user_sub = str(user["sub"])
-        # 会话级互斥：检查与占位在同一同步段完成（中间无 await，并发请求
-        # 串行执行到此即被拒）。同会话两个并发 run 会各自 seed 同一份历史
-        # 快照、从相同 seq 起号，DB _id=f"{sid}:{seq}" 碰撞写入被 db_sink
-        # 静默吞掉 → 事件拼接错乱/丢失，必须前置拒绝。
-        session_runs = self._active_by_session.setdefault(session_id, set())
-        if session_runs:
-            raise TooManyRuns("该会话已有进行中的消息")
+        # 会话级互斥：同会话两个并发 run 会各自 seed 同一份历史快照、从相同
+        # seq 起号，DB _id=f"{sid}:{seq}" 碰撞写入被 db_sink 静默吞掉 → 事件
+        # 拼接错乱/丢失，必须前置拒绝。但"可让位的占位者"（后台唤醒轮、停在
+        # ask 上的轮）先让位给用户消息再放行——让用户被它们挡住是最糟的选择。
+        await self._admit_run(session_id, wake=bool(wake_source))
         run_id = uuid.uuid4().hex[:12]
+        session_runs = self._active_by_session.setdefault(session_id, set())
         session_runs.add(run_id)
         try:
             running = await self._store.list("runs", filters={
@@ -320,6 +322,7 @@ class AgentService:
                 raise TooManyRuns(f"该用户已有 {MAX_RUNS_PER_USER} 个运行中的对话")
             active = ActiveRun()
             self._runs[run_id] = active
+            self._run_kind[run_id] = "wake" if wake_source else "chat"
 
             async def jsonl_sink(event: SessionEvent) -> None:
                 """事件追加 JSONL（审计副本；瞬态不落盘；契约：不得抛异常）。"""
@@ -566,6 +569,7 @@ class AgentService:
             # 防止 _runs/_active_by_session 残留失败 run（泄漏句柄 + 会话被
             # 永久卡 429 + SSE 哨兵永不投递）
             self._runs.pop(run_id, None)
+            self._run_kind.pop(run_id, None)
             session_runs.discard(run_id)
             raise
         return run_id
@@ -620,6 +624,7 @@ class AgentService:
                             run_id, final_status, exc_info=True)
         finally:
             active = self._runs.pop(run_id, None)
+            self._run_kind.pop(run_id, None)
             if active:
                 active.queue.put_nowait(None)  # SSE 结束哨兵（任何路径都必须放，防 SSE 挂死）
                 active.done.set()
@@ -666,6 +671,87 @@ class AgentService:
             有活跃 run 为 True。
         """
         return bool(self._active_by_session.get(session_id))
+
+    def _yieldable(self, run_id: str, *, for_user: bool) -> bool:
+        """该 run 是否该让位给新来的这一轮。
+
+        Args:
+            run_id: 运行 id。
+            for_user: 新来的是否为用户消息（False = 后台唤醒轮）。
+
+        Returns:
+            True = 可让位。后台唤醒轮一律让位（它不属于用户当前注意力）；
+            停在 ask 上等回答的轮**只在用户消息来时才让位**——它本就在等
+            用户输入，用户改用打字表达意愿应当让路，但后台轮不得抢走用户的
+            问题（否则任务一完成就把用户正等着回答的卡干掉）。用户自己的
+            前台轮正在干活时不让位。
+        """
+        if self._run_kind.get(run_id) == "wake":
+            return True
+        if not for_user:
+            return False
+        active = self._runs.get(run_id)
+        return bool(active is not None
+                    and active.ask_future is not None
+                    and not active.ask_future.done())
+
+    async def _preempt_runs(self, run_ids: list[str]) -> None:
+        """抢占指定 run（让位给用户新消息），等其收尾。
+
+        Args:
+            run_ids: 待抢占的 run id 列表（调用方传入快照——本方法会触发
+                注册表变更，边迭代边改会漏项）。
+
+        Note:
+            **必须先解掉停在 ask 上的 future**：harness 的工具执行处在
+            `await self._pipeline.run(...)` 里等这个 future，沿途没有取消
+            检查点（`_cancel` 只在 step 边界与 LLM 流内检查）。只置取消旗标
+            的话 run 卡在那个 await 上永不收尾，本方法 `await done` 会一起挂死。
+            解掉 future 后工具返回，循环走到下一个 step 边界即按取消退出。
+        """
+        actives = [self._runs.get(rid) for rid in run_ids]
+        for active in actives:
+            if active is None:
+                continue
+            if active.ask_future is not None and not active.ask_future.done():
+                active.ask_future.set_result("（本轮已被新的用户消息中止）")
+            if active.session is not None:
+                active.session.cancel()
+        for active in actives:
+            if active is None:
+                continue
+            try:
+                await asyncio.wait_for(active.done.wait(), PREEMPT_TIMEOUT_S)
+            except TimeoutError:
+                # 收尾超时不阻塞用户的新消息：占位会在 _drive 的 finally 里
+                # 自然释放，此处只告警（真要卡住也已被 wait_for 断开）
+                _LOGGER.warning("抢占 run 收尾超时，按已抢占继续")
+
+    async def _admit_run(self, session_id: str, *, wake: bool) -> None:
+        """会话准入：有占位时先尝试让位，让不掉才拒绝。
+
+        Args:
+            session_id: 会话 id。
+            wake: 本次是否为后台唤醒轮。
+
+        Raises:
+            TooManyRuns: 会话已有不可让位的进行中 run。
+
+        Note:
+            **调用方必须在返回后同步完成占位**（`session_runs.add(run_id)`，
+            中间不得插入 await）——本方法只在"无占位"时同步返回，占位的原子性
+            由"检查与占位之间无 await"保证（原实现的前提，不能因引入抢占而丢）。
+            循环重查是因为抢占含 await，期间可能有别的调用方抢先占位。
+        """
+        for_user = not wake
+        while True:
+            session_runs = self._active_by_session.setdefault(session_id, set())
+            if not session_runs:
+                return
+            if not all(self._yieldable(rid, for_user=for_user)
+                       for rid in session_runs):
+                raise TooManyRuns("该会话已有进行中的消息")
+            await self._preempt_runs(list(session_runs))
 
     async def wake(self, session_id: str, text: str, job_id: str = "") -> str:
         """以系统通知文本启动一轮新 run（后台任务完成后唤醒 agent）。
