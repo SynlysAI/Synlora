@@ -6,7 +6,7 @@
  * `avatar` 回填——列表接口不回传这些字段，此前打开编辑框即空白、一保存就把
  * 原人设提示词覆盖掉。
  */
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { FormError, Modal } from '@/components/admin/shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from '@/components/admin/form'
 import { useCatalogStore } from '@/stores/catalog'
@@ -31,27 +31,31 @@ export function SkillModal({
   const [loading, setLoading] = useState(editing)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // 详情是否已成功回填：编辑态拉取失败时保持 false，表单全程禁用——否则用户忽略
+  // 错误提示继续编辑，保存时会把没拉到的正文当空串写回，等于静默清空原有技能
+  const [detailReady, setDetailReady] = useState(!editing)
 
-  // 编辑态先拉正文（列表只有名称与描述）
-  useEffect(() => {
+  // 编辑态先拉正文（列表只有名称与描述）；首次加载与失败重试共用这一份实现
+  const fetchDetail = useCallback(async () => {
     if (initial === null) return
-    let alive = true
-    loadDetail('skill', initial.id)
-      .then((detail) => {
-        if (!alive) return
-        setDescription(detail.description)
-        setContent(detail.content ?? '')
-      })
-      .catch((err) => {
-        if (alive) setError(errorText(err))
-      })
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-    return () => {
-      alive = false
+    setLoading(true)
+    setError('') // 重试前先清错，否则加载中仍压着上一次的失败提示
+    setDetailReady(false)
+    try {
+      const detail = await loadDetail('skill', initial.id)
+      setDescription(detail.description)
+      setContent(detail.content ?? '')
+      setDetailReady(true)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setLoading(false)
     }
   }, [initial, loadDetail])
+
+  useEffect(() => {
+    void fetchDetail()
+  }, [fetchDetail])
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
@@ -68,6 +72,9 @@ export function SkillModal({
       setSaving(false)
     }
   }
+
+  // 详情没拉到且不在加载中 = 卡死态，给个重试出口（否则只能取消重开模态）
+  const retryable = editing && !loading && !detailReady
 
   return (
     <Modal title={editing ? `编辑技能 ${initial?.name}` : '新建技能'} onClose={() => onClose(false)}>
@@ -92,6 +99,7 @@ export function SkillModal({
             onChange={(e) => setDescription(e.target.value)}
             required
             autoFocus={editing}
+            disabled={loading || !detailReady}
             className={inputClass}
           />
         </label>
@@ -102,14 +110,23 @@ export function SkillModal({
             onChange={(e) => setContent(e.target.value)}
             rows={10}
             required
-            disabled={loading}
+            disabled={loading || !detailReady}
             className={`${inputClass} resize-y font-mono`}
           />
         </label>
-        {error && <FormError>{error}</FormError>}
+        {error && (
+          <div className="flex items-center gap-3">
+            <FormError>{error}</FormError>
+            {retryable && (
+              <button type="button" onClick={() => void fetchDetail()} className={secondaryButtonClass}>
+                重试
+              </button>
+            )}
+          </div>
+        )}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={() => onClose(false)} className={secondaryButtonClass}>取消</button>
-          <button type="submit" disabled={saving || loading} className={primaryButtonClass}>
+          <button type="submit" disabled={saving || loading || !detailReady} className={primaryButtonClass}>
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
@@ -138,29 +155,33 @@ export function ExpertModal({
   const [loading, setLoading] = useState(editing)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // 详情是否已成功回填：编辑态拉取失败时保持 false，表单全程禁用——否则用户忽略
+  // 错误提示继续编辑，保存时会把没拉到的工具白名单/头像当空值写回，静默丢数据
+  const [detailReady, setDetailReady] = useState(!editing)
 
-  // 编辑态先拉详情回填（人设提示词与工具白名单列表接口不返回）
-  useEffect(() => {
+  // 编辑态先拉详情回填（人设提示词与工具白名单列表接口不返回）；失败重试共用
+  const fetchDetail = useCallback(async () => {
     if (initial === null) return
-    let alive = true
-    loadDetail('expert', initial.id)
-      .then((detail) => {
-        if (!alive) return
-        setAvatar(detail.avatar ?? '')
-        setDescription(detail.description)
-        setSystemPrompt(detail.system_prompt ?? '')
-        setTools((detail.tool_whitelist ?? []).join(', '))
-      })
-      .catch((err) => {
-        if (alive) setError(errorText(err))
-      })
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-    return () => {
-      alive = false
+    setLoading(true)
+    setError('') // 重试前先清错，否则加载中仍压着上一次的失败提示
+    setDetailReady(false)
+    try {
+      const detail = await loadDetail('expert', initial.id)
+      setAvatar(detail.avatar ?? '')
+      setDescription(detail.description)
+      setSystemPrompt(detail.system_prompt ?? '')
+      setTools((detail.tool_whitelist ?? []).join(', '))
+      setDetailReady(true)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setLoading(false)
     }
   }, [initial, loadDetail])
+
+  useEffect(() => {
+    void fetchDetail()
+  }, [fetchDetail])
 
   const draft = (): ExpertDraft => ({
     name: name.trim(),
@@ -185,6 +206,9 @@ export function ExpertModal({
     }
   }
 
+  // 详情没拉到且不在加载中 = 卡死态，给个重试出口（否则只能取消重开模态）
+  const retryable = editing && !loading && !detailReady
+
   return (
     <Modal title={editing ? `编辑专家 ${initial?.name}` : '新建专家'} onClose={() => onClose(false)}>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
@@ -195,17 +219,27 @@ export function ExpertModal({
             onChange={(e) => setName(e.target.value)}
             required
             autoFocus
-            disabled={loading}
+            disabled={loading || !detailReady}
             className={inputClass}
           />
         </label>
         <label className={labelClass}>
           头像 emoji（可空）
-          <input value={avatar} onChange={(e) => setAvatar(e.target.value)} disabled={loading} className={inputClass} />
+          <input
+            value={avatar}
+            onChange={(e) => setAvatar(e.target.value)}
+            disabled={loading || !detailReady}
+            className={inputClass}
+          />
         </label>
         <label className={labelClass}>
           描述
-          <input value={description} onChange={(e) => setDescription(e.target.value)} disabled={loading} className={inputClass} />
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            disabled={loading || !detailReady}
+            className={inputClass}
+          />
         </label>
         <label className={labelClass}>
           人设提示词
@@ -214,7 +248,7 @@ export function ExpertModal({
             onChange={(e) => setSystemPrompt(e.target.value)}
             rows={6}
             required
-            disabled={loading}
+            disabled={loading || !detailReady}
             className={`${inputClass} resize-y`}
           />
         </label>
@@ -224,14 +258,23 @@ export function ExpertModal({
             value={tools}
             onChange={(e) => setTools(e.target.value)}
             placeholder="python.run, file.read"
-            disabled={loading}
+            disabled={loading || !detailReady}
             className={inputClass}
           />
         </label>
-        {error && <FormError>{error}</FormError>}
+        {error && (
+          <div className="flex items-center gap-3">
+            <FormError>{error}</FormError>
+            {retryable && (
+              <button type="button" onClick={() => void fetchDetail()} className={secondaryButtonClass}>
+                重试
+              </button>
+            )}
+          </div>
+        )}
         <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={() => onClose(false)} className={secondaryButtonClass}>取消</button>
-          <button type="submit" disabled={saving || loading} className={primaryButtonClass}>
+          <button type="submit" disabled={saving || loading || !detailReady} className={primaryButtonClass}>
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
