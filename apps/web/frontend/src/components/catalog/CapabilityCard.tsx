@@ -55,6 +55,9 @@ export default function CapabilityCard({
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(e) => {
+        // 子元素按钮的按键会冒泡上来，不能当成卡片被激活（否则动作按钮的
+        // Enter/Space 会被 preventDefault 掉，并误触发进详情）。
+        if (e.target !== e.currentTarget) return
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onClick()
@@ -79,7 +82,8 @@ export default function CapabilityCard({
               {title}
             </span>
           </div>
-          {badges && <div className="flex min-w-0 flex-wrap items-center gap-1.5">{badges}</div>}
+          {/* 徽标行：卡片定高 160px，参考实现也是单行裁切，不换行溢出卡外 */}
+          {badges && <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">{badges}</div>}
         </div>
 
         {actionIcon && (
@@ -101,5 +105,14 @@ export default function CapabilityCard({
         {description || '无描述'}
       </div>
     </div>
+  )
+}
+
+/** 卡片徽标：尺寸照抄参考实现 PageCard 的 tag（20px 高 / 12px 字 / 圆角 sm）。 */
+export function CardBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex h-5 shrink-0 items-center rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-interactive-bg-hover)] px-2 text-xs leading-5 text-[var(--sa-alias-label-primary)]">
+      {children}
+    </span>
   )
 }
