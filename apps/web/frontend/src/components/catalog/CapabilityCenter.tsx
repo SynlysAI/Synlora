@@ -23,7 +23,7 @@ import type { CapabilityKind, AppRoute } from '@/routing/route'
 import type { CatalogItem, MyCapability } from '@/types'
 import CapabilityCard, { CardBadge } from './CapabilityCard'
 import CapabilityDetail from './CapabilityDetail'
-import MinePanel from './MinePanel'
+import MinePanel, { type SubTab } from './MinePanel'
 import { PluginInstallModal } from './CapabilityModals'
 
 /** 左导航项（类型 → 展示名）。 */
@@ -76,6 +76,15 @@ const INSTALL_ICON = (
   </svg>
 )
 
+/** 占位卡（虚线圈内一行提示，空态与加载态共用）。 */
+function PlaceholderCard({ text }: { text: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 rounded-[var(--sa-radius-lg)] border border-dashed border-[var(--sa-alias-border-l2)] py-16 text-[13px] text-[var(--sa-alias-label-caption)]">
+      {text}
+    </div>
+  )
+}
+
 /** 适配某类型的卡片网格（无条目时渲染空态卡）。 */
 function CardGrid({ items, empty, children }: {
   items: number
@@ -83,11 +92,7 @@ function CardGrid({ items, empty, children }: {
   children: ReactNode
 }) {
   if (items === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-2 rounded-[var(--sa-radius-lg)] border border-dashed border-[var(--sa-alias-border-l2)] py-16 text-[13px] text-[var(--sa-alias-label-caption)]">
-        {empty}
-      </div>
-    )
+    return <PlaceholderCard text={empty} />
   }
   return (
     <div className="grid justify-center gap-4 [grid-template-columns:repeat(auto-fill,minmax(360px,1fr))]">
@@ -102,8 +107,12 @@ export default function CapabilityCenter({ route }: { route: AppRoute }) {
     route.kind === 'capabilities' || route.kind === 'capability-detail'
       ? route.capabilityKind
       : 'expert'
-  // 页签提到壳层：进详情页会卸载列表页、返回时再重建，state 放列表页内会被重置为「市场」
+  // 页签、搜索词与「我的」子页签提到壳层：进详情页会卸载列表页、返回时再重建，
+  // state 放列表页内会被重置（页签回「市场」、搜索清空、子页签回「已启用」）
   const [tab, setTab] = useState<'market' | 'mine'>('market')
+  const [marketQuery, setMarketQuery] = useState('')
+  const [mineQuery, setMineQuery] = useState('')
+  const [mineSub, setMineSub] = useState<SubTab>('enabled')
 
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
@@ -140,9 +149,24 @@ export default function CapabilityCenter({ route }: { route: AppRoute }) {
         {/* 右侧内容：详情页整页接管，列表页走 CapabilityList */}
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           {route.kind === 'capability-detail' ? (
-            <CapabilityDetail capabilityKind={route.capabilityKind} itemId={route.itemId} />
+            // key=itemId：详情页 state 只在挂载时初始化，换条目必须重建，否则会残留上一条的内容
+            <CapabilityDetail
+              key={route.itemId}
+              capabilityKind={route.capabilityKind}
+              itemId={route.itemId}
+            />
           ) : (
-            <CapabilityList capabilityKind={capabilityKind} tab={tab} onTabChange={setTab} />
+            <CapabilityList
+              capabilityKind={capabilityKind}
+              tab={tab}
+              onTabChange={setTab}
+              marketQuery={marketQuery}
+              onMarketQueryChange={setMarketQuery}
+              mineQuery={mineQuery}
+              onMineQueryChange={setMineQuery}
+              mineSub={mineSub}
+              onMineSubChange={setMineSub}
+            />
           )}
         </main>
       </div>
@@ -152,19 +176,28 @@ export default function CapabilityCenter({ route }: { route: AppRoute }) {
 }
 
 /** 列表页（市场 / 我的）。 */
-function CapabilityList({ capabilityKind, tab, onTabChange }: {
+function CapabilityList({
+  capabilityKind, tab, onTabChange,
+  marketQuery, onMarketQueryChange, mineQuery, onMineQueryChange,
+  mineSub, onMineSubChange,
+}: {
   capabilityKind: CapabilityKind
-  /** 页签由壳层持有：列表页会随「进详情/返回」卸载重建，放这里会被重置。 */
+  /** 页签、搜索词、子页签由壳层持有：列表页会随「进详情/返回」卸载重建，放这里会被重置。 */
   tab: 'market' | 'mine'
   onTabChange: (tab: 'market' | 'mine') => void
+  marketQuery: string
+  onMarketQueryChange: (query: string) => void
+  mineQuery: string
+  onMineQueryChange: (query: string) => void
+  mineSub: SubTab
+  onMineSubChange: (sub: SubTab) => void
 }) {
   const byKind = useCatalogStore((s) => s.byKind)
+  const marketLoaded = useCatalogStore((s) => s.loaded)
   const loadMarket = useCatalogStore((s) => s.loadMarket)
   const install = useCatalogStore((s) => s.install)
   const setEnabled = useCatalogStore((s) => s.setEnabled)
 
-  const [marketQuery, setMarketQuery] = useState('')
-  const [mineQuery, setMineQuery] = useState('')
   /** 需要先填配置再安装的插件（null 关闭）。 */
   const [configuring, setConfiguring] = useState<CatalogItem | null>(null)
   /** 快按钮进行中的条目（`kind:id`）。 */
@@ -176,7 +209,7 @@ function CapabilityList({ capabilityKind, tab, onTabChange }: {
 
   const rows = byKind[capabilityKind]
   const query = tab === 'market' ? marketQuery : mineQuery
-  const setQuery = tab === 'market' ? setMarketQuery : setMineQuery
+  const setQuery = tab === 'market' ? onMarketQueryChange : onMineQueryChange
 
   /** 搜索过滤（名称 + 描述）。 */
   const filtered = useMemo(() => {
@@ -260,34 +293,42 @@ function CapabilityList({ capabilityKind, tab, onTabChange }: {
 
       <div className="pt-5">
         {tab === 'market' ? (
-          <CardGrid items={filtered.length} empty={query ? '无匹配能力' : `暂无可用${NAV.find((n) => n.kind === capabilityKind)?.label ?? ''}`}>
-            {filtered.map((item) => (
-              <CapabilityCard
-                key={item.id}
-                title={item.name}
-                description={item.description}
-                avatar={item.avatar}
-                badges={
-                  <>
-                    {item.default_enabled ? (
-                      <CardBadge>内置 · 全员可用</CardBadge>
-                    ) : item.installed ? (
-                      <CardBadge>{item.enabled ? '已启用' : '已停用'}</CardBadge>
-                    ) : null}
-                  </>
-                }
-                actionIcon={!item.installed && !item.default_enabled ? INSTALL_ICON : undefined}
-                actionLabel={`安装 ${item.name}`}
-                actionBusy={busy === `${item.kind}:${item.id}`}
-                onAction={() => void handleInstall(item)}
-                onClick={() => goDetail(item.id)}
-              />
-            ))}
-          </CardGrid>
+          marketLoaded ? (
+            <CardGrid items={filtered.length} empty={query ? '无匹配能力' : `暂无可用${NAV.find((n) => n.kind === capabilityKind)?.label ?? ''}`}>
+              {filtered.map((item) => (
+                <CapabilityCard
+                  key={item.id}
+                  title={item.name}
+                  description={item.description}
+                  avatar={item.avatar}
+                  badges={
+                    <>
+                      {item.default_enabled ? (
+                        <CardBadge>内置 · 全员可用</CardBadge>
+                      ) : item.installed ? (
+                        <CardBadge>{item.enabled ? '已启用' : '已停用'}</CardBadge>
+                      ) : null}
+                    </>
+                  }
+                  actionIcon={!item.installed && !item.default_enabled ? INSTALL_ICON : undefined}
+                  actionLabel={`安装 ${item.name}`}
+                  actionBusy={busy === `${item.kind}:${item.id}`}
+                  onAction={() => void handleInstall(item)}
+                  onClick={() => goDetail(item.id)}
+                />
+              ))}
+            </CardGrid>
+          ) : (
+            // 首帧还没拉到市场数据（或三类全失败），此时 filtered 恒为空，
+            // 直接判空会误报「暂无可用专家」，所以加载完成前只显示占位
+            <PlaceholderCard text="加载中…" />
+          )
         ) : (
           <MinePanel
             capabilityKind={capabilityKind}
             query={mineQuery}
+            sub={mineSub}
+            onSubChange={onMineSubChange}
             onOpen={(item) => goDetail(item.id)}
             onToggle={(item) => void handleToggle(item)}
             busyKey={busy}

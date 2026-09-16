@@ -144,13 +144,23 @@ export default function CapabilityDetail({
   const goBack = () =>
     useRouterStore.getState().navigate({ kind: 'capabilities', capabilityKind })
 
-  /** 包装写操作：置忙 → 执行 → 刷新详情 → 提示；返回是否成功（删除后据此决定是否返回列表）。 */
-  const run = async (label: string, fn: () => Promise<void>): Promise<boolean> => {
+  /**
+   * 包装写操作：置忙 → 执行 → 刷新详情 → 提示；返回是否成功（删除后据此决定是否返回列表）。
+   *
+   * `refreshing: false` 用于「写完条目就消失、调用方随即跳走」的路径（删除、
+   * 卸载已下架条目）：此时详情接口必 404，刷新会先把错误写进 state、闪一帧
+   * 「条目不存在」才跳转，所以直接跳过。
+   */
+  const run = async (
+    label: string,
+    fn: () => Promise<void>,
+    { refreshing = true }: { refreshing?: boolean } = {},
+  ): Promise<boolean> => {
     setBusy(true)
     try {
       await fn()
       toast('success', label)
-      await refresh()
+      if (refreshing) await refresh()
       return true
     } catch (err) {
       toast('error', errorText(err))
@@ -262,9 +272,14 @@ export default function CapabilityDetail({
                 type="button"
                 disabled={busy}
                 onClick={() => void (async () => {
-                  // 下架条目卸载后详情会 404（不可再读），成功后必须退回列表，
-                  // 否则 refresh 置错、页面停在「条目不存在」的错误屏；失败则留在原地看提示
-                  if (await run(`已卸载 ${detail.name}`, () => uninstall(detail.kind, detail.id))) goBack()
+                  const revoked = detail.revoked
+                  // 已下架条目卸载后详情必 404（hidden 且未安装）：既不刷新也不停留，
+                  // 成功即退回列表，否则会闪一帧「条目不存在」的错误屏；失败留在原地看提示。
+                  // 普通条目卸载后详情仍可读（origin 变 market、给出「安装」），留在原地不打断。
+                  const ok = await run(`已卸载 ${detail.name}`, () => uninstall(detail.kind, detail.id), {
+                    refreshing: !revoked,
+                  })
+                  if (ok && revoked) goBack()
                 })()}
                 className={actionClass}
               >
@@ -290,8 +305,9 @@ export default function CapabilityDetail({
                   const remove = detail.kind === 'skill'
                     ? () => deleteSkill(detail.id)
                     : () => deleteExpert(detail.id)
-                  // 删除成功后条目已不存在，详情页必须退回列表；失败则留在原地让用户看到提示
-                  if (await run(`已删除 ${detail.name}`, remove)) goBack()
+                  // 删除成功后条目已不存在（详情必 404）：跳过写后刷新以免闪错误屏，
+                  // 成功即退回列表；失败则留在原地让用户看到提示
+                  if (await run(`已删除 ${detail.name}`, remove, { refreshing: false })) goBack()
                 })()}
                 className={actionClass}
               >

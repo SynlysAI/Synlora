@@ -1,7 +1,8 @@
 /**
  * 「我的」面板：自建 + 已安装 + 内置只读（技能/专家/插件）。
  *
- * 子页签（全部/已启用/已停用/内置）与过滤逻辑照旧；渲染改为卡片网格
+ * 子页签（全部/已启用/已停用/内置）与过滤逻辑照旧（选中值由列表页壳层注入，
+ * 见 SubTab，以便进详情返回后保持）；渲染改为卡片网格
  * （复用 CapabilityCard，与市场页视觉统一）。
  *
  * 内置条目对普通用户只读（无启停/编辑/删除入口，标「自动可用」），
@@ -15,7 +16,8 @@ import type { MyCapability } from '@/types'
 import CapabilityCard, { CardBadge } from './CapabilityCard'
 import { ExpertModal, SkillModal } from './CapabilityModals'
 
-type SubTab = 'all' | 'enabled' | 'disabled' | 'builtin'
+/** 「我的」子页签（state 由列表页壳层持有，进详情返回后不丢）。 */
+export type SubTab = 'all' | 'enabled' | 'disabled' | 'builtin'
 
 const SUB_TABS: Array<{ key: SubTab; label: string }> = [
   { key: 'all', label: '全部' },
@@ -29,6 +31,9 @@ interface MinePanelProps {
   capabilityKind: 'expert' | 'skill' | 'plugin'
   /** 搜索词（由列表页统一持有，与市场页各自独立）。 */
   query: string
+  /** 子页签（由列表页壳层持有：本面板会随「进详情/返回」卸载重建，放这里会被重置）。 */
+  sub: SubTab
+  onSubChange: (sub: SubTab) => void
   /** 点卡片进详情。 */
   onOpen: (item: MyCapability) => void
   /** 卡片上的启用/停用快按钮。 */
@@ -38,12 +43,13 @@ interface MinePanelProps {
 }
 
 /** 「我的」面板。 */
-export default function MinePanel({ capabilityKind, query, onOpen, onToggle, busyKey }: MinePanelProps) {
+export default function MinePanel({
+  capabilityKind, query, sub, onSubChange, onOpen, onToggle, busyKey,
+}: MinePanelProps) {
   const items = useMyCapabilitiesStore((s) => s.items)
   const builtinItems = useMyCapabilitiesStore((s) => s.builtinItems)
   const loaded = useMyCapabilitiesStore((s) => s.loaded)
   const loadMine = useMyCapabilitiesStore((s) => s.loadMine)
-  const [sub, setSub] = useState<SubTab>('enabled')
   const [editingSkill, setEditingSkill] = useState<MyCapability | null | undefined>(undefined)
   const [editingExpert, setEditingExpert] = useState<MyCapability | null | undefined>(undefined)
 
@@ -77,7 +83,7 @@ export default function MinePanel({ capabilityKind, query, onOpen, onToggle, bus
             <button
               key={t.key}
               type="button"
-              onClick={() => setSub(t.key)}
+              onClick={() => onSubChange(t.key)}
               className={
                 sub === t.key
                   ? 'rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-interactive-bg-hover)] px-2.5 py-[3px] text-[12px] text-[var(--sa-alias-label-primary)]'
