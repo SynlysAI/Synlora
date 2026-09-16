@@ -70,6 +70,10 @@ class JobConnector(Protocol):
     async def cancel(self, external_id: str, ctx: dict) -> bool:
         """请求取消任务。
 
+        Args:
+            external_id: submit 返回的外部 id。
+            ctx: 同 submit。
+
         Returns:
             外部系统是否受理取消；失败返回 False（宿主仍标记为 cancelled 由
             用户语义决定，见 JobService.cancel）。
@@ -88,7 +92,7 @@ class RegisteredConnector:
         """把外部状态原文映射为统一状态。
 
         Args:
-            raw: 外部系统返回的状态字符串。
+            raw: 外部系统返回的状态字符串（大小写与首尾空白不敏感）。
 
         Returns:
             统一状态；无映射（含 None/未预期值）返回 None，
@@ -112,14 +116,21 @@ class JobConnectorRegistry:
 
         Args:
             connector: 连接器实例。
-            status_map: 外部状态原文（小写）→ 统一状态。
+            status_map: 外部状态原文 → 统一状态。键在注册时统一归一为
+                小写并去首尾空白，调用方大小写可随意。
 
         Raises:
-            ValueError: kind 为空或已被注册。
+            ValueError: 连接器未实现 JobConnector 协议、kind 为空或已被注册。
+                注意 isinstance 只校验成员存在性、不校验方法签名，插件实现
+                仍需自行保证签名与协议一致。
         """
         kind = str(getattr(connector, "kind", "")).strip()
         if not kind:
             raise ValueError("连接器 kind 不能为空")
+        if not isinstance(connector, JobConnector):
+            raise ValueError(
+                f"连接器未实现 JobConnector 协议（需 kind/plugin_id 与 "
+                f"submit/poll/cancel 三个异步方法）: {type(connector).__name__}")
         if kind in self._items:
             raise ValueError(f"任务类型已注册: {kind}")
         normalized = {str(k).strip().lower(): v
@@ -141,10 +152,23 @@ def _new_external_id() -> str:
     return "fake-" + uuid.uuid4().hex[:8]
 
 
+# FakeConnector 状态脚本的标准映射（注册 fake 连接器时直接用它，
+# 避免手写映射时漏项——漏映射会让该状态被静默忽略、任务永不终结）
+FAKE_STATUS_MAP: dict[str, JobStatus] = {
+    "queued": JobStatus.PENDING,
+    "doing": JobStatus.RUNNING,
+    "done": JobStatus.COMPLETED,
+    "failed": JobStatus.FAILED,
+    "cancelled": JobStatus.CANCELLED,
+}
+
+
 class FakeConnector:
     """测试/演示用连接器：纯内存，不依赖任何外部系统。
 
     状态按 script 顺序每次 poll 推进一步，推进到末位后保持不变。
+
+    仅供测试与本地演示——不要在生产的 lifespan 装配里注册它。
     """
 
     def __init__(self, kind: str, plugin_id: str = "fake",
@@ -176,7 +200,12 @@ class FakeConnector:
         return external_id
 
     async def poll(self, external_id: str, ctx: dict) -> str:
-        """按下标推进并返回当前状态原文。"""
+        """按下标推进并返回当前状态原文。
+
+        Note:
+            未提交过的 external_id 一律返回脚本末态（进程重启后游标为空，
+            属于可接受的降级）；正常路径不应传入未知 id。
+        """
         del ctx  # 测试连接器不读上下文
         if external_id in self._cancelled:
             return "cancelled"

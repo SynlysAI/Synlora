@@ -2,6 +2,7 @@
 import pytest
 
 from app.services.job_connectors import (
+    FAKE_STATUS_MAP,
     JobConnectorRegistry,
     JobSubmitFailed,
     make_fake_connector,
@@ -20,6 +21,13 @@ async def test_registry_register_and_get():
     assert got is not None
     assert got.connector.plugin_id == "spec_agent"
     assert got.map_status("doing") is JobStatus.RUNNING
+    # 映射键做了小写/去空白归一，外部原文可直接查
+    assert got.map_status(" DONE ") is JobStatus.COMPLETED
+
+    # status_map 省略 = 未映射任何状态（map_status 恒 None）
+    reg.register(make_fake_connector("k2", plugin_id="p2"))
+    assert reg.kinds == ["k2", "spec.nmr.forward"]
+    assert reg.get("k2").map_status("done") is None
 
 
 async def test_registry_duplicate_kind_rejected():
@@ -38,6 +46,26 @@ async def test_registry_unknown_status_keeps_none():
     assert reg.get("k").map_status("weird") is None
 
 
+async def test_registry_rejects_bad_connector_and_empty_kind():
+    """形状不合格或 kind 为空的连接器注册即报错（防轮询时才炸）。"""
+    reg = JobConnectorRegistry()
+
+    class _Incomplete:
+        """漏实现 poll/cancel 的连接器（形状不合格）。"""
+
+        kind = "half"
+        plugin_id = "p1"
+
+        async def submit(self, params, ctx):
+            return "x"
+
+    with pytest.raises(ValueError):
+        reg.register(_Incomplete(), status_map={})
+    with pytest.raises(ValueError):
+        reg.register(make_fake_connector("  ", plugin_id="p1"), status_map={})
+    assert reg.kinds == []
+
+
 async def test_fake_connector_lifecycle():
     """测试连接器：submit 返回外部 id，poll 按脚本推进状态，cancel 生效。"""
     conn = make_fake_connector("k", plugin_id="p1", script=["queued", "doing", "done"])
@@ -48,6 +76,9 @@ async def test_fake_connector_lifecycle():
     assert await conn.poll(external_id, ctx={}) == "done"
     # 脚本走完后保持末态（幂等）
     assert await conn.poll(external_id, ctx={}) == "done"
+    # 取消后 poll 一律返回 cancelled（覆盖取消态）
+    await conn.cancel(external_id, ctx={})
+    assert await conn.poll(external_id, ctx={}) == "cancelled"
 
 
 async def test_fake_connector_submit_failure():
@@ -55,3 +86,9 @@ async def test_fake_connector_submit_failure():
     conn = make_fake_connector("k", plugin_id="p1", fail_submit="上游拒绝")
     with pytest.raises(JobSubmitFailed):
         await conn.submit({}, ctx={})
+
+
+async def test_fake_status_map_covers_all_script_states():
+    """标准映射必须覆盖 FakeConnector 的 cancel 态（漏了它取消观察不到）。"""
+    assert FAKE_STATUS_MAP["cancelled"] is JobStatus.CANCELLED
+    assert make_fake_connector("k", script=["queued"]).kind == "k"
