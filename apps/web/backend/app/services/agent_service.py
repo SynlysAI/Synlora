@@ -55,6 +55,34 @@ from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGIS
 
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
 
+# 抢占后等待 run 收尾的上限（秒）：解掉 future + 置旗标后正常应在毫秒级收尾，
+# 给 5s 只是防"收尾路径自身有问题"时把抢占方一起拖住
+PREEMPT_TIMEOUT_S = 5.0
+
+# ask_user 等待回答的上限（秒）：没有上限时，一个停在 ask 上的 run 会永久
+# 占住会话（用户关掉页面就再也没人来回答它）
+ASK_TIMEOUT_S = 300.0
+
+# 唤醒轮（后台任务完成触发、前台无人值守）不提供的工具：唤醒轮再弹问答卡
+# 只会把会话锁死——它不属于用户当前的注意力，用户也不一定正在看这个页面
+WAKE_BLOCKED_TOOLS = frozenset({"ask_user"})
+
+
+def narrow_tools_for_wake(tool_names: list[str]) -> list[str]:
+    """收窄后台唤醒轮的工具集（去掉需要用户在场的交互工具）。
+
+    Args:
+        tool_names: 按专家白名单与可见性算出的工具名列表。
+
+    Returns:
+        去掉 `WAKE_BLOCKED_TOOLS` 后的列表；顺序与输入一致。
+
+    对齐 DSH 的"工具没有交互通道就 deny"：本平台对应"压根不给这个工具"，
+    比拿到工具再拒绝更省一次 LLM 往返。
+    """
+    return [t for t in tool_names if t not in WAKE_BLOCKED_TOOLS]
+
+
 # 技能与平台交互工具：无条件追加到助手白名单（平台能力，不依赖助手自行声明；
 # ask_user=问答回路、file.send=产物交付、job.*=后台任务通道，是宿主注入的
 # 交互通道，任何助手都可用）
@@ -422,6 +450,10 @@ class AgentService:
                         if t not in all_plugin_tools or t in visible_tools
                     ]
 
+            if wake_source:
+                # 后台唤醒轮无人值守：不给交互工具（详见 narrow_tools_for_wake）
+                tool_names = narrow_tools_for_wake(tool_names)
+
             # ask_user：发 ask/user 事件（落盘+SSE）并等待前端回答 future
             async def ask_handler(payload: dict) -> str:
                 future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
@@ -436,6 +468,10 @@ class AgentService:
             # payload 加 kind=approval 供前端渲染审批卡（允许/拒绝按钮）；用户
             # 答复仍走同一 answer API（固定文案"允许"/"拒绝"，管线按文本判定）
             async def approval_handler(payload: dict) -> str:
+                if wake_source:
+                    # 唤醒轮无人值守，不能停下来等审批（同 ask_user 的理由）；
+                    # fail-closed 拒绝，让模型换条不需要审批的路径或直接说明
+                    return "拒绝"
                 tool = str(payload.get("tool", ""))
                 preview = json.dumps(payload.get("args", {}), ensure_ascii=False)
                 if len(preview) > 600:

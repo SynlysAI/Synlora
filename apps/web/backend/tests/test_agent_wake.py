@@ -146,3 +146,14 @@ async def test_wake_raises_target_gone_for_deleted_session(agent_service, store)
     agent_service.set_runtime_deps(_repos(store), SimpleNamespace())
     with pytest.raises(WakeTargetGone):
         await agent_service.wake("no-such-session", "x")
+
+
+def test_narrow_tools_for_wake_drops_interactive():
+    """唤醒轮工具收窄：去掉需要用户在场的交互工具，其余原样保留。"""
+    from app.services.agent_service import narrow_tools_for_wake
+
+    assert narrow_tools_for_wake(["file.read", "ask_user", "job.submit"]) == [
+        "file.read", "job.submit"]
+    # 不含交互工具时原样返回（不得误删）
+    assert narrow_tools_for_wake(["file.read"]) == ["file.read"]
+    assert narrow_tools_for_wake([]) == []
