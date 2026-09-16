@@ -271,3 +271,30 @@ async def test_admit_run_preempts_yieldable_then_allows(agent_service, session_d
     with pytest.raises(TooManyRuns):
         await service._admit_run(sid, wake=True)   # noqa: SLF001
     assert parked.ask_future is not None and not parked.ask_future.done()
+
+
+async def test_wait_for_answer_returns_text_on_timeout(agent_service):
+    """等回答超时返回兜底文本（run 继续跑，而不是永久占住会话）。"""
+    from app.services.agent_service import ActiveRun
+
+    active = ActiveRun()
+    active.ask_future = asyncio.get_running_loop().create_future()
+    text = await agent_service._wait_for_answer(active, 0.01)  # noqa: SLF001
+    assert text and "跳过" in text
+
+
+async def test_wait_for_answer_returns_user_text(agent_service):
+    """正常路径原样返回用户回答。"""
+    from app.services.agent_service import ActiveRun
+
+    active = ActiveRun()
+    active.ask_future = asyncio.get_running_loop().create_future()
+    active.ask_future.set_result("选 B")
+    assert await agent_service._wait_for_answer(active, 5) == "选 B"  # noqa: SLF001
+
+
+async def test_wait_for_answer_without_future(agent_service):
+    """无待答 future 时返回空串（防御：调用点不该出现，但不能抛）。"""
+    from app.services.agent_service import ActiveRun
+
+    assert await agent_service._wait_for_answer(ActiveRun(), 1) == ""  # noqa: SLF001

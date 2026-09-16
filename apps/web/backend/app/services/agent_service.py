@@ -463,7 +463,7 @@ class AgentService:
                 active.ask_future = future
                 try:
                     await log.append(EventType.ASK_USER, payload)
-                    return await future
+                    return await self._wait_for_answer(active, ASK_TIMEOUT_S)
                 finally:
                     active.ask_future = None
 
@@ -856,6 +856,32 @@ class AgentService:
             active.ask_future.set_result(text)
             return True
         return False
+
+    async def _wait_for_answer(self, active: "ActiveRun", timeout_s: float) -> str:
+        """等待 ask_user 的回答，超时返回可继续的兜底文本。
+
+        Args:
+            active: 该 run 的 ActiveRun（调用前 ask_future 已置位）。
+            timeout_s: 等待上限（秒）。
+
+        Returns:
+            用户回答文本；超时返回提示文本，让模型按已知信息继续——没有上限
+            时，一个停在 ask 上的 run 会永久占住会话（用户关掉页面就再没人
+            来回答它，只能靠重启后端）。
+
+        Note:
+            超时由 `asyncio.wait_for` 取消 future；`ask_handler` 的 finally
+            会把 `active.ask_future` 置 None，`answer()` 也有 `not done()` 守卫，
+            故随后到达的迟到回答不会撞上已取消的 future。
+        """
+        future = active.ask_future
+        if future is None:
+            return ""
+        try:
+            return await asyncio.wait_for(future, timeout_s)
+        except TimeoutError:
+            _LOGGER.warning("ask_user 等待回答超时（%.0fs），本轮按跳过继续", timeout_s)
+            return "（用户长时间未回答，已跳过此问题，请按已知信息继续）"
 
     async def _deliver_file(self, active: "ActiveRun", log: EventLog,
                             workspace_root: Path, user_id: str,
