@@ -23,7 +23,12 @@ from app.catalog.loader import SKILL_FILE
 from app.services.skill_service import parse_skill_md
 
 if TYPE_CHECKING:
-    from app.catalog.loader import CatalogIndex, PluginPackage
+    from app.catalog.loader import (
+        CatalogIndex,
+        ExpertPackage,
+        PluginPackage,
+        SkillPackage,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +73,24 @@ class CatalogService:
             插件包映射（只读用途；调用方不得就地修改）。
         """
         return self._index.plugins
+
+    @property
+    def experts(self) -> dict[str, "ExpertPackage"]:
+        """扫描到的专家包（{id: ExpertPackage}）。
+
+        Returns:
+            专家包映射（只读用途；调用方不得就地修改）。
+        """
+        return self._index.experts
+
+    @property
+    def skills(self) -> dict[str, "SkillPackage"]:
+        """扫描到的技能包（{name: SkillPackage}）。
+
+        Returns:
+            技能包映射（只读用途；调用方不得就地修改）。
+        """
+        return self._index.skills
 
     def list_items(self, kind: str) -> list[CatalogItem]:
         """枚举某类内置条目。

@@ -78,6 +78,65 @@ async def _public_ready_keys(request: Request, plugin_id: str) -> set[str]:
     return {k for k, v in resolved.items() if str(v or "").strip()}
 
 
+async def _own_skill_detail(request: Request, user_id: str, name: str) -> dict | None:
+    """用户自建技能详情（非自建返回 None）。
+
+    Args:
+        request: FastAPI 请求（取技能服务）。
+        user_id: 用户 sub。
+        name: 技能名。
+
+    Returns:
+        详情字典（origin='mine'）；该用户没有此名自建技能时 None。
+    """
+    svc = getattr(request.app.state, "skill_service", None)
+    if svc is None:
+        return None
+    own = {s["name"]: s for s in svc.list_own_skills(user_id)}
+    row = own.get(name)
+    if row is None:
+        return None
+    return {
+        "kind": "skill",
+        "id": name,
+        "name": name,
+        "description": str(row.get("description") or ""),
+        "origin": "mine",
+        "enabled": True,
+        "content": svc.read_body(name, user_id) or "",
+    }
+
+
+async def _own_expert_detail(request: Request, user_id: str, expert_id: str) -> dict | None:
+    """用户自建专家详情（非自建返回 None）。
+
+    Args:
+        request: FastAPI 请求（取专家服务）。
+        user_id: 用户 sub。
+        expert_id: 专家 id。
+
+    Returns:
+        详情字典（origin='mine'）；该用户没有此专家时 None。
+    """
+    svc = getattr(request.app.state, "expert_service", None)
+    if svc is None:
+        return None
+    own = await svc.get_own(user_id, expert_id)
+    if own is None:
+        return None
+    return {
+        "kind": "expert",
+        "id": expert_id,
+        "name": str(own.get("name") or expert_id),
+        "description": str(own.get("description") or ""),
+        "origin": "mine",
+        "enabled": True,
+        "avatar": str(own.get("avatar") or ""),
+        "system_prompt": str(own.get("system_prompt") or ""),
+        "tool_whitelist": [str(t) for t in (own.get("tool_whitelist") or [])],
+    }
+
+
 async def _install_core(request: Request, service, user_id: str, kind: str,
                         item_id: str) -> None:
     """落安装记录并挂载插件（调用方须已先过 `_require_installable`）。
@@ -340,3 +399,94 @@ async def market(kind: str, request: Request, user=Depends(get_current_user),
             row["config_ready_keys"] = sorted(
                 await _public_ready_keys(request, str(row["id"])))
     return rows
+
+
+@router.get("/me/capabilities/{kind}/{item_id}")
+async def capability_detail(kind: str, item_id: str, request: Request,
+                            user=Depends(get_current_user),
+                            service=Depends(get_capability_service)) -> dict:
+    """当前用户视角下某能力的详情（用户侧能力中心详情页）。
+
+    解析顺序：用户自建（技能/专家，落 `users/<uid>/`）优先 → catalog 内置条目。
+    内置条目按市场同一可见性口径判定：hidden 一律 404（不泄露存在性），
+    未安装条目也可读（否则用户无法在安装前判断内容）。
+
+    `origin` 四态供前端决定渲染与动作：`mine` 自建（可编辑/删除）、
+    `installed` 已安装（可启停/卸载）、`builtin` 内置（普通用户只读）、
+    `market` 市场可见未安装（可安装）。
+
+    内容一律从 `catalog_roots()` 链上读（repo 的 `catalog/` +
+    数据目录 `public/catalog/` 同名覆盖），不在数据库另存副本——服务初始
+    状态即与代码仓库一致。本端点只读，管理员编辑走既有管理后台。
+
+    Args:
+        kind: 条目类型（expert/skill/plugin）。
+        item_id: 条目 id（技能 = 技能名）。
+        request: FastAPI 请求（取技能/专家/插件服务）。
+        user: 当前用户。
+        service: 能力服务。
+
+    Returns:
+        详情字典：公共字段 + origin/enabled + 按 kind 的特有字段。
+
+    Raises:
+        HTTPException: 类型非法、条目不存在或不可见（404）。
+    """
+    if kind not in KINDS:
+        raise HTTPException(404, f"未知类型: {kind}")
+    user_id = user["sub"]
+
+    # 自建优先：用户自己创建的内容不在 catalog 里
+    if kind == "skill":
+        own = await _own_skill_detail(request, user_id, item_id)
+        if own is not None:
+            return own
+    elif kind == "expert":
+        own = await _own_expert_detail(request, user_id, item_id)
+        if own is not None:
+            return own
+
+    item = next((i for i in service.catalog.list_items(kind) if i.id == item_id), None)
+    if item is None:
+        raise HTTPException(404, f"条目不存在: {kind}:{item_id}")
+    pol = await service.policy.get(kind, item_id)
+    if pol["visibility"] == "hidden":
+        raise HTTPException(404, f"条目不存在: {kind}:{item_id}")
+
+    installed = await service.installs.is_installed(user_id, kind, item_id)
+    enabled = await service.installs.is_enabled(user_id, kind, item_id)
+    if pol["default_enabled"]:
+        origin = "builtin"
+    elif installed:
+        origin = "installed"
+    else:
+        origin = "market"
+    row: dict[str, Any] = {
+        "kind": kind,
+        "id": item.id,
+        "name": item.name,
+        "description": item.description,
+        "origin": origin,
+        # 内置条目恒为可用态（与 market_items 的 visible 口径一致）
+        "enabled": bool(pol["default_enabled"]) or enabled,
+    }
+
+    if kind == "expert":
+        pkg = service.catalog.experts.get(item_id)
+        if pkg is not None:
+            row["avatar"] = pkg.avatar
+            row["system_prompt"] = pkg.system_prompt
+            row["tool_whitelist"] = list(pkg.tool_whitelist)
+    elif kind == "skill":
+        svc = getattr(request.app.state, "skill_service", None)
+        row["content"] = (svc.read_body(item_id, user_id) if svc is not None else None) or ""
+    elif kind == "plugin":
+        row["config_ready_keys"] = sorted(await _public_ready_keys(request, item_id))
+        plugin_service = getattr(request.app.state, "plugin_service", None)
+        if plugin_service is not None:
+            state = plugin_service.state(item_id)
+            row["config_schema"] = state["config_schema"]
+            row["skills"] = state["skills"]
+            row["experts"] = state["experts"]
+            row["tools"] = state["tools"]
+    return row
