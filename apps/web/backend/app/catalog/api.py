@@ -359,8 +359,9 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
         {"kind", "id", "installed", "enabled"}。
 
     Raises:
-        HTTPException: 类型非法或条目不可安装（404）、内置条目（409，
-            全员自动可用，用户无启停/卸载概念）、未安装却要改启用态（422）。
+        HTTPException: 类型非法或条目不可安装（404，含 hidden 条目；hidden 且
+            已安装时卸载除外）、内置条目（409，全员自动可用，用户无启停/卸载
+            概念）、未安装却要改启用态（422）。
     """
     if kind not in KINDS:
         raise HTTPException(404, f"未知类型: {kind}")
@@ -370,6 +371,12 @@ async def switch_capability(kind: str, item_id: str, body: CapabilitySwitchBody,
     # 这里收口防止 API 侧留下无意义记录
     pol = await service.policy.get(kind, item_id)
     if pol["visibility"] == "hidden":
+        # 已安装但被下架的条目：「我的」列表刻意保留该行供用户清理，卸载是它唯一
+        # 合法动作，不能与其余 hidden 情形一并 404；未安装的一律 404 不泄露存在性。
+        if body.installed is False and await service.installs.is_installed(
+                user_id, kind, item_id):
+            await service.installs.uninstall(user_id, kind, item_id)
+            return {"kind": kind, "id": item_id, "installed": False, "enabled": False}
         raise HTTPException(404, f"条目不可安装: {kind}:{item_id}")
     if pol["default_enabled"]:
         raise HTTPException(409, "内置条目全员自动可用，无需安装或启停")
@@ -432,7 +439,9 @@ async def capability_detail(kind: str, item_id: str, request: Request,
     内置条目按市场同一可见性口径判定：hidden 且未安装一律 404（不泄露存在性），
     未安装条目也可读（否则用户无法在安装前判断内容）；hidden 但已安装的例外
     ——列表刻意留着该行供用户卸载，详情要能打开才不会成为死路，返回时带
-    `revoked: True` 标记。
+    `revoked: True` 标记。豁免范围严格对齐"用户自己的列表里真的能看见"：
+    hidden + 已安装 + 非内置才成立；hidden + 内置（default_enabled）时该行在
+    「我的」被跳过、在市场被 hidden 挡住，残留安装记录也不构成可达性。
 
     `origin` 四态供前端决定渲染与动作：`mine` 自建（可编辑/删除）、
     `installed` 已安装（可启停/卸载）、`builtin` 内置（普通用户只读）、
@@ -450,8 +459,8 @@ async def capability_detail(kind: str, item_id: str, request: Request,
         service: 能力服务。
 
     Returns:
-        详情字典：公共字段 + origin/enabled + 按 kind 的特有字段；下架但已安装的
-        条目额外带 `revoked: True`。
+        详情字典：公共字段 + origin/enabled + 按 kind 的特有字段；下架但已安装且
+        非内置的条目额外带 `revoked: True`。
 
     Raises:
         HTTPException: 类型非法、条目不存在或不可见（404）、
@@ -477,9 +486,12 @@ async def capability_detail(kind: str, item_id: str, request: Request,
     pol = await service.policy.get(kind, item_id)
     installed = await service.installs.is_installed(user_id, kind, item_id)
     # 已安装但被管理员下架（revoked）：列表（/me/skills、/me/experts）刻意保留该行
-    # 供用户卸载，详情同样不该 404（存在性本就不算泄露——行本来就在用户自己的列表里）
-    revoked = pol["visibility"] == "hidden"
-    if revoked and not installed:
+    # 供用户卸载，详情同样不该 404（存在性本就不算泄露——行本来就在用户自己的列表里）。
+    # 内置条目在那些列表里被跳过（全员自动可用、用户侧只读），故 hidden + 内置 +
+    # 残留安装记录的组合在任何列表都不可达，不享受豁免，依旧 404。
+    revoked = (pol["visibility"] == "hidden" and installed
+               and not pol["default_enabled"])
+    if pol["visibility"] == "hidden" and not revoked:
         raise HTTPException(404, f"条目不存在: {kind}:{item_id}")
 
     enabled = await service.installs.is_enabled(user_id, kind, item_id)

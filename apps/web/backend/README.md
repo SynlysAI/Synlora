@@ -136,7 +136,8 @@ user_capabilities   { _id: "u1:plugin:spec_agent", user_id, kind, item_id,
 | 用户 | `GET` | `/api/v1/market/{kind}` | 市场列表（某类型下当前用户可见的可安装条目，含安装 / 启用状态） |
 | 用户 | `POST` | `/api/v1/catalog/{kind}/{item_id}/install` | 安装（写记录；插件可带个人配置 body `{"config": {...}}`） |
 | 用户 | `DELETE` | `/api/v1/catalog/{kind}/{item_id}/install` | 卸载（删记录） |
-| 用户 | `PUT` | `/api/v1/me/capabilities/{kind}/{item_id}` | 安装 / 卸载 / 启用 / 停用（`{installed?, enabled?}`；未安装改启用态 422） |
+| 用户 | `PUT` | `/api/v1/me/capabilities/{kind}/{item_id}` | 安装 / 卸载 / 启用 / 停用（`{installed?, enabled?}`；未安装改启用态 422；hidden 条目一律 404，仅"已安装后被下架"者允许卸载） |
+| 用户 | `GET` | `/api/v1/me/capabilities/{kind}/{item_id}` | 能力详情（自建优先，再回落到 catalog；`origin = mine/installed/builtin/market`，下架但已安装的非内置条目带 `revoked: true`） |
 | 用户 | `GET/POST` | `/api/v1/me/skills`（`PATCH/DELETE /me/skills/{name}`） | 我的技能：用户自建（落 `users/<uid>/skills/`），同名与公共层 / 内置冲突时报 409 / 403 |
 | 用户 | `GET/POST` | `/api/v1/me/experts`（`PATCH/DELETE /me/experts/{id}`） | 我的专家：用户自建（落 `users/<uid>/experts/`） |
 | 管理员 | `GET` | `/api/v1/admin/catalog` | 管理员视角目录（含 `hidden` 条目与全部策略） |
