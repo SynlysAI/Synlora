@@ -18,6 +18,10 @@ router = APIRouter(prefix="/api/v1/assistants", tags=["assistants"])
 async def _validate_provider(provider_id: str, repos: Repos) -> None:
     """校验引用的模型服务存在且 enabled。
 
+    只做存在性校验、不解密、不构造运行时配置；运行期真正要用模型时走
+    session_runtime._resolve_provider（那里才解密出 ModelProviderConfig），
+    两者数据源与职责不同，故不合并。
+
     Args:
         provider_id: 模型服务 id。
         repos: repo 集中访问对象。

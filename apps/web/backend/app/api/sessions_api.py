@@ -16,7 +16,7 @@ from app.api.assistants_api import _validate_provider
 from app.api.deps import Repos, get_current_user, get_repos
 from app.services import workspace
 from app.services.agent_service import AgentService, TooManyRuns
-from app.services.session_runtime import resolve_session_runtime
+from app.services.session_runtime import NoUsableProvider, resolve_session_runtime
 
 router = APIRouter(prefix="/api/v1", tags=["sessions"])
 
@@ -347,7 +347,8 @@ async def send_message(sid: str, body: MessageIn, request: Request,
         sid: 会话 id。
         body: 消息体；skills 为本轮勾选的技能名，透传给 AgentService.chat 的
             requested_skills（None/空 = 用全部可用技能，老前端不带该字段时行为不变）。
-        request: 当前请求（取 agent_service / project_service）。
+        request: 当前请求（取 agent_service 与 app.state 上的 settings /
+            project_service，后者交给 session_runtime 解析运行装配）。
         user: 当前用户 payload。
         repos: repo 集中访问对象。
 
@@ -362,8 +363,14 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             并发超限（429）。
     """
     doc = await _own_session(sid, user, repos)
-    # 助手 / 模型 / 工作根 / 归属的解析口径与任务唤醒共用（session_runtime）
-    runtime = await resolve_session_runtime(request.app.state, repos, doc, user)
+    # 助手 / 模型 / 工作根 / 归属的解析口径与任务唤醒共用（session_runtime）；
+    # 服务层抛领域异常，这里映射成对外 422
+    try:
+        runtime = await resolve_session_runtime(
+            request.app.state.settings, request.app.state.project_service,
+            repos, doc, user)
+    except NoUsableProvider as exc:
+        raise HTTPException(422, str(exc)) from exc
     assistant = runtime.assistant
     cfg = runtime.provider_cfg
     workspace_root = runtime.workspace_root

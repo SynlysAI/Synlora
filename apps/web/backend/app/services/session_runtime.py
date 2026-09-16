@@ -5,20 +5,23 @@
 """
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
 from synlys_harness import ModelProviderConfig
 
 from app.services import workspace
 
-_LOGGER = logging.getLogger(__name__)
+
+class NoUsableProvider(RuntimeError):
+    """会话无法解析出可用的模型服务（未指定/不存在/已停用/解密失败）。
+
+    消息文本面向用户/管理员，API 层据此映射 422。
+    """
 
 
-@dataclass
+@dataclass(frozen=True)
 class SessionRuntime:
     """一轮对话的运行装配结果。
 
@@ -48,18 +51,23 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
         ModelProviderConfig。
 
     Raises:
-        HTTPException: 未指定/不存在/已停用/解密失败（422）。
+        NoUsableProvider: 未指定/不存在/已停用/解密失败。
+
+    与 assistants_api._validate_provider 的分工：此处解密后构造出可用的
+    ModelProviderConfig（助手保存时的"绑定前体检"），那边只做存在性校验、
+    不接触密钥，故不合并。
     """
     if not provider_id:
-        raise HTTPException(422, f"未指定模型服务: {owner_desc}")
+        raise NoUsableProvider(f"未指定模型服务: {owner_desc}")
     try:
         decrypted = await repos.provider.get_decrypted(provider_id)
     except RuntimeError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        raise NoUsableProvider(str(exc)) from exc
     if decrypted is None:
-        raise HTTPException(422, f"模型服务不存在: {provider_id}")
+        raise NoUsableProvider(f"模型服务不存在: {provider_id}")
     if not decrypted.get("enabled"):
-        raise HTTPException(422, f"模型服务已停用: {decrypted.get('name', provider_id)}")
+        raise NoUsableProvider(
+            f"模型服务已停用: {decrypted.get('name', provider_id)}")
     return ModelProviderConfig(
         name=str(decrypted.get("name", "")),
         base_url=str(decrypted.get("base_url", "")),
@@ -69,12 +77,15 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
     )
 
 
-async def resolve_session_runtime(state: Any, repos: Any, doc: dict,
-                                  user: dict) -> SessionRuntime:
+async def resolve_session_runtime(settings: Any, project_service: Any, repos: Any,
+                                  doc: dict, user: dict) -> SessionRuntime:
     """解析会话的运行装配（模型优先级：会话级覆盖 > 助手绑定 > 首个启用模型）。
 
+    副作用：会话绑定的项目已失效时清空其 project_id（幂等，仅写一次 None）。
+
     Args:
-        state: app.state（取 settings 与 project_service）。
+        settings: 应用配置（取 data_root 解析会话工作根）。
+        project_service: 项目服务（绑定项目有效时取项目根）。
         repos: repo 集中访问对象。
         doc: 会话文档（调用方已校验归属）。
         user: 当前用户 payload。
@@ -83,7 +94,7 @@ async def resolve_session_runtime(state: Any, repos: Any, doc: dict,
         SessionRuntime。
 
     Raises:
-        HTTPException: 无可用模型服务（422）。
+        NoUsableProvider: 无可用模型服务。
     """
     # 助手指针失效（未选专家/专家已删）不报错，交 chat 走无 persona 路径
     assistant = await repos.assistant.get(doc.get("assistant_id") or "")
@@ -102,7 +113,6 @@ async def resolve_session_runtime(state: Any, repos: Any, doc: dict,
     # 绑定已失效（项目被删）→ 会话目录 sessions/{sid} 自身为工作区（文件、产物
     # 都跟会话走，删除会话即整目录移除）。不回落"活跃项目"：未绑定会话若跟着
     # projects[0]（随改名/上传漂移）跑，上一轮的 output/ 产物会看似凭空消失。
-    project_service = state.project_service
     project = None
     if doc.get("project_id"):
         project = await project_service.get(user["sub"], str(doc["project_id"]))
@@ -112,7 +122,7 @@ async def resolve_session_runtime(state: Any, repos: Any, doc: dict,
             workspace_root=project_service.root_for(project),
             ownership={"project_id": project["_id"]})
     workspace_root = workspace.session_root(
-        state.settings.data_root, user["sub"], str(doc["_id"]))
+        settings.data_root, user["sub"], str(doc["_id"]))
     # 绑定失效（项目已删）：清掉脏 project_id，前端据此把它归入未分组区；
     # 未绑定的会话保持 None，不写回任何项目
     if doc.get("project_id"):
