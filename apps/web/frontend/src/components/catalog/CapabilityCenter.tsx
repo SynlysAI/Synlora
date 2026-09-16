@@ -1,283 +1,289 @@
 /**
  * 用户侧「能力中心」整页（/capabilities，任意登录用户可见）。
  *
- * 顶层两栏页签（照 jiuwen SkillPanel 的 activeTab）：「市场」= 平台内置能力
- * （专家 / 技能 / 插件）的可安装视图，列表来自 `GET /api/v1/market/{kind}`
- * （只返回当前用户可见的条目，即不含 hidden），按三类分组展示；每行按状态给动作——
- * 未安装显示「安装」、已安装显示启停徽标 +「启用/停用」+「卸载」。
- * 「我的」= 已拥有的能力（自建 + 已安装），见 MinePanel。
+ * 结构：顶栏 + 左导航（专家/技能/插件，照 AdminLayout 的 nav）+ 右侧内容。
+ * 右侧按路由渲染列表页（本文件内）或详情页（CapabilityDetail）。
  *
- * 结构与交互照 PluginsAdmin（行卡片列表 + 模态表单 + toast + 成功后刷新）：
- * 插件行带 config_schema 时先开表单弹窗填个人配置，再 POST `{config}` 安装；
- * 无 schema 的条目直接 PUT 安装。
+ * 列表页：顶部「市场 | 我的」页签（组件内 state，照 jiuwen ConnectorMarket 的
+ * topTab——范围是同一列表的过滤视图，不是独立资源）+ 搜索（前端过滤）+
+ * 卡片网格（card-grid-auto，照 jiuwen）。
+ *
+ * 卡片动作：市场卡未安装给「安装」快按钮（带 config_schema 的插件先弹配置框）；
+ * 我的卡给「启用/停用」快按钮。其余操作都在详情页（点卡片进入）。
+ * 内置条目（default_enabled）对普通用户只读。
  */
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { PageTopBar, ToastHost } from '@/components/layout'
-import { FormError, GrayBadge, Modal } from '@/components/admin/shared'
-import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from '@/components/admin/form'
+import { errorText } from '@/components/admin/form'
 import { toast } from '@/stores/toasts'
 import { useCatalogStore } from '@/stores/catalog'
+import { useRouterStore } from '@/routing/router'
+import type { CapabilityKind, AppRoute } from '@/routing/route'
+import type { CatalogItem, MyCapability } from '@/types'
+import CapabilityCard, { CardBadge } from './CapabilityCard'
+import CapabilityDetail from './CapabilityDetail'
 import MinePanel from './MinePanel'
-import type { CatalogItem } from '@/types'
+import { PluginInstallModal } from './CapabilityModals'
 
-/** 分组定义：kind + 小标题 + 空态文案。 */
-const GROUPS: Array<{ kind: CatalogItem['kind']; title: string; empty: string }> = [
-  { kind: 'expert', title: '专家', empty: '暂无可用专家' },
-  { kind: 'skill', title: '技能', empty: '暂无可用技能' },
-  { kind: 'plugin', title: '插件', empty: '暂无可用插件' },
+/** 左导航项（类型 → 展示名）。 */
+const NAV: Array<{ kind: CapabilityKind; label: string }> = [
+  { kind: 'expert', label: '专家' },
+  { kind: 'skill', label: '技能' },
+  { kind: 'plugin', label: '插件' },
 ]
 
-/**
- * 插件安装模态：字段完全由 item.config_schema 驱动（结构照 PluginsAdmin）。
- *
- * 与管理员配置表单的差异：市场是**首次安装**，没有"当前值"可保留，因此敏感字段
- * 的占位直接用 schema 自带的 placeholder（而不是"留空保持不变"）。
- */
-function PluginInstallModal({
-  item,
-  onClose,
-  onDone,
-}: {
-  item: CatalogItem
-  onClose: () => void
-  /** 成功后回调（父级关模态并提示）。 */
-  onDone: (message: string) => void
-}) {
-  const install = useCatalogStore((s) => s.install)
-  const [form, setForm] = useState<Record<string, string>>({})
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  /** 提交：POST /catalog/plugin/{id}/install（422 缺必填等 detail 内联展示）。 */
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (saving) return
-    setSaving(true)
-    setError('')
-    // 文本值统一 trim（避免粘贴带入的首尾空白原样入库，运行期调用才失败）
-    const config = Object.fromEntries(
-      Object.entries(form).map(([k, v]) => [k, v.trim()]),
-    )
-    try {
-      await install(item.kind, item.id, config)
-      onDone(`已安装 ${item.name}`)
-    } catch (err) {
-      setError(errorText(err))
-      setSaving(false)
-    }
+/** 类型图标（16px 线性，与全站图标风格一致）。 */
+function kindIcon(kind: CapabilityKind): ReactNode {
+  const common = {
+    width: 13,
+    height: 13,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.5,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    'aria-hidden': true,
   }
-
+  if (kind === 'expert') {
+    return (
+      <svg {...common}>
+        <circle cx="8" cy="5.5" r="2.75" />
+        <path d="M2.75 13.5c0-2.6 2.35-4.25 5.25-4.25s5.25 1.65 5.25 4.25" />
+      </svg>
+    )
+  }
+  if (kind === 'skill') {
+    return (
+      <svg {...common}>
+        <path d="M8 2.5 9.6 6l3.65.35-2.75 2.5.8 3.65L8 10.7l-3.3 1.8.8-3.65-2.75-2.5L6.4 6Z" />
+      </svg>
+    )
+  }
   return (
-    <Modal title={`安装 ${item.name}`} onClose={onClose}>
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        {/* 公共配置打底提示：有 ready 字段才显示（无打底时留空会被必填校验挡下） */}
-        {(item.config_ready_keys?.length ?? 0) > 0 && (
-          <p className="rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-interactive-bg-hover)] px-3 py-2 text-xs text-[var(--sa-alias-label-secondary)]">
-            标注系统默认的字段已由管理员统一配置，可留空直接安装；填写则覆盖为你的个人配置（仅自己可见）。
-          </p>
-        )}
-        {(item.config_schema ?? []).map((field, index) => {
-          const hasDefault = (item.config_ready_keys ?? []).includes(field.key)
-          return (
-          <label key={field.key} className={labelClass}>
-            {field.label}
-            {hasDefault && (
-              <span className="pl-1 text-xs text-[var(--sa-alias-label-caption)]">（系统默认）</span>
-            )}
-            <input
-              type={field.type === 'password' ? 'password' : 'text'}
-              value={form[field.key] ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, [field.key]: e.target.value }))}
-              placeholder={field.placeholder ?? ''}
-              // 原生必填校验；敏感字段留空表示不覆盖；有系统默认的字段可留空
-              required={Boolean(field.required) && !field.secret && !hasDefault}
-              autoFocus={index === 0}
-              autoComplete={field.type === 'password' ? 'new-password' : 'off'}
-              className={inputClass}
-            />
-            {field.description ? (
-              <span className="text-xs text-[var(--sa-alias-label-caption)]">{field.description}</span>
-            ) : null}
-          </label>
-          )
-        })}
-
-        {error && <FormError>{error}</FormError>}
-
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" onClick={onClose} className={secondaryButtonClass}>
-            取消
-          </button>
-          <button type="submit" disabled={saving} className={primaryButtonClass}>
-            {saving ? '安装中…' : '安装'}
-          </button>
-        </div>
-      </form>
-    </Modal>
+    <svg {...common}>
+      <path d="M6.5 2.5h3v1.6a2.2 2.2 0 0 1 1.1 1.9V12a1.5 1.5 0 0 1-1.5 1.5h-5A1.5 1.5 0 0 1 2.6 12V6a2.2 2.2 0 0 1 1.1-1.9V2.5" />
+      <path d="M4 8.5h5" />
+    </svg>
   )
 }
 
-/** 用户侧能力中心整页组件。 */
-export default function CapabilityCenter() {
+/** 安装图标（市场卡快按钮）。 */
+const INSTALL_ICON = (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+    <path d="M8 3.5v9M3.5 8h9" />
+  </svg>
+)
+
+/** 适配某类型的卡片网格（无条目时渲染空态卡）。 */
+function CardGrid({ items, empty, children }: {
+  items: number
+  empty: string
+  children: ReactNode
+}) {
+  if (items === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 rounded-[var(--sa-radius-lg)] border border-dashed border-[var(--sa-alias-border-l2)] py-16 text-[13px] text-[var(--sa-alias-label-caption)]">
+        {empty}
+      </div>
+    )
+  }
+  return (
+    <div className="grid justify-center gap-4 [grid-template-columns:repeat(auto-fill,minmax(360px,1fr))]">
+      {children}
+    </div>
+  )
+}
+
+/** 能力中心整页壳 + 列表页。 */
+export default function CapabilityCenter({ route }: { route: AppRoute }) {
+  const capabilityKind: CapabilityKind =
+    route.kind === 'capabilities' || route.kind === 'capability-detail'
+      ? route.capabilityKind
+      : 'expert'
+
+  return (
+    <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
+      <PageTopBar title="能力中心" />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* 左导航：类型切换（照 AdminLayout 的 nav 样式） */}
+        <nav
+          aria-label="能力类型切换"
+          className="flex w-[188px] shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--sa-alias-border-l1)] p-3"
+        >
+          {NAV.map((item) => {
+            const active = item.kind === capabilityKind
+            return (
+              <button
+                key={item.kind}
+                type="button"
+                aria-current={active ? 'page' : undefined}
+                onClick={() => useRouterStore.getState().navigate({
+                  kind: 'capabilities', capabilityKind: item.kind,
+                })}
+                className={`flex h-10 items-center gap-2 rounded-[var(--sa-radius-md)] px-3 text-[13px] transition-colors duration-[var(--sa-duration-base)] ${
+                  active
+                    ? 'bg-[var(--sa-specific-sidebar-nav-item-active)] font-medium text-[var(--sa-alias-label-primary)]'
+                    : 'text-[var(--sa-alias-label-secondary)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)]'
+                }`}
+              >
+                {kindIcon(item.kind)}
+                <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+              </button>
+            )
+          })}
+        </nav>
+
+        {/* 右侧内容：详情页整页接管，列表页走 CapabilityList */}
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          {route.kind === 'capability-detail' ? (
+            <CapabilityDetail capabilityKind={route.capabilityKind} itemId={route.itemId} />
+          ) : (
+            <CapabilityList capabilityKind={capabilityKind} />
+          )}
+        </main>
+      </div>
+      <ToastHost />
+    </div>
+  )
+}
+
+/** 列表页（市场 / 我的）。 */
+function CapabilityList({ capabilityKind }: { capabilityKind: CapabilityKind }) {
   const byKind = useCatalogStore((s) => s.byKind)
-  const loaded = useCatalogStore((s) => s.loaded)
   const loadMarket = useCatalogStore((s) => s.loadMarket)
   const install = useCatalogStore((s) => s.install)
-  const uninstall = useCatalogStore((s) => s.uninstall)
   const setEnabled = useCatalogStore((s) => s.setEnabled)
-  /** 顶层视角：市场（可安装的源）/ 我的（已拥有）。 */
+
   const [tab, setTab] = useState<'market' | 'mine'>('market')
+  const [marketQuery, setMarketQuery] = useState('')
+  const [mineQuery, setMineQuery] = useState('')
   /** 需要先填配置再安装的插件（null 关闭）。 */
   const [configuring, setConfiguring] = useState<CatalogItem | null>(null)
+  /** 快按钮进行中的条目（`kind:id`）。 */
+  const [busy, setBusy] = useState<string | null>(null)
 
-  // 挂载时拉取一次；安装/卸载在 store 内成功后自行重拉
   useEffect(() => {
     loadMarket().catch((err) => toast('error', `加载能力目录失败：${errorText(err)}`))
   }, [loadMarket])
 
-  /** 安装：带 schema 的插件先开配置模态，其余直接安装。 */
+  const rows = byKind[capabilityKind]
+  const query = tab === 'market' ? marketQuery : mineQuery
+  const setQuery = tab === 'market' ? setMarketQuery : setMineQuery
+
+  /** 搜索过滤（名称 + 描述）。 */
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return rows
+    return rows.filter(
+      (r) => r.name.toLowerCase().includes(q) || r.description.toLowerCase().includes(q),
+    )
+  }, [rows, query])
+
+  const goDetail = (id: string) =>
+    useRouterStore.getState().navigate({
+      kind: 'capability-detail', capabilityKind, itemId: id,
+    })
+
+  /** 安装：带配置 schema 的插件先开表单，其余直装。 */
   const handleInstall = async (item: CatalogItem) => {
     if (item.config_schema && item.config_schema.length > 0) {
       setConfiguring(item)
       return
     }
+    setBusy(`${item.kind}:${item.id}`)
     try {
       await install(item.kind, item.id)
       toast('success', `已安装 ${item.name}`)
     } catch (err) {
       toast('error', errorText(err))
+    } finally {
+      setBusy(null)
     }
   }
 
-  /** 卸载：删除本人安装记录，成功后 store 已重拉列表。 */
-  const handleUninstall = async (item: CatalogItem) => {
-    try {
-      await uninstall(item.kind, item.id)
-      toast('success', `已卸载 ${item.name}`)
-    } catch (err) {
-      toast('error', errorText(err))
-    }
-  }
-
-  /** 启用/停用：改 user_capabilities.enabled，成功后 store 重拉。 */
-  const handleToggle = async (item: CatalogItem) => {
+  /** 启用/停用（我的页签的快按钮）。 */
+  const handleToggle = async (item: MyCapability) => {
+    setBusy(`${item.kind}:${item.id}`)
     try {
       await setEnabled(item.kind, item.id, !item.enabled)
       toast('success', item.enabled ? `已停用 ${item.name}` : `已启用 ${item.name}`)
     } catch (err) {
       toast('error', errorText(err))
+    } finally {
+      setBusy(null)
     }
   }
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
-      <PageTopBar title="能力中心" />
-
-      <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-4xl px-6 py-6">
-          <div className="flex flex-col gap-6">
-            {/* 页头 */}
-            <div>
-              <h2 className="text-[16px] font-medium tracking-tight">能力中心</h2>
-              <p className="pt-0.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
-                平台提供的能力，安装后即可在自己的对话里使用
-              </p>
-            </div>
-
-            {/* 顶层两栏：市场 / 我的（照 jiuwen SkillPanel 的 activeTab） */}
-            <div className="flex items-center gap-1">
-              {([['market', '市场'], ['mine', '我的']] as const).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setTab(key)}
-                  className={
-                    tab === key
-                      ? 'rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-[5px] text-[13px] font-medium text-[var(--sa-alias-label-primary)]'
-                      : 'rounded-[var(--sa-radius-md)] border border-transparent px-3 py-[5px] text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]'
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            {/* 市场：三个分组（专家 / 技能 / 插件） */}
-            {tab === 'market' && GROUPS.map((group) => {
-              const rows = byKind[group.kind]
-              return (
-                <section key={group.kind} className="flex flex-col gap-2">
-                  <h3 className="text-[13px] font-medium text-[var(--sa-alias-label-secondary)]">
-                    {group.title}
-                  </h3>
-                  <div className="overflow-hidden rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)]">
-                    {rows.map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex items-center gap-3 border-b border-[var(--sa-alias-border-l1)] px-4 py-3 last:border-b-0 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="truncate font-mono text-[14px] font-medium">{item.name}</span>
-                          </div>
-                          <div
-                            className="truncate text-[13px] text-[var(--sa-alias-label-secondary)]"
-                            title={item.description}
-                          >
-                            {item.description || '无描述'}
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2.5">
-                          {item.default_enabled ? (
-                            // 内置条目：全员自动可用，用户侧只读（无安装/启停概念）
-                            <GrayBadge>内置 · 全员可用</GrayBadge>
-                          ) : item.installed ? (
-                            <>
-                              {item.enabled ? <GrayBadge>已启用</GrayBadge> : <GrayBadge>已停用</GrayBadge>}
-                              <button
-                                type="button"
-                                onClick={() => void handleToggle(item)}
-                                className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
-                              >
-                                {item.enabled ? '停用' : '启用'}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void handleUninstall(item)}
-                                className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
-                              >
-                                卸载
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => void handleInstall(item)}
-                              className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
-                            >
-                              安装
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                    {loaded && rows.length === 0 && (
-                      <div className="px-4 py-10 text-center text-[13px] text-[var(--sa-alias-label-caption)]">
-                        {group.empty}
-                      </div>
-                    )}
-                  </div>
-                </section>
-              )
-            })}
-
-            {/* 我的：自建 + 已安装的能力 */}
-            {tab === 'mine' && <MinePanel />}
-          </div>
+    <div className="mx-auto w-full max-w-[1200px] px-6 py-6">
+      {/* 工具行：页签 + 搜索 + 我的态新建入口 */}
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1">
+          {([['market', '市场'], ['mine', '我的']] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              aria-selected={tab === key}
+              role="tab"
+              onClick={() => setTab(key)}
+              className={
+                tab === key
+                  ? 'rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-[5px] text-[13px] font-medium text-[var(--sa-alias-label-primary)]'
+                  : 'rounded-[var(--sa-radius-md)] border border-transparent px-3 py-[5px] text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]'
+              }
+            >
+              {label}
+            </button>
+          ))}
         </div>
-      </main>
 
-      {/* 插件配置模态（安装后才写个人配置） */}
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={tab === 'market' ? '搜索可用能力' : '搜索我的能力'}
+          aria-label={tab === 'market' ? '搜索可用能力' : '搜索我的能力'}
+          className="h-8 max-w-[320px] min-w-0 flex-1 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] px-2.5 text-[13px] text-[var(--sa-alias-label-primary)] outline-none transition-colors placeholder:text-[var(--sa-alias-label-caption)] focus:border-[var(--sa-alias-button-ghost-active-border)]"
+        />
+      </div>
+
+      <div className="pt-5">
+        {tab === 'market' ? (
+          <CardGrid items={filtered.length} empty={query ? '无匹配能力' : `暂无可用${NAV.find((n) => n.kind === capabilityKind)?.label ?? ''}`}>
+            {filtered.map((item) => (
+              <CapabilityCard
+                key={item.id}
+                title={item.name}
+                description={item.description}
+                badges={
+                  <>
+                    {item.default_enabled ? (
+                      <CardBadge>内置 · 全员可用</CardBadge>
+                    ) : item.installed ? (
+                      <CardBadge>{item.enabled ? '已启用' : '已停用'}</CardBadge>
+                    ) : null}
+                  </>
+                }
+                actionIcon={!item.installed && !item.default_enabled ? INSTALL_ICON : undefined}
+                actionLabel={`安装 ${item.name}`}
+                actionBusy={busy === `${item.kind}:${item.id}`}
+                onAction={() => void handleInstall(item)}
+                onClick={() => goDetail(item.id)}
+              />
+            ))}
+          </CardGrid>
+        ) : (
+          <MinePanel
+            capabilityKind={capabilityKind}
+            query={mineQuery}
+            onOpen={(item) => goDetail(item.id)}
+            onToggle={(item) => void handleToggle(item)}
+            busyKey={busy}
+          />
+        )}
+      </div>
+
       {configuring && (
         <PluginInstallModal
           item={configuring}
@@ -288,9 +294,6 @@ export default function CapabilityCenter() {
           }}
         />
       )}
-
-      {/* 全局 toast */}
-      <ToastHost />
     </div>
   )
 }

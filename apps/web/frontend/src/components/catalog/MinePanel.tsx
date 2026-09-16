@@ -1,16 +1,18 @@
 /**
- * 「我的」面板：自建 + 已安装的能力（技能/专家/插件），带子页签过滤。
+ * 「我的」面板：自建 + 已安装 + 内置只读（技能/专家/插件）。
  *
- * 结构照 jiuwen `SkillPanel/index.tsx`：子页签 全部/已启用/已停用/内置；
- * 自建条目可编辑/删除，内置条目只能启用/停用/卸载（规格 D5：内置不可定制）。
+ * 子页签（全部/已启用/已停用/内置）与过滤逻辑照旧；渲染改为卡片网格
+ * （复用 CapabilityCard，与市场页视觉统一）。
+ *
+ * 内置条目对普通用户只读（无启停/编辑/删除入口，标「自动可用」），
+ * 与后端 `default_enabled` 口径一致。
  */
-import { useEffect, useState } from 'react'
-import { GrayBadge } from '@/components/admin/shared'
+import { useEffect, useMemo, useState } from 'react'
 import { errorText } from '@/components/admin/form'
 import { toast } from '@/stores/toasts'
-import { useCatalogStore } from '@/stores/catalog'
 import { useMyCapabilitiesStore } from '@/stores/myCapabilities'
 import type { MyCapability } from '@/types'
+import CapabilityCard, { CardBadge } from './CapabilityCard'
 import { ExpertModal, SkillModal } from './CapabilityModals'
 
 type SubTab = 'all' | 'enabled' | 'disabled' | 'builtin'
@@ -22,22 +24,25 @@ const SUB_TABS: Array<{ key: SubTab; label: string }> = [
   { key: 'builtin', label: '内置' },
 ]
 
-const KIND_LABEL: Record<MyCapability['kind'], string> = {
-  skill: '技能',
-  expert: '专家',
-  plugin: '插件',
+interface MinePanelProps {
+  /** 当前类型（左导航选中项）。 */
+  capabilityKind: 'expert' | 'skill' | 'plugin'
+  /** 搜索词（由列表页统一持有，与市场页各自独立）。 */
+  query: string
+  /** 点卡片进详情。 */
+  onOpen: (item: MyCapability) => void
+  /** 卡片上的启用/停用快按钮。 */
+  onToggle: (item: MyCapability) => void
+  /** 快按钮进行中的条目键（`kind:id`）。 */
+  busyKey: string | null
 }
 
 /** 「我的」面板。 */
-export default function MinePanel() {
+export default function MinePanel({ capabilityKind, query, onOpen, onToggle, busyKey }: MinePanelProps) {
   const items = useMyCapabilitiesStore((s) => s.items)
   const builtinItems = useMyCapabilitiesStore((s) => s.builtinItems)
   const loaded = useMyCapabilitiesStore((s) => s.loaded)
   const loadMine = useMyCapabilitiesStore((s) => s.loadMine)
-  const deleteSkill = useMyCapabilitiesStore((s) => s.deleteSkill)
-  const deleteExpert = useMyCapabilitiesStore((s) => s.deleteExpert)
-  const setEnabled = useCatalogStore((s) => s.setEnabled)
-  const uninstall = useCatalogStore((s) => s.uninstall)
   const [sub, setSub] = useState<SubTab>('enabled')
   const [editingSkill, setEditingSkill] = useState<MyCapability | null | undefined>(undefined)
   const [editingExpert, setEditingExpert] = useState<MyCapability | null | undefined>(undefined)
@@ -46,41 +51,26 @@ export default function MinePanel() {
     loadMine().catch((err) => toast('error', `加载我的能力失败：${errorText(err)}`))
   }, [loadMine])
 
-  // 「内置」页签走只读数据源（平台内置条目，用户无启停）；其余页签过滤自己的列表
-  const rows =
-    sub === 'builtin'
+  // 内置页签走只读数据源，其余页签过滤自己的列表；再按当前类型与搜索词收窄
+  const rows = useMemo(() => {
+    const source = sub === 'builtin'
       ? builtinItems
       : items.filter((item) => {
           if (sub === 'enabled') return item.enabled
           if (sub === 'disabled') return !item.enabled
           return true
         })
-
-  const handleToggle = async (item: MyCapability) => {
-    try {
-      await setEnabled(item.kind, item.id, !item.enabled)
-      toast('success', item.enabled ? `已停用 ${item.name}` : `已启用 ${item.name}`)
-      await loadMine()
-    } catch (err) {
-      toast('error', errorText(err))
-    }
-  }
-
-  const handleRemove = async (item: MyCapability) => {
-    try {
-      if (item.source === 'mine' && item.kind === 'skill') await deleteSkill(item.id)
-      else if (item.source === 'mine' && item.kind === 'expert') await deleteExpert(item.id)
-      else await uninstall(item.kind, item.id)
-      await loadMine()
-      toast('success', `已删除 ${item.name}`)
-    } catch (err) {
-      toast('error', errorText(err))
-    }
-  }
+    const byKind = source.filter((item) => item.kind === capabilityKind)
+    const q = query.trim().toLowerCase()
+    if (!q) return byKind
+    return byKind.filter(
+      (item) => item.name.toLowerCase().includes(q) || item.description.toLowerCase().includes(q),
+    )
+  }, [sub, items, builtinItems, capabilityKind, query])
 
   return (
     <div className="flex flex-col gap-3">
-      {/* 工具行：新建入口 + 子页签 */}
+      {/* 子页签 + 自建入口 */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1">
           {SUB_TABS.map((t) => (
@@ -99,74 +89,68 @@ export default function MinePanel() {
           ))}
         </div>
         <div className="flex items-center gap-3">
-          <button type="button" onClick={() => setEditingSkill(null)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
+          <button
+            type="button"
+            onClick={() => setEditingSkill(null)}
+            className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+          >
             + 新建技能
           </button>
-          <button type="button" onClick={() => setEditingExpert(null)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
+          <button
+            type="button"
+            onClick={() => setEditingExpert(null)}
+            className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+          >
             + 新建专家
           </button>
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)]">
-        {rows.map((item) => (
-          <div
-            key={`${item.kind}:${item.id}`}
-            className="flex items-center gap-3 border-b border-[var(--sa-alias-border-l1)] px-4 py-3 last:border-b-0 hover:bg-[var(--sa-alias-interactive-bg-hover)]"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate font-mono text-[14px] font-medium">{item.name}</span>
-                <GrayBadge>{KIND_LABEL[item.kind]}</GrayBadge>
-                {item.source === 'builtin' ? (
-                  <GrayBadge>内置 · 全员可用</GrayBadge>
-                ) : (
-                  <GrayBadge>{item.source === 'mine' ? '自建' : '已安装'}</GrayBadge>
-                )}
-                {item.revoked && <GrayBadge>已被管理员下架</GrayBadge>}
-              </div>
-              <div className="truncate text-[13px] text-[var(--sa-alias-label-secondary)]" title={item.description}>
-                {item.description || '无描述'}
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-2.5">
-              {item.source === 'builtin' ? (
-                // 内置条目：管理员配置强制全员可用，用户无启停/卸载概念
-                <span className="text-[12px] text-[var(--sa-alias-label-caption)]">自动可用</span>
-              ) : (
+      {loaded && rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-[var(--sa-radius-lg)] border border-dashed border-[var(--sa-alias-border-l2)] py-16 text-[13px] text-[var(--sa-alias-label-caption)]">
+          {sub === 'builtin'
+            ? '暂无平台内置条目'
+            : query
+              ? '无匹配能力'
+              : '还没有条目，去「市场」安装，或点右上角自己创建一个'}
+        </div>
+      ) : (
+        <div className="grid justify-center gap-4 [grid-template-columns:repeat(auto-fill,minmax(360px,1fr))]">
+          {rows.map((item) => (
+            <CapabilityCard
+              key={`${item.kind}:${item.id}`}
+              title={item.name}
+              description={item.description}
+              badges={
                 <>
-              {item.enabled ? <GrayBadge>已启用</GrayBadge> : <GrayBadge>已停用</GrayBadge>}
-              {!item.revoked && (
-                <button type="button" onClick={() => void handleToggle(item)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
-                  {item.enabled ? '停用' : '启用'}
-                </button>
-              )}
-              {item.source === 'mine' && item.kind === 'skill' && (
-                <button type="button" onClick={() => setEditingSkill(item)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
-                  编辑
-                </button>
-              )}
-              {item.source === 'mine' && item.kind === 'expert' && (
-                <button type="button" onClick={() => setEditingExpert(item)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
-                  编辑
-                </button>
-              )}
-              <button type="button" onClick={() => void handleRemove(item)} className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
-                {item.source === 'mine' ? '删除' : '卸载'}
-              </button>
+                  {item.source === 'builtin' ? (
+                    <CardBadge>内置 · 全员可用</CardBadge>
+                  ) : (
+                    <CardBadge>{item.source === 'mine' ? '自建' : '已安装'}</CardBadge>
+                  )}
+                  {item.source !== 'builtin' && (
+                    <CardBadge>{item.enabled ? '已启用' : '已停用'}</CardBadge>
+                  )}
+                  {item.revoked && <CardBadge>已被管理员下架</CardBadge>}
                 </>
-              )}
-            </div>
-          </div>
-        ))}
-        {loaded && rows.length === 0 && (
-          <div className="px-4 py-10 text-center text-[13px] text-[var(--sa-alias-label-caption)]">
-            {sub === 'builtin'
-              ? '暂无平台内置条目（管理员可在后台把条目配置为内置）'
-              : '还没有技能或专家，去「市场」安装，或点右上角自己创建一个'}
-          </div>
-        )}
-      </div>
+              }
+              actionIcon={
+                item.source === 'builtin'
+                  ? undefined
+                  : (
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      {item.enabled ? <path d="M5.5 11.5h5" /> : <path d="M6 4.5 10.5 8 6 11.5" />}
+                    </svg>
+                  )
+              }
+              actionLabel={item.enabled ? `停用 ${item.name}` : `启用 ${item.name}`}
+              actionBusy={busyKey === `${item.kind}:${item.id}`}
+              onAction={() => onToggle(item)}
+              onClick={() => onOpen(item)}
+            />
+          ))}
+        </div>
+      )}
 
       {editingSkill !== undefined && (
         <SkillModal

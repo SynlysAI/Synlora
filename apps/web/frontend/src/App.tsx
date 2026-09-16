@@ -65,8 +65,10 @@ function App() {
       </AdminLayout>
     )
   }
-  // 能力中心：任意登录用户可访问的整页（与管理页同为独立壳，不走 AppShell）
-  if (route.kind === 'capabilities') return <CapabilityCenter key={user.sub} />
+  // 能力中心：列表与详情共用一个外壳（左导航常驻），任意登录用户可访问
+  if (route.kind === 'capabilities' || route.kind === 'capability-detail') {
+    return <CapabilityCenter key={user.sub} route={route} />
+  }
   if (route.kind === 'not-found') {
     return (
       <div className="flex h-dvh items-center justify-center bg-[var(--sa-alias-bg-base)]">
