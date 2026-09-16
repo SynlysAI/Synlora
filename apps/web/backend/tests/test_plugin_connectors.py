@@ -109,11 +109,17 @@ async def test_submit_rejects_missing_or_escaping_path(connectors, workspace,
 
 
 async def test_submit_requires_configured_base_url(connectors, workspace):
-    """未配置服务地址时给出可读失败。"""
+    """未配置服务地址时给出可读失败，且覆盖"本会话未启用插件"这一成因。
+
+    会话级插件开关默认全关，未勾选时宿主注入的 plugins 里没有本插件配置——
+    与"管理员没填地址"在连接器侧同形，文案须同时点出两条排查方向。
+    """
     nmr = next(c for c in connectors if c.kind == "spec.task.nmr")
     ctx = {"config": {}, "ai4ms_token": "", "workspace_root": str(workspace)}
-    with pytest.raises(JobSubmitFailed):
+    with pytest.raises(JobSubmitFailed) as excinfo:
         await nmr.submit({"path": "sample.nmr"}, ctx)
+    msg = str(excinfo.value)
+    assert "管理后台" in msg and "本会话" in msg and "spec_agent" in msg
 
 
 async def test_poll_returns_raw_status(connectors, monkeypatch):
@@ -156,9 +162,11 @@ async def test_poll_raises_on_http_failure(connectors, monkeypatch):
     with pytest.raises(JobPollFailed):
         await nmr.poll("T-9", ctx)
 
-    # 未配置服务地址（_conn 抛 JobSubmitFailed → 查询路径转 JobPollFailed）
-    with pytest.raises(JobPollFailed):
+    # 未配置服务地址（_conn 抛 JobSubmitFailed → 查询路径转 JobPollFailed）：
+    # 转换保留原文案，且该文案在"提交/查询"两种语境下都读得通
+    with pytest.raises(JobPollFailed) as excinfo:
         await nmr.poll("T-9", {"config": {}})
+    assert "谱图解析插件不可用" in str(excinfo.value)
 
 
 async def test_poll_raises_when_status_missing(connectors, monkeypatch):

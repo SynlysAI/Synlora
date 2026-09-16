@@ -151,14 +151,20 @@ async def test_submit_creates_pending_job(store):
 
 
 async def test_submit_unknown_kind_is_readable_error(store):
-    """未注册的任务类型给出可读错误，不抛异常。"""
-    service, _ = _job_service(store)
+    """未注册的任务类型给出可读错误，不抛异常；也不回显全局 kind 清单。"""
+    service, reg = _job_service(store)
+    # 注册表是进程全局的：这里挂一个"该用户不可见插件"的 kind，它不该出现在
+    # 报错文本里（kind 未按可见性过滤，回显等于泄露其它插件的能力清单）
+    reg.register(make_fake_connector("other.secret", plugin_id="p2"),
+                 status_map=FAKE_STATUS_MAP)
     result = await service.handle(
         {"action": "submit", "kind": "nope", "params": {}},
         user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert result.ok is False
     assert result.error == "unknown_job_kind"
     assert "nope" in result.content
+    assert "other.secret" not in result.content   # 不回显全局清单
+    assert "skill.list" in result.content         # 改为引导查看（按可见性过滤的）技能
 
 
 async def test_submit_passes_plugin_config_and_token(store):

@@ -476,9 +476,12 @@ def test_load_plugin_connectors_collects_list(tmp_path):
 
 
 def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
-    """连接器加载的四条降级路径各返回空列表并告警（不抛异常、不阻断启动）：
+    """连接器加载的四条降级路径各返回空列表并记日志（不抛异常、不阻断启动）：
 
     未声明模块 / 声明了但文件不存在 / 模块导入报错 / CONNECTORS 容器类型写错。
+    前三条会让"该插件的后台任务凭空消失"，故为 error 级（可观测性：宿主重构
+    导致 connectors.py 的宿主内部 import 路径失效时必须立刻可见）；容器类型写错
+    只影响本插件声明，保持 warning。
     """
     from app.catalog.loader import load_plugin_connectors
 
@@ -500,15 +503,20 @@ def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
         missing = load_plugin_connectors(scan_catalog([tmp_path]).plugins["demo2"])
     assert missing == []
-    assert "连接器模块不存在" in caplog.text
+    assert any(r.levelno == logging.ERROR and "连接器模块不存在" in r.getMessage()
+               and "不可用" in r.getMessage() for r in caplog.records)
 
-    # 模块导入抛异常
+    # 模块导入抛异常（宿主重构改了 connectors.py 依赖的内部模块路径时会落到这）
+    caplog.clear()
     (plugin_dir / "connectors.py").write_text("raise RuntimeError('炸了')",
                                               encoding="utf-8")
     broken = PluginPackage(
         id="demo", name="Demo", version="1.0.0", description="", directory=plugin_dir,
         tools_module="tools.py", connectors_module="connectors.py")
-    assert load_plugin_connectors(broken) == []
+    with caplog.at_level(logging.ERROR, logger="app.catalog.loader"):
+        assert load_plugin_connectors(broken) == []
+    assert any(r.levelno == logging.ERROR and "导入失败" in r.getMessage()
+               for r in caplog.records)
 
     # CONNECTORS 不是列表（插件写成了 dict 等其他类型）：告警并降级
     caplog.clear()

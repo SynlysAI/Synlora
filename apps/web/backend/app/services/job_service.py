@@ -340,10 +340,14 @@ class JobService:
         """
         registered = self._connectors.get(kind)
         if registered is None:
-            kinds = "、".join(self._connectors.kinds) or "（当前无可用的任务类型）"
+            # 不回显 self._connectors.kinds：注册表是进程全局的，清单里可能含该
+            # 用户不可见插件的 kind（kind 未按可见性过滤）。技能索引本就按用户
+            # 可见性裁剪过，故引导模型去 skill.list 自查可用类型与参数格式。
             return ToolResult(
                 ok=False,
-                content=f"未注册的任务类型: {kind}。可用类型：{kinds}",
+                content=(f"未知的任务类型: {kind}。"
+                         "请先用 skill.list 查看当前可用的技能，"
+                         "从中确认任务类型与参数格式"),
                 error="unknown_job_kind")
         connector = registered.connector
         ctx = await self._ctx_for(user_id, connector.plugin_id, ctx_extra)

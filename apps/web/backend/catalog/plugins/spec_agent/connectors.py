@@ -193,8 +193,13 @@ class SpectraTaskConnector:
         config = ctx.get("config") or {}
         base_url = str(config.get("base_url") or "").rstrip("/")
         if not base_url:
+            # 两种成因都可能：管理员没填服务地址（提交/查询/取结果路径的 config
+            # 都来自宿主注入），或本会话未启用该插件（会话级插件开关默认全关，
+            # 此时宿主注入的 plugins 里根本没有本插件的配置）。旧文案只提前者，
+            # 会把"只是没勾选插件"的用户引向管理后台白排查。
             raise JobSubmitFailed(
-                "谱图解析插件未配置服务地址（请在管理后台的插件页安装并填写）")
+                "谱图解析插件不可用：请确认管理员已在管理后台「插件」页填写服务地址，"
+                "且本会话已在输入框的「+ → 插件」面板中启用 spec_agent")
         headers: dict[str, str] = {}
         # 凭证顺序：宿主按登录用户代签的动态 token 优先，回落插件配置的服务 token
         token = str(ctx.get("ai4ms_token") or config.get("token") or "")

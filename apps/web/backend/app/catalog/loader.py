@@ -351,27 +351,37 @@ def load_plugin_connectors(package: PluginPackage) -> list[Any]:
         package: 插件包。
 
     Returns:
-        连接器实例列表；未声明、模块缺失或导入失败时返回空列表并告警。
+        连接器实例列表；未声明、模块缺失或导入失败时返回空列表并记日志
+        （后两者为 error 级——连接器消失即该插件的后台任务全部不可用）。
     """
     if not package.connectors_module:
         return []
     module_path = package.directory / package.connectors_module
     if not module_path.is_file():
-        logger.warning("插件 %s 的连接器模块不存在: %s", package.id, module_path)
+        logger.error("插件 %s 的连接器模块不存在，该插件的后台任务将不可用: %s",
+                     package.id, module_path)
         return []
     # 模块名与工具模块区分（同一插件可同时有 tools.py 与 connectors.py）
     module_name = f"synlora_plugin_{re.sub(r'[^0-9a-zA-Z_]', '_', package.id)}_connectors"
     try:
         spec = importlib.util.spec_from_file_location(module_name, module_path)
         if spec is None or spec.loader is None:
-            logger.warning("插件 %s 连接器模块无法加载: %s", package.id, module_path)
+            # 与上一条同口径：模块建不出 loader（如 connectors_module 声明成
+            # .txt 这类 importlib 不认的后缀）同样会让连接器静默消失
+            logger.error("插件 %s 的连接器模块无法加载，该插件的后台任务将不可用: %s",
+                         package.id, module_path)
             return []
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
     except Exception as exc:  # noqa: BLE001 插件代码不可信，导入失败不阻断启动
         sys.modules.pop(module_name, None)
-        logger.warning("插件 %s 连接器模块导入失败: %s", package.id, exc)
+        # error 级：插件 connectors.py 依赖宿主内部模块路径（如
+        # `from app.services.job_connectors import ...`），宿主重构导致该路径
+        # 变化时会落到这里；若只记 warning，表现为"模型看不到任何谱图任务"的
+        # 静默降级，排查困难。
+        logger.error("插件 %s 的连接器模块导入失败，该插件的后台任务将不可用: %s",
+                     package.id, exc)
         return []
     raw = getattr(module, "CONNECTORS", None)
     if raw is None:
