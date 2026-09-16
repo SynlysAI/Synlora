@@ -66,6 +66,31 @@ async def test_registry_rejects_bad_connector_and_empty_kind():
     assert reg.kinds == []
 
 
+async def test_registry_rejects_sync_methods():
+    """用同步 def 冒充异步的连接器注册即报错（防运行期 await 时才炸）。"""
+    reg = JobConnectorRegistry()
+
+    class _SyncPoll:
+        """poll 漏写 async 的连接器（isinstance 查不出来）。"""
+
+        kind = "sync"
+        plugin_id = "p1"
+
+        async def submit(self, params, ctx):
+            return "x"
+
+        def poll(self, external_id, ctx):  # 忘了 async
+            return "done"
+
+        async def cancel(self, external_id, ctx):
+            return True
+
+    with pytest.raises(ValueError) as exc:
+        reg.register(_SyncPoll(), status_map={})
+    assert "async" in str(exc.value)
+    assert reg.kinds == []
+
+
 async def test_fake_connector_lifecycle():
     """测试连接器：submit 返回外部 id，poll 按脚本推进状态，cancel 生效。"""
     conn = make_fake_connector("k", plugin_id="p1", script=["queued", "doing", "done"])

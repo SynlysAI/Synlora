@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import uuid
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -120,9 +121,12 @@ class JobConnectorRegistry:
                 小写并去首尾空白，调用方大小写可随意。
 
         Raises:
-            ValueError: 连接器未实现 JobConnector 协议、kind 为空或已被注册。
-                注意 isinstance 只校验成员存在性、不校验方法签名，插件实现
-                仍需自行保证签名与协议一致。
+            ValueError: 连接器未实现 JobConnector 协议（形状：kind/plugin_id
+                成员 + submit/poll/cancel 三个方法）、三个方法中有同步 def
+                冒充异步、kind 为空或已被注册。注意 isinstance 只校验成员
+                存在性、不校验方法签名，故此处额外逐个校验必须是 async def，
+                避免插件漏写 async 时拖到运行期 await 才炸（故障形态是任务
+                无声堆积、永不终结，报错点离出错点极远）。
         """
         kind = str(getattr(connector, "kind", "")).strip()
         if not kind:
@@ -131,6 +135,11 @@ class JobConnectorRegistry:
             raise ValueError(
                 f"连接器未实现 JobConnector 协议（需 kind/plugin_id 与 "
                 f"submit/poll/cancel 三个异步方法）: {type(connector).__name__}")
+        for method in ("submit", "poll", "cancel"):
+            if not inspect.iscoroutinefunction(getattr(connector, method)):
+                raise ValueError(
+                    f"连接器方法必须是 async def: "
+                    f"{type(connector).__name__}.{method}")
         if kind in self._items:
             raise ValueError(f"任务类型已注册: {kind}")
         normalized = {str(k).strip().lower(): v
