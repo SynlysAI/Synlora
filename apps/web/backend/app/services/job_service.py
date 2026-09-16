@@ -11,9 +11,18 @@
 完成唤醒（Task 9）：`refresh` 落到终态后调 `_notify_wake`——会话空闲立即唤醒
 agent 整合结果，会话忙则进 `_pending_wake` 排队，等该会话的 run 结束后由
 `drain_pending`（AgentService 的 run 结束回调驱动）补发。
+
+`refresh` 的并发安全：poller 的 tick 与模型调 `job.status` 可能拿到同一份非
+终态快照，靠任务级锁串行化并在锁内重读文档——后到者看到已落库的终态即早返回，
+同一任务只唤醒一次（也不会对同一任务并发调外部 poll）。
+
+Note:
+    待唤醒队列为进程内存态（与 ActiveRun/SSE 队列一致）：进程重启会丢失尚未
+    补发的完成通知——已在 workers=1 单实例约束下接受。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -28,12 +37,13 @@ from synlys_harness import (
     is_terminal,
 )
 
-from app.services.agent_service import TooManyRuns, WakeTargetGone
+# 领域异常来自中立的 session_runtime（不是 agent_service）：本模块不该依赖编排器
 from app.services.job_connectors import (
     JobConnectorRegistry,
     JobPollFailed,
     JobSubmitFailed,
 )
+from app.services.session_runtime import TooManyRuns, WakeTargetGone
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +91,9 @@ class JobService:
         self._wake: WakeCallback | None = None
         # 待唤醒会话队列：会话忙时任务先在这里排队，run 结束后 drain
         self._pending_wake: dict[str, list[str]] = {}
+        # 每任务的串行锁（防并发 refresh 重复推进状态与重复唤醒）；按任务数增长，
+        # 进程内小对象，任务总量可控故不回收（回收会引出"旧锁 vs 新锁"的并发窗口）
+        self._job_locks: dict[str, asyncio.Lock] = {}
         # 会话忙判定（装配阶段注入 AgentService.is_busy；缺省视为空闲）
         self._busy_check: Callable[[str], bool] = lambda _sid: False
 
@@ -165,16 +178,24 @@ class JobService:
     async def drain_pending(self, session_id: str) -> None:
         """会话空闲后补发待唤醒任务（由 AgentService 的 run 结束回调驱动）。
 
-        逐条出队处理：单条失败或被重新入队，都不牵连同会话其余的待唤醒通知。
+        逐条出队处理：单条失败或被重新入队，都不牵连同会话其余的待唤醒通知；
+        处理中途被取消时，未处理的通知仍在队列里。
+
+        本轮不重试"已经尝试过又被重新入队"的任务（`_wake_now` 撞会话忙会把
+        任务塞回队列）——否则同一条记录会被 while 立刻取到而死循环；它留待
+        下一次 drain 补发。
 
         Args:
             session_id: 会话 id。
         """
-        pending = list(self._pending_wake.get(session_id, []))
-        if not pending:
-            return
-        self._pending_wake.pop(session_id, None)
-        for job_id in pending:
+        attempted: set[str] = set()
+        while True:
+            queue = self._pending_wake.get(session_id) or []
+            job_id = next((j for j in queue if j not in attempted), None)
+            if job_id is None:
+                break
+            queue.remove(job_id)
+            attempted.add(job_id)
             try:
                 doc = await self._repo.get(job_id)
             except Exception:  # noqa: BLE001 单条读取失败不牵连同会话其余通知
@@ -183,6 +204,9 @@ class JobService:
             if doc is None:
                 continue
             await self._wake_now(doc)
+        # 只有队列真的空了才摘键：被重新入队的任务必须留到下一次 drain（不丢通知）
+        if not self._pending_wake.get(session_id):
+            self._pending_wake.pop(session_id, None)
 
     @staticmethod
     def compose_wake_text(doc: dict) -> str:
@@ -204,8 +228,16 @@ class JobService:
         if doc.get("error"):
             lines.append(f"错误信息：{_clip(str(doc['error']), 1000)}")
         if doc.get("result"):
+            # 结果正文暂无写入方：连接器 poll 只回状态，结果落库留给后续（C2 的
+            # Spec_Agent 接入）；此分支先留着，届时由连接器或工具补齐
             lines.append(f"任务结果：\n{_clip(str(doc['result']))}")
-        lines.append("若结果已足够，直接向用户汇报结论；若还需补充计算，可继续调用工具。")
+        # 按终态分流：失败/取消时不能给"可继续调用工具"的开放邀请（模型会原样
+        # 重提同一任务 → submit → fail → wake，每轮都是真金白银的 LLM 调用）
+        if doc.get("status") == JobStatus.COMPLETED.value:
+            lines.append("请基于以上结果直接回应用户，不要重复提交同一任务。")
+        else:
+            lines.append("请向用户说明失败/取消原因；如需重试，先调整参数或排查原因，"
+                         "不要原样重新提交同一任务。")
         return "\n".join(lines)
 
     # ---------- 配置解析（提交/轮询共用） ----------
@@ -350,11 +382,30 @@ class JobService:
                           data={"job_id": doc.get("_id", ""),
                                 "status": doc.get("status", "")})
 
+    def _lock_for(self, job_id: str) -> asyncio.Lock:
+        """取该任务的串行锁（任务级，防并发刷新重复推进与重复唤醒）。
+
+        Args:
+            job_id: 任务 id。
+
+        Returns:
+            该任务对应的锁（首次访问时创建）。
+        """
+        lock = self._job_locks.get(job_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._job_locks[job_id] = lock
+        return lock
+
     async def refresh(self, doc: dict) -> dict | None:
         """向外部系统拉一次最新状态并落库（轮询与手工查询共用）。
 
+        并发安全：任务级锁内**重读**文档——两个调用方（poller 的 tick 与模型
+        调 job.status）可能拿到同一份非终态快照，串行化后后到者在锁内会看到
+        已落库的终态从而早返回，同一任务只唤醒一次、也只调一次外部 poll。
+
         Args:
-            doc: 任务文档。
+            doc: 任务文档（仅用于取 id；真实依据是锁内重读的文档）。
 
         Returns:
             更新后的文档；任务不存在返回 None。
@@ -362,6 +413,25 @@ class JobService:
         Note:
             查询失败或状态未映射时**保持原状态**并累计 poll_failures——
             一次网络抖动不得把任务判为失败，也不得让状态倒退。
+        """
+        job_id = str(doc.get("_id", ""))
+        if not job_id:
+            return doc
+        async with self._lock_for(job_id):
+            # 锁内重读：并发的第二个调用方在这里会看到已推进的状态
+            fresh = await self._repo.get(job_id)
+            if fresh is not None:
+                doc = fresh
+            return await self._refresh_locked(doc)
+
+    async def _refresh_locked(self, doc: dict) -> dict | None:
+        """refresh 的实际逻辑（调用方须持有该任务的锁）。
+
+        Args:
+            doc: 锁内重读后的任务文档。
+
+        Returns:
+            更新后的文档；任务不存在返回 None。
         """
         try:
             status = JobStatus(doc["status"])

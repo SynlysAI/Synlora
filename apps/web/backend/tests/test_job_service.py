@@ -307,8 +307,15 @@ async def test_refresh_ignores_unmapped_status(store):
 
 
 async def test_refresh_fails_job_when_connector_gone(store):
-    """连接器消失（插件被卸载）时任务判失败并落结束时间。"""
+    """连接器消失（插件被卸载）时任务判失败、落结束时间并唤醒一次。"""
+    woken: list[tuple[str, str, str]] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append((session_id, text, job_id))
+
     service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
     reg.register(make_fake_connector("k", plugin_id="p1", script=["queued"]),
                  status_map=FAKE_STATUS_MAP)
     submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
@@ -319,6 +326,12 @@ async def test_refresh_fails_job_when_connector_gone(store):
     assert doc["status"] == "failed"
     assert "k" in doc["error"]
     assert doc.get("ended_at")
+    # 判失败也是终态：同样要唤醒（否则用户永远等不到失败通知）
+    assert len(woken) == 1
+    assert woken[0][0] == "s1"
+    assert woken[0][2] == submitted.data["job_id"]
+    assert "failed" in woken[0][1]
+    assert "任务类型已不可用" in woken[0][1]
 
 
 async def test_terminal_job_is_not_refreshed(store):
@@ -459,6 +472,48 @@ async def test_only_notified_once_per_job(store):
     assert woken == [job_id]
 
 
+async def test_concurrent_refresh_wakes_once(store):
+    """并发刷新同一任务只唤醒一次（poller 的 tick 与模型查进度可能同时命中）。
+
+    两个调用方拿到同一份非终态快照后一起挂起在外部 poll 上，先后观察到终态：
+    任务级锁串行化 + 锁内重读，使后到者看到已落库的终态直接返回——既不再重复
+    唤醒（会白烧一轮 LLM），也不再对同一任务重复调外部 poll。
+    """
+    import asyncio
+
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+
+    class SlowConnector(FakeConnector):
+        """poll 主动让出事件循环，制造两个 refresh 交错推进的窗口。"""
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.polls = 0
+
+        async def poll(self, external_id, ctx):
+            self.polls += 1
+            await asyncio.sleep(0)  # 让出控制权：并发调用方在此交错
+            return await super().poll(external_id, ctx)
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    conn = SlowConnector("k", plugin_id="p1", script=["done"])
+    reg.register(conn, status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    doc = await service.get(job_id)
+    # 两个调用方共用同一份非终态快照（正是 poller 与 job.status 并发的真实形态）
+    await asyncio.gather(service.refresh(doc), service.refresh(doc))
+    assert woken == [job_id]
+    # 锁生效的旁证：后到者在锁内重读已终态，连外部 poll 都没再发一次
+    assert conn.polls == 1
+
+
 async def test_wake_composes_result_text(store):
     """唤醒文本包含任务类型、状态与结果正文（供模型直接整合）。"""
     seen: list[str] = []
@@ -503,7 +558,6 @@ async def test_wake_requeues_on_too_many_runs(store):
     # 第一次尝试失败 → 重新入队
     assert service.pending_wake_count("s1") == 1
     # 会话空闲后 drain 补发成功
-    service.set_busy_check(lambda sid: False)
     await service.drain_pending("s1")
     assert woken == [job_id, job_id]
     assert service.pending_wake_count("s1") == 0
@@ -552,3 +606,67 @@ async def test_drain_keeps_other_jobs_when_one_fails(store):
     # 两条都被尝试（第一条抛错不阻断第二条），队列清空
     assert woken == [first.data["job_id"], second.data["job_id"]]
     assert service.pending_wake_count("s1") == 0
+
+
+async def test_drain_does_not_retry_requeued_job_this_round(store):
+    """drain 本轮不重试被重新入队的任务（否则 while 立刻取到 → 死循环）。
+
+    重新入队的那条留待下一次 drain 补发，同会话其余通知照常处理。
+    """
+    from app.services.session_runtime import TooManyRuns
+
+    busy = {"flag": True}
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+        if busy["flag"] and len(woken) == 1:
+            raise TooManyRuns("会话忙")  # 第一条撞上"判定空闲到取锁"的窗口
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: True)  # 提交后先排队，避免终态即唤醒
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    first = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                 user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    second = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(first.data["job_id"]))
+    await service.refresh(await service.get(second.data["job_id"]))
+    assert service.pending_wake_count("s1") == 2
+    await service.drain_pending("s1")
+    # 第一条本轮只尝试一次（不死循环），第二条照常补发，队列里留 1 条等下次
+    assert woken == [first.data["job_id"], second.data["job_id"]]
+    assert service.pending_wake_count("s1") == 1
+    # 会话空出来后下一轮 drain 补发成功并清空队列
+    busy["flag"] = False
+    await service.drain_pending("s1")
+    assert woken == [first.data["job_id"], second.data["job_id"],
+                     first.data["job_id"]]
+    assert service.pending_wake_count("s1") == 0
+
+
+async def test_wake_text_guards_failed_task(store):
+    """失败终态的唤醒文本不给"可继续调用工具"的开放邀请（防原样重提死循环）。"""
+    seen: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        seen.append(text)
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    reg._items.pop("k")  # noqa: SLF001 模拟插件卸载 → 任务判失败
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert "不要原样重新提交同一任务" in seen[0]
+    assert "可继续调用工具" not in seen[0]
+    # 完成态则是正向引导：直接回应，不重复提交
+    terminal_text = service.compose_wake_text(
+        {"_id": "job-x", "kind": "k", "status": JobStatus.COMPLETED.value})
+    assert "不要重复提交同一任务" in terminal_text
+    assert "可继续调用工具" not in terminal_text

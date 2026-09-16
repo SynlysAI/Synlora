@@ -43,7 +43,13 @@ from synlys_harness import (
 )
 
 from app.services import workspace
-from app.services.session_runtime import resolve_session_runtime
+# TooManyRuns / WakeTargetGone 定义在中立的 session_runtime（避免 JobService
+# 反向 import 本模块）；此处 import 后继续对外可用（重导出，调用点无需改动）
+from app.services.session_runtime import (
+    TooManyRuns,
+    WakeTargetGone,
+    resolve_session_runtime,
+)
 from app.services.skill_service import SkillService
 from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGISTRY
 
@@ -59,18 +65,6 @@ TRANSIENT = {EventType.LLM_DELTA, EventType.REASONING_DELTA}
 _LOGGER = logging.getLogger(__name__)
 
 # 工具注册表收口在 app.services.tool_registry（与 assistants_api 共用同一实例）
-
-
-class TooManyRuns(Exception):
-    """并发运行数超限（会话级互斥：同会话已有进行中消息；或用户级上限）。"""
-
-
-class WakeTargetGone(RuntimeError):
-    """唤醒目标已消失（会话被删除）——通知无接收方，调用方应静默跳过。
-
-    继承 RuntimeError 以兼容既有的宽捕获，但语义上属正常的业务情形
-    （任务挂起期间用户删了会话），不是编程错误。
-    """
 
 
 class ActiveRun:
