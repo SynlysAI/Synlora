@@ -1,10 +1,16 @@
-"""内置工具集：file.* / python.run / knowledge.* / web.search / web.fetch / http.request / skill.*。"""
+"""内置工具声明集合：文件读写、受限 Python 执行、知识检索、联网访问、
+技能读取、用户交互（问答/交付）与后台任务。
+
+工具通过 ctx.extra 取宿主注入的通道（ask_user_handler / send_file_handler /
+job_handler 等）；缺少对应通道时工具 fail-closed 返回 no_handler。
+"""
 from __future__ import annotations
 
 import ipaddress
 import re
 import socket
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -781,13 +787,20 @@ async def skill_read(ctx: ToolContext, args: dict) -> ToolResult:
     return ToolResult(ok=True, content=content, data={"name": name, "content": content})
 
 
-def _job_handler(ctx: ToolContext):
-    """取宿主注入的任务处理器（缺失返回 None）。"""
+def _job_handler(ctx: ToolContext) -> Callable | None:
+    """取宿主注入的任务处理器（缺失返回 None）。
+
+    Args:
+        ctx: 工具上下文。
+
+    Returns:
+        宿主的 job_handler；未注入时返回 None。
+    """
     handler = ctx.extra.get("job_handler")
     return handler if callable(handler) else None
 
 
-def _no_jobs() -> ToolResult:
+def _no_job_handler() -> ToolResult:
     """无任务处理器时的统一失败结果。"""
     return ToolResult(ok=False, content="当前运行环境不支持后台任务", error="no_handler")
 
@@ -795,13 +808,17 @@ def _no_jobs() -> ToolResult:
 @tool(
     name="job.submit",
     description=(
-        "提交一个后台长任务（谱图解析、批量计算等耗时数分钟以上的作业）。"
-        "提交后立即返回任务 ID，任务完成时系统会自动通知你继续处理。"
-        "不要重复提交同一请求，也不要在提交后反复调用 job.status 轮询。"
+        "提交一个后台长任务（谱图解析、批量计算等耗时数分钟以上的作业）。\n"
+        "注意：提交后立即返回任务 ID，任务完成时系统会自动通知你继续处理。"
+        "不要重复提交同一请求，也不要在提交后反复调用 job.status 轮询——那样只会浪费步骤。\n"
+        "任务类型与参数格式先用 skill.list / skill.read 查对应技能说明。"
     ),
     parameters={"type": "object", "properties": {
-        "kind": {"type": "string", "description": "任务类型（见技能说明，如 spec.nmr.forward）"},
-        "params": {"type": "object", "description": "任务参数（随任务类型而定）"},
+        "kind": {"type": "string",
+                 "description": "任务类型，如 spec.nmr.forward。不确定时先用 skill.list 找相关技能、"
+                                "再用 skill.read 读其说明，拿到准确的 kind 与参数格式"},
+        "params": {"type": "object",
+                   "description": "任务参数对象，字段随 kind 而定（格式见对应技能的说明）"},
         "label": {"type": "string", "description": "任务简述，用于向用户展示（可选）"},
     }, "required": ["kind", "params"]},
     timeout_s=30,  # 只覆盖"提交"这一次请求；任务本身在后台跑
@@ -810,7 +827,7 @@ async def job_submit(ctx: ToolContext, args: dict) -> ToolResult:
     """提交后台任务（宿主经 ctx.extra 注入 job_handler）。"""
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
+        return _no_job_handler()
     kind = str(args.get("kind") or "").strip()
     if not kind:
         return ToolResult(ok=False, content="kind 不能为空", error="invalid_arguments")
@@ -841,7 +858,7 @@ async def job_status(ctx: ToolContext, args: dict) -> ToolResult:
     """查询单个任务状态（宿主经 ctx.extra 注入 job_handler）。"""
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
+        return _no_job_handler()
     job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")
@@ -862,7 +879,7 @@ async def job_list(ctx: ToolContext, args: dict) -> ToolResult:
     """列出本会话的任务（宿主经 ctx.extra 注入 job_handler）。"""
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
+        return _no_job_handler()
     return await handler({
         "action": "list",
         "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
@@ -881,7 +898,7 @@ async def job_cancel(ctx: ToolContext, args: dict) -> ToolResult:
     """取消任务（宿主经 ctx.extra 注入 job_handler）。"""
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
+        return _no_job_handler()
     job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")

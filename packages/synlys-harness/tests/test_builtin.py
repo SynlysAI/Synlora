@@ -776,6 +776,10 @@ async def test_job_submit_validates_arguments(tmp_path):
     bad_params = await pipe.run("job.submit", ctx, {"kind": "k", "params": "oops"})
     assert bad_params.ok is False and bad_params.error == "invalid_arguments"
     assert calls == []
+    # kind 前后空白被 strip 掉后再转发
+    ok = await pipe.run("job.submit", ctx, {"kind": "  k  ", "params": {}})
+    assert ok.ok is True
+    assert calls[-1]["kind"] == "k"
 
 
 async def test_job_submit_rejects_null_arguments(tmp_path):
@@ -813,3 +817,10 @@ async def test_job_submit_forwards_payload(tmp_path):
     assert seen[0]["params"] == {"smiles_input": "CCO"}
     assert seen[0]["label"] == "乙醇预测"
     assert seen[0]["tool_call_id"] == "tc-9"
+
+    # label 超长被截断到 200 字
+    long_label = "乙" * 500
+    await pipe.run("job.submit", ctx, {
+        "kind": "spec.nmr.forward", "params": {}, "label": long_label})
+    assert seen[1]["label"] == "乙" * 200
+    assert len(seen[1]["label"]) == 200
