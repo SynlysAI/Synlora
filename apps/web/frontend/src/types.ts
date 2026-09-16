@@ -134,6 +134,8 @@ export interface CatalogItem {
   /** 已安装时是否处于启用态（停用 = 已装但不注入运行期）。 */
   enabled: boolean
   visible: boolean
+  /** 仅专家行返回：头像 emoji（空串 = 无头像，卡片回退标题首字母）。 */
+  avatar?: string
   /** 仅插件行返回：安装时可填的配置字段 */
   config_schema?: PluginConfigField[]
   /** 仅插件行返回：管理员公共配置已就绪的字段名（这些留空即用系统配置） */
@@ -149,6 +151,8 @@ export interface MyCapability {
   source: 'mine' | 'installed' | 'builtin'
   enabled: boolean
   builtin: boolean
+  /** 仅专家：头像 emoji（空/缺省 = 无头像，卡片回退标题首字母）。 */
+  avatar?: string
   /** 管理员已下架（仅 installed 条目可能出现）：不可启用。 */
   revoked?: boolean
 }

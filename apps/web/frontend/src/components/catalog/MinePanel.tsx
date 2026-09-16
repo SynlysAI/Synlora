@@ -121,6 +121,7 @@ export default function MinePanel({ capabilityKind, query, onOpen, onToggle, bus
               key={`${item.kind}:${item.id}`}
               title={item.name}
               description={item.description}
+              avatar={item.avatar}
               badges={
                 <>
                   {item.source === 'builtin' ? (

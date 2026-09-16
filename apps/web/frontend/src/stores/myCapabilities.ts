@@ -29,6 +29,8 @@ interface MyExpertRow {
   source: 'mine' | 'installed'
   enabled: boolean
   builtin: boolean
+  /** 管理员已下架（仅 installed 行可能出现）：卡片标已下架、不给启停按钮。 */
+  revoked?: boolean
 }
 /** 自建技能/专家的提交体。 */
 export interface SkillDraft {
@@ -82,6 +84,8 @@ export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => 
       source: p.default_enabled ? 'builtin' : 'installed',
       enabled: p.default_enabled || p.enabled,
       builtin: true,
+      // 仅专家行有该字段（其余类型为 undefined，卡片自然走首字母兜底）
+      avatar: p.avatar || undefined,
     })
     const items: MyCapability[] = [
       ...skills.map((s) => ({
@@ -102,6 +106,8 @@ export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => 
         source: e.source,
         enabled: e.enabled,
         builtin: e.builtin,
+        avatar: e.avatar || undefined,
+        revoked: e.revoked,
       })),
       // 已装插件（内置插件不进 items——用户对其无启停概念）
       ...pluginRows.filter((p) => p.installed && !p.default_enabled).map((p) => toMine('plugin', p)),

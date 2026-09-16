@@ -266,6 +266,7 @@ function CapabilityList({ capabilityKind, tab, onTabChange }: {
                 key={item.id}
                 title={item.name}
                 description={item.description}
+                avatar={item.avatar}
                 badges={
                   <>
                     {item.default_enabled ? (

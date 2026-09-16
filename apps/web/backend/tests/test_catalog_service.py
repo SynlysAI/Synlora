@@ -139,6 +139,18 @@ async def test_market_plugin_rows_include_config_schema(caps):
     assert all("config_schema" not in r for r in expert_rows)
 
 
+async def test_market_expert_rows_include_avatar(caps):
+    """专家行带 avatar（卡片据此渲染 emoji）；技能/插件无此概念，不加该字段。"""
+    # 先断言具体 emoji：目录里确有非空头像，否则字段写成常量空串也能通过
+    rows = await caps.market_items("u1", "expert")
+    row = next(r for r in rows if r["id"] == "asst-data")
+    assert row["avatar"] == "📊"
+    assert all("avatar" in r for r in rows)   # 每个专家行都有该键（无头像时为 ""）
+    # 与 config_schema 同约定：只有专家才加该字段
+    assert all("avatar" not in r for r in await caps.market_items("u1", "skill"))
+    assert all("avatar" not in r for r in await caps.market_items("u1", "plugin"))
+
+
 async def test_visible_ids_matches_per_item_visibility(caps):
     """批量计算与逐条判定结果一致（优化不改变语义）。"""
     await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=False)

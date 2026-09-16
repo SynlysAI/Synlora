@@ -139,6 +139,32 @@ def test_my_experts_get_instantiates_missing_record(client):
     assert any(a["_id"] == expert_id for a in assistants)
 
 
+def test_my_experts_lists_installed_builtin_with_avatar(client):
+    """已安装的内置专家进「我的」，并带上目录里的头像 emoji（此前恒为空串）。"""
+    client.put("/api/v1/me/capabilities/expert/asst-data",
+               json={"installed": True}, headers=HEADERS)
+    rows = client.get("/api/v1/me/experts", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == "asst-data")
+    assert row["source"] == "installed" and row["builtin"] is True
+    assert row["avatar"] == "📊"
+
+
+def test_my_experts_marks_revoked_installed_item(client):
+    """管理员下架后，已安装专家在「我的」里标 revoked（对齐 list_my_skills 口径）。"""
+    client.put("/api/v1/me/capabilities/expert/asst-data",
+               json={"installed": True}, headers=HEADERS)
+    # 未下架时不得带该标记（否则"恒 True"也能过）
+    rows = client.get("/api/v1/me/experts", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == "asst-data")
+    assert row["revoked"] is False
+
+    client.put("/api/v1/admin/catalog/expert/asst-data/policy",
+               json={"visibility": "hidden", "default_enabled": False}, headers=HEADERS)
+    rows = client.get("/api/v1/me/experts", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == "asst-data")
+    assert row["revoked"] is True
+
+
 def test_update_my_expert(client):
     created = client.post("/api/v1/me/experts", json=EXPERT, headers=HEADERS).json()
     resp = client.patch(f"/api/v1/me/experts/{created['id']}",

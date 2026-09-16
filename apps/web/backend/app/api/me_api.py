@@ -209,7 +209,8 @@ async def list_my_experts(request: Request, user=Depends(get_current_user)) -> l
         user: 当前用户。
 
     Returns:
-        条目列表（source = mine|installed，含 installed/enabled/builtin）。
+        条目列表（source = mine|installed，含 installed/enabled/builtin；
+        installed 条目额外带 revoked：管理员已下架该条目）。
 
     Raises:
         HTTPException: 能力服务未就绪（503）。
@@ -235,10 +236,15 @@ async def list_my_experts(request: Request, user=Depends(get_current_user)) -> l
         # 不进"我的"（与 list_my_skills 同口径）
         if pol["default_enabled"]:
             continue
+        # 头像取自目录专家包（与市场行同源）；包缺失时留空，由前端回退首字母
+        pkg = caps.catalog.experts.get(item.id)
         rows.append({
-            "id": item.id, "name": item.name, "avatar": "",
+            "id": item.id, "name": item.name,
+            "avatar": pkg.avatar if pkg is not None else "",
             "description": item.description, "source": "installed",
             "installed": True, "enabled": states[item.id], "builtin": True,
+            # 与 list_my_skills 同口径：hidden 即"管理员已下架"，前端据此禁启停
+            "revoked": pol["visibility"] == "hidden",
         })
     return rows
 

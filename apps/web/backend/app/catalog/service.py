@@ -220,7 +220,8 @@ class CapabilityService:
 
         Returns:
             条目字典列表；普通用户视角下 hidden 条目不出现。插件行额外带
-            `config_schema`（配置字段声明，供用户侧市场渲染安装表单）。
+            `config_schema`（配置字段声明，供用户侧市场渲染安装表单）；
+            专家行额外带 `avatar`（头像 emoji，空串表示无头像）。
         """
         states = await self.installs.install_states(user_id, kind)
         rows: list[dict] = []
@@ -247,5 +248,10 @@ class CapabilityService:
             if kind == "plugin":
                 pkg = self.catalog.plugins.get(item.id)
                 row["config_schema"] = list(pkg.config_schema) if pkg is not None else []
+            # 专家行补头像 emoji：卡片有则渲染 emoji、空串走标题首字母兜底；
+            # 技能/插件没有头像概念，同样不加字段
+            elif kind == "expert":
+                pkg = self.catalog.experts.get(item.id)
+                row["avatar"] = pkg.avatar if pkg is not None else ""
             rows.append(row)
         return rows
