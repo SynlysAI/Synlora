@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
+from app.api.deps import Repos
 from app.api.files_api import project_router as project_files_router
 from app.api.files_api import router as files_router
 from app.api.files_api import session_router as session_files_router
@@ -39,10 +40,11 @@ from app.db.repos import (
 from app.db.store import create_store
 from app.plugins import PluginConfigStore, PluginService
 from app.plugins.api import router as plugins_router
-from app.services.agent_service import AgentService
+from app.services.agent_service import AgentService, TooManyRuns, WakeTargetGone
 from app.services.ai4ms_identity import Ai4msIdentityService
 from app.services.expert_service import UserExpertService
 from app.services.job_connectors import JobConnectorRegistry
+from app.services.job_poller import JobPoller
 from app.services.job_service import JobService
 from app.services.project_service import ProjectService
 from app.services.skill_service import SkillService
@@ -119,19 +121,52 @@ async def lifespan(app: FastAPI):
     # AI⁴MS 身份代签：按登录用户为子平台（Spec_Agent 等）代签短效凭证，
     # 解析不到身份（sqlite 本地用户/匿名）时插件回落自身配置的服务 token
     app.state.ai4ms_identity = Ai4msIdentityService(settings)
-    # 后台任务服务（完整装配见 Task 12：轮询器启停与唤醒接线）
-    app.state.job_service = JobService(
-        repo=JobRepo(store), connectors=JobConnectorRegistry(),
-        plugin_config_store=plugin_config_store,
-        ai4ms_identity=app.state.ai4ms_identity)
     app.state.agent_service = AgentService(
         store, settings, app.state.event_repo, app.state.skill_service,
         file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
         capability_service=app.state.capability_service,
         plugin_config_store=plugin_config_store,
         ai4ms_identity=app.state.ai4ms_identity)
+    # 后台任务：连接器注册表（插件在 startup 时注册各自的 kind）→ 任务服务 →
+    # 轮询器。唤醒回调双向接线：JobService → AgentService.wake；
+    # AgentService run 结束 → JobService.drain_pending
+    app.state.job_connectors = JobConnectorRegistry()
+    # repo 聚合（唤醒路径解析会话装配用）：deps.get_repos 与此同源
+    app.state.repos = Repos(
+        provider=app.state.provider_repo, assistant=app.state.assistant_repo,
+        session=app.state.session_repo, run=app.state.run_repo,
+        file=app.state.file_repo, event=app.state.event_repo)
+    app.state.job_service = JobService(
+        repo=JobRepo(store), connectors=app.state.job_connectors,
+        plugin_config_store=plugin_config_store,
+        ai4ms_identity=app.state.ai4ms_identity)
+    app.state.agent_service.set_runtime_deps(
+        app.state.repos, app.state.project_service)
+    app.state.agent_service.set_run_finished_hook(
+        app.state.job_service.drain_pending)
+    app.state.agent_service.set_job_service(app.state.job_service)
+
+    async def _wake_session(session_id: str, text: str, job_id: str) -> None:
+        """任务完成唤醒：起一轮新对话把结果交回模型。
+
+        注意：**不得**捕获 TooManyRuns / WakeTargetGone —— 它们由 JobService
+        解释为"重新入队"与"静默跳过"；在这里吞掉会让通知被静默丢弃。
+        """
+        try:
+            await app.state.agent_service.wake(session_id, text, job_id)
+        except (TooManyRuns, WakeTargetGone):
+            raise
+        except Exception:  # noqa: BLE001 其余失败只记录，不影响轮询循环
+            logger.warning("任务唤醒失败 session=%s job=%s", session_id, job_id,
+                           exc_info=True)
+
+    app.state.job_service.set_wake_callback(_wake_session)
+    app.state.job_service.set_busy_check(app.state.agent_service.is_busy)
+    app.state.job_poller = JobPoller(app.state.job_service)
+    await app.state.job_poller.start()
     await seed_experts(store, index.experts)
     yield
+    await app.state.job_poller.stop()
     await store.close()
 
 

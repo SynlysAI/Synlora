@@ -56,8 +56,10 @@ from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGIS
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
 
 # 技能与平台交互工具：无条件追加到助手白名单（平台能力，不依赖助手自行声明；
-# ask_user=问答回路、file.send=产物交付是宿主注入的交互通道，任何助手都可用）
-SKILL_TOOLS = ("skill.list", "skill.read", "ask_user", "file.send")
+# ask_user=问答回路、file.send=产物交付、job.*=后台任务通道，是宿主注入的
+# 交互通道，任何助手都可用）
+SKILL_TOOLS = ("skill.list", "skill.read", "ask_user", "file.send",
+               "job.submit", "job.status", "job.list", "job.cancel")
 
 # 瞬态事件：每 token 一条，仅 SSE 推送、不落 JSONL/DB（见模块头注释）
 TRANSIENT = {EventType.LLM_DELTA, EventType.REASONING_DELTA}
@@ -123,6 +125,8 @@ class AgentService:
         # 唤醒路径所需的运行时依赖（装配阶段经 set_runtime_deps 注入）
         self._repos: Any = None
         self._project_service: Any = None
+        # 后台任务服务（装配阶段经 set_job_service 注入；None 时 job.* 工具报不可用）
+        self._job_service: Any = None
 
     async def _code_executor(self) -> CodeExecutor:
         """解析（一次）沙箱执行器并缓存。
@@ -450,6 +454,57 @@ class AgentService:
                                                 user["sub"], payload,
                                                 ownership=file_ownership)
 
+            # 工具上下文快照：先落成局部变量，job_handler 需要引用它（把本轮
+            # 的插件配置与代签凭证原样交给任务链路，避免二次解析配置）
+            ctx_extra_snapshot: dict = {
+                # 系统唤醒来源（任务完成唤醒本轮时非空；harness 据此把
+                # user/message 事件标成 job_completed 提示条）
+                "wake_source": wake_source or {},
+                "http_allowed_hosts": self._settings.allowed_hosts,
+                # python.run 执行器（部署级注入，缺省工具回落本机执行）
+                "code_executor": await self._code_executor(),
+                "skills": bodies,
+                "skill_meta": {s["name"]: s["description"] for s in active_skills},
+                # WeKnora 知识检索：连接配置 + 助手绑定的知识库范围（None/空 =
+                # 未绑定，knowledge.search 工具会给出明确报错）
+                "weknora_base_url": self._settings.weknora_base_url,
+                "weknora_api_key": self._settings.weknora_api_key,
+                "knowledge_base_ids": list(
+                    (assistant or {}).get("knowledge_base_ids") or []),
+                # 联网搜索（SearXNG）：地址空 = 未启用，web.search 工具报明确错误
+                "web_search_endpoint": self._settings.assistant_web_search_endpoint,
+                "web_search_api_key": self._settings.assistant_web_search_api_key,
+                # 用户交互工具的宿主回调（ask_user / file.send）与管线强制审批
+                "ask_user_handler": ask_handler,
+                "send_file_handler": send_file_handler,
+                "approval_handler": approval_handler,
+                # 插件配置命名空间（仅注入该用户可见且未被会话级开关排除的
+                # 插件，个人配置优先；核心不认识任何插件专属字段）
+                "plugins": (await self._visible_plugin_configs(
+                                user["sub"], enabled_plugins)
+                            if self._plugin_service is not None else {}),
+                # 按登录用户代签的 AI⁴MS 身份凭证（插件优先用它，取不到则用插件配置里的服务 token）
+                **await self._ai4ms_token_extra(user),
+            }
+
+            async def job_handler(payload: dict) -> ToolResult:
+                """job.* 工具的宿主实现（提交/查询/取消后台任务）。
+
+                Args:
+                    payload: 工具传来的负载（action/kind/params/job_id...）。
+
+                Returns:
+                    工具结果；未注入任务服务时 fail-closed。
+                """
+                if self._job_service is None:
+                    return ToolResult(ok=False, content="后台任务未启用",
+                                      error="no_handler")
+                return await self._job_service.handle(
+                    payload, user=user, session_id=session_id,
+                    ctx_extra=ctx_extra_snapshot)
+
+            ctx_extra_snapshot["job_handler"] = job_handler
+
             session = RunSession(
                 config=AgentConfig(
                     system_prompt=system_prompt,
@@ -460,36 +515,7 @@ class AgentService:
                 event_log=log, user_id=user["sub"], run_id=run_id,
                 hooks=hooks,
                 workspace_root=workspace_root,
-                context_extra={
-                    # 系统唤醒来源（任务完成唤醒本轮时非空；harness 据此把
-                    # user/message 事件标成 job_completed 提示条）
-                    "wake_source": wake_source or {},
-                    "http_allowed_hosts": self._settings.allowed_hosts,
-                    # python.run 执行器（部署级注入，缺省工具回落本机执行）
-                    "code_executor": await self._code_executor(),
-                    "skills": bodies,
-                    "skill_meta": {s["name"]: s["description"] for s in active_skills},
-                    # WeKnora 知识检索：连接配置 + 助手绑定的知识库范围（None/空 =
-                    # 未绑定，knowledge.search 工具会给出明确报错）
-                    "weknora_base_url": self._settings.weknora_base_url,
-                    "weknora_api_key": self._settings.weknora_api_key,
-                    "knowledge_base_ids": list(
-                        (assistant or {}).get("knowledge_base_ids") or []),
-                    # 联网搜索（SearXNG）：地址空 = 未启用，web.search 工具报明确错误
-                    "web_search_endpoint": self._settings.assistant_web_search_endpoint,
-                    "web_search_api_key": self._settings.assistant_web_search_api_key,
-                    # 用户交互工具的宿主回调（ask_user / file.send）与管线强制审批
-                    "ask_user_handler": ask_handler,
-                    "send_file_handler": send_file_handler,
-                    "approval_handler": approval_handler,
-                    # 插件配置命名空间（仅注入该用户可见且未被会话级开关排除的
-                    # 插件，个人配置优先；核心不认识任何插件专属字段）
-                    "plugins": (await self._visible_plugin_configs(
-                                    user["sub"], enabled_plugins)
-                                if self._plugin_service is not None else {}),
-                    # 按登录用户代签的 AI⁴MS 身份凭证（插件优先用它，取不到则用插件配置里的服务 token）
-                    **await self._ai4ms_token_extra(user),
-                },
+                context_extra=ctx_extra_snapshot,
             )
             active.session = session
             t = asyncio.create_task(
@@ -583,6 +609,14 @@ class AgentService:
     def set_run_finished_hook(self, hook: Any) -> None:
         """注入运行结束回调（签名 async (session_id) -> None）。"""
         self._on_run_finished = hook
+
+    def set_job_service(self, service: Any) -> None:
+        """注入后台任务服务（job.* 工具的宿主实现）。
+
+        Args:
+            service: JobService 实例（提供 handle() 分发）。
+        """
+        self._job_service = service
 
     def is_busy(self, session_id: str) -> bool:
         """该会话当前是否有进行中的 run。
