@@ -1603,6 +1603,7 @@ Expected: FAIL — `AttributeError: 'JobService' object has no attribute 'refres
             return await self._repo.update(doc["_id"], {
                 "status": JobStatus.FAILED.value,
                 "error": f"任务类型已不可用: {doc.get('kind')}",
+                "ended_at": time.time(),
             })
         ctx = await self._ctx_for(str(doc.get("user_id", "")),
                                   registered.connector.plugin_id)
@@ -2505,20 +2506,27 @@ Expected: FAIL — `AttributeError: 'JobService' object has no attribute 'set_bu
         return "\n".join(lines)
 ```
 
-并在 `refresh` 内，**状态确实发生变化且新状态是终态**时追加通知与结束时间。把 `refresh` 末尾的 return 改为：
+并在 `refresh` 内，**新状态是终态**时追加唤醒。把 Task 6 留下的这段 return 改为：
 
 ```python
-        updated = await self._repo.update(doc["_id"], {
-            "status": mapped.value, "last_raw_status": str(raw)})
+        fields: dict = {"status": mapped.value, "last_raw_status": str(raw)}
         if is_terminal(mapped):
-            updated = await self._repo.update(doc["_id"], {"ended_at": time.time()})
+            fields["ended_at"] = time.time()
+        updated = await self._repo.update(doc["_id"], fields)
+        if is_terminal(mapped):
+            # 终态：唤醒会话，让 agent 继续整合结果（Task 9 新增）
             await self._notify_wake(updated or doc)
         return updated
 ```
 
-同样，在 `refresh` 中「连接器消失被标记失败」的分支末尾追加通知：
+（注意保留 Task 6 那行"终态唤醒在 Task 9 补"的注释可以删掉——它已经被取代。）
+
+同样，在 `refresh` 中「连接器消失被标记失败」的分支里补唤醒（该分支现在是直接
+return，改为先落库、通知、再返回）：
 
 ```python
+        if registered is None:
+            # 连接器消失（插件被卸载）：任务无法继续跟踪，标记失败并说明原因
             failed = await self._repo.update(doc["_id"], {
                 "status": JobStatus.FAILED.value,
                 "error": f"任务类型已不可用: {doc.get('kind')}",
