@@ -2,6 +2,13 @@
 from .agent import RunSession
 from .compaction import Compactor
 from .events import EventLog
+from .jobs import (
+    ACTIVE_STATUSES,
+    TERMINAL_STATUSES,
+    JobStatus,
+    can_transition,
+    is_terminal,
+)
 from .models.backend import (
     LLMBackend, ModelProviderConfig, OpenAICompatibleBackend, ReasoningDelta,
     TextDelta, ToolCallChunk, Usage,
@@ -27,6 +34,7 @@ from .types import (
 
 __all__ = [
     "RunSession", "EventLog", "Compactor", "derive_messages", "build_system_prompt",
+    "JobStatus", "ACTIVE_STATUSES", "TERMINAL_STATUSES", "can_transition", "is_terminal",
     "ToolRegistry", "tool", "ToolPipeline", "register_builtin_tools",
     "CodeExecutor", "LocalCodeExecutor", "DockerCodeExecutor", "FailingExecutor",
     "DEFAULT_LOCAL_EXECUTOR", "resolve_executor", "run_python",
