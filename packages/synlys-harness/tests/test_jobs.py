@@ -1,8 +1,11 @@
 """后台任务状态机单测。"""
+import json
+
 from synlys_harness.jobs import (
     ACTIVE_STATUSES,
     TERMINAL_STATUSES,
     JobStatus,
+    _ALLOWED_TRANSITIONS,
     can_transition,
     is_terminal,
 )
@@ -51,6 +54,26 @@ def test_running_cannot_go_back_to_pending():
 
 
 def test_status_value_is_string():
-    """状态值即持久化字符串（DB 里存小写短横线形式）。"""
-    assert JobStatus.PENDING.value == "pending"
-    assert JobStatus.COMPLETED.value == "completed"
+    """状态值即持久化字符串（全小写、与成员名一致）。"""
+    for status in JobStatus:
+        assert status.value == status.name.lower()
+        assert isinstance(status.value, str)
+
+
+def test_accepts_plain_strings_from_persistence():
+    """持久层读回的是裸字符串：同状态幂等与流转判断都要正常工作。"""
+    assert can_transition("pending", "pending") is True
+    assert can_transition("pending", "running") is True
+    assert can_transition("running", "pending") is False
+    assert can_transition("completed", "completed") is True
+    assert can_transition("completed", "failed") is False
+
+    # 字面量会被 interning（is 恰好为真），真正复现回归需两个独立字符串实例
+    src, dst = json.loads('"pending"'), json.loads('"pending"')
+    assert src is not dst, "前提：两个内容相同但非同一实例的字符串"
+    assert can_transition(src, dst) is True
+
+
+def test_transition_table_covers_all_states():
+    """流转表必须覆盖全部状态（漏配会静默 fail-closed）。"""
+    assert set(_ALLOWED_TRANSITIONS) == set(JobStatus)
