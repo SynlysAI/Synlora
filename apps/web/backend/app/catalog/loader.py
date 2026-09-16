@@ -50,6 +50,7 @@ class PluginPackage:
         description: 描述。
         directory: 插件目录绝对路径。
         tools_module: 工具模块文件名（相对插件目录）。
+        connectors_module: 连接器模块文件名（相对插件目录）；空串表示不贡献连接器。
         config_schema: 配置字段 schema（驱动前端表单与校验）。
         skills: 插件自带技能名列表。
         expert: 专家模板（None = 本插件不贡献专家）。
@@ -61,6 +62,7 @@ class PluginPackage:
     description: str
     directory: Path
     tools_module: str
+    connectors_module: str = ""   # 连接器模块文件名（空 = 本插件不贡献连接器）
     config_schema: list[dict] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
     expert: dict | None = None
@@ -304,6 +306,7 @@ def _scan_plugins(root: Path) -> dict[str, PluginPackage]:
             description=str(data.get("description") or ""),
             directory=entry,
             tools_module=str(data["tools_module"]),
+            connectors_module=str(data.get("connectors_module") or ""),
             config_schema=list(data.get("config_schema") or []),
             skills=[str(s) for s in (data.get("skills") or [])],
             expert=data.get("expert") or None,
@@ -339,3 +342,39 @@ def load_plugin_tools(package: PluginPackage) -> list[Any]:
         return []
     return [obj for obj in vars(module).values()
             if hasattr(obj, "__tool_definition__")]
+
+
+def load_plugin_connectors(package: PluginPackage) -> list[Any]:
+    """动态导入插件连接器模块并收集模块级 `CONNECTORS` 列表。
+
+    Args:
+        package: 插件包。
+
+    Returns:
+        连接器实例列表；未声明、模块缺失或导入失败时返回空列表并告警。
+    """
+    if not package.connectors_module:
+        return []
+    module_path = package.directory / package.connectors_module
+    if not module_path.is_file():
+        logger.warning("插件 %s 的连接器模块不存在: %s", package.id, module_path)
+        return []
+    # 模块名与工具模块区分（同一插件可同时有 tools.py 与 connectors.py）
+    module_name = f"synlora_plugin_{re.sub(r'[^0-9a-zA-Z_]', '_', package.id)}_connectors"
+    try:
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None or spec.loader is None:
+            logger.warning("插件 %s 连接器模块无法加载: %s", package.id, module_path)
+            return []
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001 插件代码不可信，导入失败不阻断启动
+        sys.modules.pop(module_name, None)
+        logger.warning("插件 %s 连接器模块导入失败: %s", package.id, exc)
+        return []
+    raw = getattr(module, "CONNECTORS", None) or []
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("插件 %s 的 CONNECTORS 不是列表，已忽略", package.id)
+        return []
+    return list(raw)

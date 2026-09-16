@@ -28,18 +28,18 @@ async def test_registry_register_and_get():
     # 映射键做了小写/去空白归一，外部原文可直接查
     assert got.map_status(" DONE ") is JobStatus.COMPLETED
 
-    # status_map 省略 = 未映射任何状态（map_status 恒 None）
+    # status_map 省略 = 回落连接器自带的映射（FakeConnector 自带 FAKE_STATUS_MAP）
     reg.register(make_fake_connector("k2", plugin_id="p2"))
     assert reg.kinds == ["k2", "spec.nmr.forward"]
-    assert reg.get("k2").map_status("done") is None
+    assert reg.get("k2").map_status("done") is JobStatus.COMPLETED
 
 
 async def test_registry_duplicate_kind_rejected():
     """同一 kind 重复注册抛错（防两个插件抢同名任务类型）。"""
     reg = JobConnectorRegistry()
-    reg.register(make_fake_connector("k", plugin_id="p1"), status_map={})
+    reg.register(make_fake_connector("k", plugin_id="p1"))
     with pytest.raises(ValueError):
-        reg.register(make_fake_connector("k", plugin_id="p2"), status_map={})
+        reg.register(make_fake_connector("k", plugin_id="p2"))
 
 
 async def test_registry_unknown_status_keeps_none():
@@ -64,9 +64,9 @@ async def test_registry_rejects_bad_connector_and_empty_kind():
             return "x"
 
     with pytest.raises(ValueError):
-        reg.register(_Incomplete(), status_map={})
+        reg.register(_Incomplete())
     with pytest.raises(ValueError):
-        reg.register(make_fake_connector("  ", plugin_id="p1"), status_map={})
+        reg.register(make_fake_connector("  ", plugin_id="p1"))
     assert reg.kinds == []
 
 
@@ -79,6 +79,8 @@ async def test_registry_rejects_sync_methods():
 
         kind = "sync"
         plugin_id = "p1"
+        # 形状齐全（含 status_map），确保被拦下的是 async 校验而非协议校验
+        status_map = {"done": JobStatus.COMPLETED}
 
         async def submit(self, params, ctx):
             return "x"
@@ -90,7 +92,7 @@ async def test_registry_rejects_sync_methods():
             return True
 
     with pytest.raises(ValueError) as exc:
-        reg.register(_SyncPoll(), status_map={})
+        reg.register(_SyncPoll())
     assert "async" in str(exc.value)
     assert reg.kinds == []
 
@@ -758,3 +760,28 @@ async def test_wake_text_guards_failed_task(store):
         {"_id": "job-x", "kind": "k", "status": JobStatus.COMPLETED.value})
     assert "不要重复提交同一任务" in terminal_text
     assert "可继续调用工具" not in terminal_text
+
+
+async def test_register_falls_back_to_connector_status_map(store):
+    """register 不传 status_map 时回落到连接器自带的 status_map。"""
+    reg = JobConnectorRegistry()
+    conn = make_fake_connector("k", plugin_id="p1", script=["done"])
+    reg.register(conn)
+    assert reg.get("k").map_status("done") is JobStatus.COMPLETED
+
+
+async def test_explicit_status_map_wins_over_connector(store):
+    """显式传 status_map 时以显式为准（兼容既有调用点）。"""
+    reg = JobConnectorRegistry()
+    conn = make_fake_connector("k", plugin_id="p1", script=["done"])
+    reg.register(conn, status_map={"done": JobStatus.FAILED})
+    assert reg.get("k").map_status("done") is JobStatus.FAILED
+
+
+async def test_register_requires_some_status_map(store):
+    """两者都没有则报错（缺映射会让状态永远映射不上、任务永不终结）。"""
+    reg = JobConnectorRegistry()
+    conn = make_fake_connector("k", plugin_id="p1")
+    conn.status_map = {}
+    with pytest.raises(ValueError):
+        reg.register(conn)

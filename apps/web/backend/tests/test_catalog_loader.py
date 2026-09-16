@@ -428,3 +428,70 @@ def test_load_plugin_tools_sanitizes_module_name(tmp_path):
     tools = load_plugin_tools(pkg)
     assert [t.__tool_definition__.name for t in tools] == ["demo.hello"]
     assert "synlora_plugin_spec_agent" in sys.modules
+
+
+def test_plugin_package_declares_connectors_module(tmp_path):
+    """plugin.json 声明 connectors_module 时被解析进包。"""
+    plugin_dir = tmp_path / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.json").write_text(json.dumps({
+        "id": "demo", "name": "Demo", "version": "1.0.0",
+        "tools_module": "tools.py", "connectors_module": "connectors.py",
+    }), encoding="utf-8")
+    index = scan_catalog([tmp_path])
+    assert index.plugins["demo"].connectors_module == "connectors.py"
+
+
+def test_plugin_package_without_connectors_module(tmp_path):
+    """未声明时为空串（表示本插件不贡献连接器）。"""
+    plugin_dir = tmp_path / "plugins" / "plain"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.json").write_text(json.dumps({
+        "id": "plain", "name": "Plain", "version": "1.0.0",
+        "tools_module": "tools.py",
+    }), encoding="utf-8")
+    index = scan_catalog([tmp_path])
+    assert index.plugins["plain"].connectors_module == ""
+
+
+def test_load_plugin_connectors_collects_list(tmp_path):
+    """load_plugin_connectors 收集模块级 CONNECTORS 列表。"""
+    from app.catalog.loader import load_plugin_connectors
+
+    plugin_dir = tmp_path / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "connectors.py").write_text(
+        "class _C:\n"
+        "    kind = 'k'\n"
+        "    plugin_id = 'demo'\n"
+        "CONNECTORS = [_C()]\n",
+        encoding="utf-8")
+    (plugin_dir / "plugin.json").write_text(json.dumps({
+        "id": "demo", "name": "Demo", "version": "1.0.0",
+        "tools_module": "tools.py", "connectors_module": "connectors.py",
+    }), encoding="utf-8")
+    index = scan_catalog([tmp_path])
+    got = load_plugin_connectors(index.plugins["demo"])
+    assert len(got) == 1 and got[0].kind == "k"
+
+
+def test_load_plugin_connectors_missing_or_broken(tmp_path):
+    """未声明连接器 / 模块导入报错，都返回空列表并告警。"""
+    from app.catalog.loader import load_plugin_connectors
+
+    plugin_dir = tmp_path / "plugins" / "demo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.json").write_text(json.dumps({
+        "id": "demo", "name": "Demo", "version": "1.0.0",
+        "tools_module": "tools.py",
+    }), encoding="utf-8")
+    index = scan_catalog([tmp_path])
+    package = index.plugins["demo"]
+    assert load_plugin_connectors(package) == []          # 未声明
+
+    (plugin_dir / "connectors.py").write_text("raise RuntimeError('炸了')",
+                                              encoding="utf-8")
+    broken = PluginPackage(
+        id="demo", name="Demo", version="1.0.0", description="", directory=plugin_dir,
+        tools_module="tools.py", connectors_module="connectors.py")
+    assert load_plugin_connectors(broken) == []           # 导入失败

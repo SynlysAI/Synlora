@@ -33,10 +33,13 @@ class JobConnector(Protocol):
     Attributes:
         kind: 任务类型（如 spec.nmr.forward），全局唯一。
         plugin_id: 归属插件 id（宿主据此在轮询时解析该插件配置）。
+        status_map: 外部状态原文 → 统一状态（注册时的缺省映射来源）。
     """
 
     kind: str
     plugin_id: str
+    status_map: dict[str, JobStatus]
+    """外部状态原文（小写）→ 统一状态。连接器自带词汇表，注册时无需外部传入。"""
 
     async def submit(self, params: dict, ctx: dict) -> str:
         """提交任务。
@@ -117,23 +120,20 @@ class JobConnectorRegistry:
 
         Args:
             connector: 连接器实例。
-            status_map: 外部状态原文 → 统一状态。键在注册时统一归一为
-                小写并去首尾空白，调用方大小写可随意。
+            status_map: 外部状态原文 → 统一状态；缺省回落到连接器自带的
+                `connector.status_map`（状态词汇表本就属于连接器）。键在注册时
+                统一归一为小写并去首尾空白，调用方大小写可随意。
 
         Raises:
-            ValueError: 连接器未实现 JobConnector 协议（形状：kind/plugin_id
-                成员 + submit/poll/cancel 三个方法）、三个方法中有同步 def
-                冒充异步、kind 为空或已被注册。注意 isinstance 只校验成员
-                存在性、不校验方法签名，故此处额外逐个校验必须是 async def，
-                避免插件漏写 async 时拖到运行期 await 才炸（故障形态是任务
-                无声堆积、永不终结，报错点离出错点极远）。
+            ValueError: kind 为空、连接器未实现协议（缺 submit/poll/cancel
+                或它们不是 async def）、未提供状态映射、或该 kind 已被注册。
         """
         kind = str(getattr(connector, "kind", "")).strip()
         if not kind:
             raise ValueError("连接器 kind 不能为空")
         if not isinstance(connector, JobConnector):
             raise ValueError(
-                f"连接器未实现 JobConnector 协议（需 kind/plugin_id 与 "
+                f"连接器未实现 JobConnector 协议（需 kind/plugin_id/status_map 与 "
                 f"submit/poll/cancel 三个异步方法）: {type(connector).__name__}")
         for method in ("submit", "poll", "cancel"):
             if not inspect.iscoroutinefunction(getattr(connector, method)):
@@ -142,8 +142,13 @@ class JobConnectorRegistry:
                     f"{type(connector).__name__}.{method}")
         if kind in self._items:
             raise ValueError(f"任务类型已注册: {kind}")
-        normalized = {str(k).strip().lower(): v
-                      for k, v in (status_map or {}).items()}
+        source = status_map if status_map is not None else getattr(
+            connector, "status_map", None)
+        if not source:
+            raise ValueError(
+                f"连接器 {kind} 未提供状态映射（register 的 status_map 参数或"
+                f" connector.status_map 属性），缺映射会让任务状态永远映射不上")
+        normalized = {str(k).strip().lower(): v for k, v in source.items()}
         self._items[kind] = RegisteredConnector(connector, normalized)
 
     def get(self, kind: str) -> RegisteredConnector | None:
@@ -161,8 +166,9 @@ def _new_external_id() -> str:
     return "fake-" + uuid.uuid4().hex[:8]
 
 
-# FakeConnector 状态脚本的标准映射（注册 fake 连接器时直接用它，
-# 避免手写映射时漏项——漏映射会让该状态被静默忽略、任务永不终结）
+# FakeConnector 状态脚本的标准映射（构造时即挂到实例的 status_map 上，
+# 注册时可省略不传；显式传它能避免手写映射时漏项——漏映射会让状态被
+# 静默忽略、任务永不终结）
 FAKE_STATUS_MAP: dict[str, JobStatus] = {
     "queued": JobStatus.PENDING,
     "doing": JobStatus.RUNNING,
@@ -193,6 +199,8 @@ class FakeConnector:
         """
         self.kind = kind
         self.plugin_id = plugin_id
+        # 自带状态词汇表（与 FAKE_STATUS_MAP 一致；注册时也可显式覆盖）
+        self.status_map = dict(FAKE_STATUS_MAP)
         self._script = list(script or ["done"])
         self._fail_submit = fail_submit
         self._cursor: dict[str, int] = {}
