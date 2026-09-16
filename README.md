@@ -97,6 +97,8 @@ pm2 start ecosystem.config.cjs    # interpreter 已指向 conda 环境 synlysage
 pm2 logs synlys-agent
 ```
 
+**部署硬约束：必须单实例。** 运行时（进行中的 run、SSE 消费队列、待作答 future）是单进程内存态，**`uvicorn` 只能用 `workers=1`、PM2 只能起一个实例**；多副本会让插话（steering）、问答回填与取消失效。当前明确不做 run 状态外置，横向扩展需先改造运行时。另注意 `ecosystem.config.cjs` 中的 `interpreter` 是 conda 环境 python 的绝对路径，换机器部署需同步修改。
+
 ## 配置要点
 
 配置在 `apps/web/backend/.env`（模板见 `.env.example`，全部有默认值）：
@@ -170,12 +172,18 @@ npm run lint
 
 ## 后续路线
 
-按价值与触发条件推进（详见 [docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md](docs/superpowers/plans/2026-09-12-synlysagent-06-backlog-roadmap.md)）：
+当前判断：**Agent 能力面已足够完整**（事件内核 / 工具管线 / steering / 强制审批 / 上下文压缩 / docker 沙箱 / 插件机制 / 能力市场），**薄弱的是产品化运维面**（用量看不清、成本无闸门、用户管不了、数据没备份、部署迁移脆弱）。因此路线按「先补齐多人使用不出事，再纵深能力」排序；其中统一 Job 注册表因近期要推 Spec_Agent 异步任务而单独提前。
 
-- **~~沙箱升级（多用户部署前置）~~**（✅ 0.4.0 完成）：`python.run` 执行器抽象（local/docker 可切换），docker 形态为临时容器 + 资源限额 + 断网，探测失败按 strict 回退或拒绝
-- **AI⁴MS 工具接入（项目立身之本）**：首期（Spec_Agent 核磁三件套，插件化接入）✅ 0.5.0；统一 Job 注册表（异步任务状态机 + 完成通知）→ 5 种谱图解析异步任务 / Poly_Agent / SpecLabOS 设备工作流（后者经强制审批）
-- **能力市场延续项**：用户自建技能与专家 ✅ 0.8.0（落各自 `users/<uid>/`），「市场 / 我的」两栏界面 ✅ 0.9.0（计划 11）、左导航 + 卡片 + 详情页改版 ✅ 0.10.0（计划 12）；导入 / 自建**插件**、按角色 / 按用户白名单的细粒度可见性、插件市场远程下载（首期已上线内置目录 + 管理员策略 + 用户安装 + 启用/停用，见「能力目录（市场）」）
-- **跨会话长期记忆**：工作区级记忆抽取与注入
-- **MCP adapter**：Tool Registry 加 MCP 来源，一次投入换第三方工具生态
-- **多 Agent / SwarmFlow**：声明式 team 装配（出现并行科研场景需求时启动）
-- **动态技能市场 / 双进程运行时**：用量驱动，暂缓
+**近期起点：统一 Job 注册表**（Spec_Agent 异步任务的地基，提交即返回 job_id + 完成自动唤醒 agent）。
+
+| 阶段 | 内容 | 说明 |
+|---|---|---|
+| **A 内测期打磨** | 工具结果 spill · CI 流水线 · 可观测性（结构化日志 / 工具调用审计 / 用量聚合）· 会话导出 Markdown | 每项 0.5~2 天，不依赖外部系统，内测期即可做 |
+| **B 多人用之前必须** | 管理员用户管理页 · LLM 用量配额 · run 崩溃恢复 · 应用容器化 · 备份与数据迁移 | 不做则开放多人有实质风险 |
+| **C 能力纵深** | 统一 Job 注册表（最高优先）→ Spec_Agent 异步任务 → SpecLabOS 设备工作流 → 跨会话长期记忆 → MCP adapter → 多 Agent / SwarmFlow | AI⁴MS 生态接入主线 |
+
+完整计划（含每项的做法与验收标准）见 [docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md](docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md)；06 号 backlog 保留为历史记录。
+
+**已完成的主要演进**：沙箱 Docker 化（0.4.0）· AI⁴MS 首期接入（Spec_Agent 同步三件套 + 按登录用户代签凭证，0.5.0）· 能力市场三层可见性模型（0.6.0）· 内置内容统一 `catalog/`（0.7.0）· 用户自建技能与专家（0.8.0）· 能力中心「市场 / 我的」两栏（0.9.0）· 能力中心左导航 + 卡片 + 详情页改版（0.10.0）。
+
+**当前明确不做**：按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、用户自建插件、双进程 headless 运行时、移动端适配。
