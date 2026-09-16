@@ -475,8 +475,11 @@ def test_load_plugin_connectors_collects_list(tmp_path):
     assert len(got) == 1 and got[0].kind == "k"
 
 
-def test_load_plugin_connectors_missing_or_broken(tmp_path):
-    """未声明连接器 / 模块导入报错，都返回空列表并告警。"""
+def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
+    """连接器加载的四条降级路径各返回空列表并告警（不抛异常、不阻断启动）：
+
+    未声明模块 / 声明了但文件不存在 / 模块导入报错 / CONNECTORS 不是列表。
+    """
     from app.catalog.loader import load_plugin_connectors
 
     plugin_dir = tmp_path / "plugins" / "demo"
@@ -487,11 +490,36 @@ def test_load_plugin_connectors_missing_or_broken(tmp_path):
     }), encoding="utf-8")
     index = scan_catalog([tmp_path])
     package = index.plugins["demo"]
-    assert load_plugin_connectors(package) == []          # 未声明
+    assert load_plugin_connectors(package) == []          # 未声明（空串：本插件不贡献连接器）
 
+    # 声明了模块名但文件不存在：告警并降级（部署漏拷 connectors.py）
+    (plugin_dir / "plugin.json").write_text(json.dumps({
+        "id": "demo2", "name": "Demo2", "version": "1.0.0",
+        "tools_module": "tools.py", "connectors_module": "nope.py",
+    }), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        missing = load_plugin_connectors(scan_catalog([tmp_path]).plugins["demo2"])
+    assert missing == []
+    assert "连接器模块不存在" in caplog.text
+
+    # 模块导入抛异常
     (plugin_dir / "connectors.py").write_text("raise RuntimeError('炸了')",
                                               encoding="utf-8")
     broken = PluginPackage(
         id="demo", name="Demo", version="1.0.0", description="", directory=plugin_dir,
         tools_module="tools.py", connectors_module="connectors.py")
-    assert load_plugin_connectors(broken) == []           # 导入失败
+    assert load_plugin_connectors(broken) == []
+
+    # CONNECTORS 不是列表（插件写成了 dict 等其他类型）：告警并降级
+    caplog.clear()
+    bad = tmp_path / "plugins" / "demo3"
+    bad.mkdir(parents=True)
+    (bad / "connectors.py").write_text("CONNECTORS = {'k': 1}\n", encoding="utf-8")
+    (bad / "plugin.json").write_text(json.dumps({
+        "id": "demo3", "name": "Demo3", "version": "1.0.0",
+        "tools_module": "tools.py", "connectors_module": "connectors.py",
+    }), encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        not_a_list = load_plugin_connectors(scan_catalog([tmp_path]).plugins["demo3"])
+    assert not_a_list == []
+    assert "CONNECTORS 不是列表" in caplog.text

@@ -122,7 +122,8 @@ class JobConnectorRegistry:
             connector: 连接器实例。
             status_map: 外部状态原文 → 统一状态；缺省回落到连接器自带的
                 `connector.status_map`（状态词汇表本就属于连接器）。键在注册时
-                统一归一为小写并去首尾空白，调用方大小写可随意。
+                统一归一为小写并去首尾空白，调用方大小写可随意。空映射
+                （`{}`）视为未提供、直接报错——缺映射会让任务状态永远映射不上。
 
         Raises:
             ValueError: kind 为空、连接器未实现协议（缺 submit/poll/cancel
@@ -135,6 +136,9 @@ class JobConnectorRegistry:
             raise ValueError(
                 f"连接器未实现 JobConnector 协议（需 kind/plugin_id/status_map 与 "
                 f"submit/poll/cancel 三个异步方法）: {type(connector).__name__}")
+        # isinstance 只校验成员存在性、不校验方法签名（runtime_checkable 的
+        # 局限），故额外逐个确认是 async def：插件漏写 async 时若放行，会在
+        # 轮询 await 时才抛 TypeError，而那条路径只累计失败计数、任务永不终结
         for method in ("submit", "poll", "cancel"):
             if not inspect.iscoroutinefunction(getattr(connector, method)):
                 raise ValueError(
