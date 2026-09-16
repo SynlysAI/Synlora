@@ -12,9 +12,12 @@
 agent 整合结果，会话忙则进 `_pending_wake` 排队，等该会话的 run 结束后由
 `drain_pending`（AgentService 的 run 结束回调驱动）补发。
 
-`refresh` 的并发安全：poller 的 tick 与模型调 `job.status` 可能拿到同一份非
-终态快照，靠任务级锁串行化并在锁内重读文档——后到者看到已落库的终态即早返回，
-同一任务只唤醒一次（也不会对同一任务并发调外部 poll）。
+并发安全（`refresh` 与 `cancel` 共用同一把任务级锁）：poller 的 tick、模型调
+`job.status`、用户/模型调 `job.cancel` 可能拿到同一份非终态快照，靠任务级锁
+串行化并在锁内重读文档——后到者看到已落库的终态即早返回，同一任务只唤醒一次
+（也不会对同一任务并发调外部 poll）。`cancel` 同样取锁：连接器取消耗时较长
+（网络 await），不取锁时轮询在窗口内落地的状态会整字段覆盖取消结果（任务从
+cancelled 回退为 running，还会对已取消的任务触发唤醒白起一轮 run）。
 
 Note:
     待唤醒队列为进程内存态（与 ActiveRun/SSE 队列一致）：进程重启会丢失尚未
@@ -506,6 +509,11 @@ class JobService:
     async def cancel(self, job_id: str, *, user_id: str) -> ToolResult:
         """取消任务（已结束的任务拒绝并说明）。
 
+        并发安全：与 `refresh` 共用同一把任务级锁并在锁内重读文档。连接器取消
+        耗时较长（网络 await），不取锁时轮询会在该窗口内落地状态、随后被
+        `_refresh_locked` 的整字段写覆盖（cancelled 回退为 running，任务"复活"
+        继续被轮询）。取锁后取消一定落在最新状态之上，其后轮询看到终态即早返回。
+
         Args:
             job_id: 任务 id。
             user_id: 调用者（非本人 not_found）。
@@ -513,33 +521,41 @@ class JobService:
         Returns:
             工具结果。
         """
-        doc = await self._repo.get(job_id)
-        if doc is None or str(doc.get("user_id")) != user_id:
+        if not job_id:
+            # 工具层已校验非空，此处防御：空串不该造出一把空键锁
             return ToolResult(ok=False, content=f"任务不存在: {job_id}",
                               error="not_found")
-        # 与 describe 同一口径：脏状态（缺失/未知字符串）一律当作"非终态"，
-        # 不裸转换 JobStatus（KeyError/ValueError 会以内部报错文本逃到模型侧）
-        raw_status = str(doc.get("status", ""))
-        if is_terminal(raw_status):
-            return ToolResult(
-                ok=False,
-                content=f"任务已结束（{raw_status}），无需取消。",
-                error="already_finished")
-        registered = self._connectors.get(str(doc.get("kind", "")))
-        accepted = False
-        if registered is not None:
-            ctx = await self._ctx_for(str(doc.get("user_id", "")),
-                                      registered.connector.plugin_id)
-            try:
-                accepted = bool(await registered.connector.cancel(
-                    str(doc.get("external_id", "")), ctx))
-            except Exception:  # noqa: BLE001 取消失败不阻断本地状态收敛
-                _LOGGER.warning("任务取消失败 job=%s", job_id, exc_info=True)
-        await self._repo.update(job_id, {
-            "status": JobStatus.CANCELLED.value,
-            "cancel_accepted": accepted,
-            "ended_at": time.time(),
-        })
+        async with self._lock_for(job_id):
+            # 锁内重读：并发的 refresh 可能刚把任务推进到终态，以最新状态为准
+            doc = await self._repo.get(job_id)
+            if doc is None or str(doc.get("user_id")) != user_id:
+                return ToolResult(ok=False, content=f"任务不存在: {job_id}",
+                                  error="not_found")
+            # 与 describe 同一口径：脏状态（缺失/未知字符串）一律当作"非终态"，
+            # 不裸转换 JobStatus（KeyError/ValueError 会以内部报错文本逃到模型侧）。
+            # 对合法状态而言 is_terminal 即 can_transition(_, CANCELLED) 取反
+            # （流转表里只有终态没有指向 CANCELLED 的出边）。
+            raw_status = str(doc.get("status", ""))
+            if is_terminal(raw_status):
+                return ToolResult(
+                    ok=False,
+                    content=f"任务已结束（{raw_status}），无需取消。",
+                    error="already_finished")
+            registered = self._connectors.get(str(doc.get("kind", "")))
+            accepted = False
+            if registered is not None:
+                ctx = await self._ctx_for(str(doc.get("user_id", "")),
+                                          registered.connector.plugin_id)
+                try:
+                    accepted = bool(await registered.connector.cancel(
+                        str(doc.get("external_id", "")), ctx))
+                except Exception:  # noqa: BLE001 取消失败不阻断本地状态收敛
+                    _LOGGER.warning("任务取消失败 job=%s", job_id, exc_info=True)
+            await self._repo.update(job_id, {
+                "status": JobStatus.CANCELLED.value,
+                "cancel_accepted": accepted,
+                "ended_at": time.time(),
+            })
         note = "已请求取消" if accepted else "已标记取消（外部系统未确认）"
         return ToolResult(ok=True, content=f"任务 {job_id} {note}。",
                           data={"job_id": job_id, "status": "cancelled"})

@@ -514,6 +514,94 @@ async def test_concurrent_refresh_wakes_once(store):
     assert conn.polls == 1
 
 
+async def test_cancel_not_overwritten_by_concurrent_refresh(store):
+    """取消与刷新并发时，取消结果不被轮询覆盖（任务不得从 cancelled 回退）。
+
+    让出型交错（不用 barrier：加锁后对撞会死锁）——poll 反复让出事件循环：
+    未取锁的实现里 cancel 会在让出窗口内把 cancelled 写进库，poll 观察到后
+    仍返回非终态，随后 `_refresh_locked` 的整字段写把 cancelled 覆盖回
+    running（任务"复活"，还会被继续轮询/唤醒）；取锁的实现里 cancel 排在锁上，
+    poll 空转到上限直接返回，cancel 在锁内重读后以最新状态收敛为 cancelled。
+    """
+    import asyncio
+
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    probe: dict = {}
+
+    class SlowPollConnector(FakeConnector):
+        """poll 让出事件循环：取消落库（或空转到上限）后才返回非终态。"""
+
+        async def poll(self, external_id, ctx):
+            for _ in range(200):
+                await asyncio.sleep(0)
+                current = await probe["service"].get(probe["job_id"])
+                if current and current.get("status") == "cancelled":
+                    break  # 未取锁：取消已经落地，本函数随后仍返回非终态
+            return "doing"
+
+    reg.register(SlowPollConnector("k", plugin_id="p1", script=["doing"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    probe["service"] = service
+    probe["job_id"] = job_id
+    doc = await service.get(job_id)
+    # 刷新与取消并发：无论谁先，终态必须是 cancelled（取消是用户显式意图）
+    await asyncio.gather(service.refresh(doc),
+                         service.cancel(job_id, user_id="u1"))
+    final = await service.get(job_id)
+    assert final["status"] == "cancelled"
+    assert woken == []  # 已取消的任务不该被唤醒
+
+
+async def test_cancel_after_concurrent_completion_is_rejected(store):
+    """刷新先落地终态时，排在锁上的取消必须看到最新状态并拒绝（锁内重读）。
+
+    cancel 在锁内重读文档，看到并发 refresh 已落地的 completed 便早返回——
+    既不把已完成的任务拉回 cancelled（终态回退），也不对同一任务重复唤醒。
+    """
+    import asyncio
+
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+
+    class SlowDoneConnector(FakeConnector):
+        """poll 让出事件循环，让并发的 cancel 排到任务锁上后再返回终态。"""
+
+        async def poll(self, external_id, ctx):
+            for _ in range(100):
+                await asyncio.sleep(0)
+            return "done"
+
+    reg.register(SlowDoneConnector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    doc = await service.get(job_id)
+    refreshed, cancelled = await asyncio.gather(
+        service.refresh(doc), service.cancel(job_id, user_id="u1"))
+    assert refreshed["status"] == "completed"
+    assert cancelled.ok is False and cancelled.error == "already_finished"
+    final = await service.get(job_id)
+    assert final["status"] == "completed"  # 取消不得把已完成的任务拉回 cancelled
+    assert woken == [job_id]  # 完成唤醒仍只发生一次
+
+
 async def test_wake_composes_result_text(store):
     """唤醒文本包含任务类型、状态与结果正文（供模型直接整合）。"""
     seen: list[str] = []
