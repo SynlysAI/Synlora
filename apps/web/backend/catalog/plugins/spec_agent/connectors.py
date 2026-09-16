@@ -163,6 +163,40 @@ class SpectraTaskConnector:
             return ""
         return json.dumps(result, ensure_ascii=False)
 
+    async def fetch_error(self, external_id: str, ctx: dict) -> str:
+        """取任务失败原因并格式化为文本（仅失败终态由宿主调用）。
+
+        上游的**状态**接口只给一句 `message: "failed"`，真正的原因（例如
+        "暂不支持Raman的greedy_decode模式"）只在**结果**接口的 `error` 字段里。
+
+        Args:
+            external_id: 上游 task_id。
+            ctx: 连接器上下文。
+
+        Returns:
+            形如 `[50001] 任务执行失败：暂不支持Raman的greedy_decode模式`；
+            上游未提供 error 或请求失败时返回空串（宿主保持字段为空）。
+        """
+        base_url, headers = self._conn(ctx)
+        async with self._client(REQUEST_TIMEOUT_S) as client:
+            try:
+                resp = await client.get(
+                    f"{base_url}/api/v1/tasks/{external_id}/result", headers=headers)
+            except httpx.HTTPError:
+                return ""  # 取失败原因失败不阻断状态流转（宿主只记日志）
+        data = self._unwrap(resp, "取任务失败原因", raise_on_error=False) or {}
+        err = data.get("error")
+        if not err:
+            return ""
+        if not isinstance(err, dict):
+            return str(err)
+        code = str(err.get("error_code") or "").strip()
+        text = "：".join(p for p in (str(err.get("error_message") or "").strip(),
+                                     str(err.get("error_detail") or "").strip()) if p)
+        if not text:
+            text = json.dumps(err, ensure_ascii=False)
+        return f"[{code}] {text}" if code else text
+
     async def cancel(self, external_id: str, ctx: dict) -> bool:
         """取消任务。
 

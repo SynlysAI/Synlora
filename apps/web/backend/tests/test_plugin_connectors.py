@@ -244,3 +244,40 @@ async def test_cancel_returns_false(connectors):
     """上游无取消接口 → cancel 返回 False（本地仍收敛为 cancelled）。"""
     nmr = next(c for c in connectors if c.kind == "spec.task.nmr")
     assert await nmr.cancel("T-9", {"config": {"base_url": "http://spec.test"}}) is False
+
+
+async def test_fetch_error_formats_upstream_error(connectors, monkeypatch):
+    """fetch_error 把上游 error 对象格式化为可读文本（失败原因的唯一来源）。
+
+    上游状态接口的 message 只是一句 "failed"，真正的原因在结果接口的
+    error 字段里——不回填的话用户与模型在平台侧只看得到一个 failed。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "code": 0, "message": "ok",
+            "data": {"task_id": "T-9", "status": "FAILED", "result": None,
+                     "error": {"error_code": "50001",
+                               "error_message": "任务执行失败",
+                               "error_detail": "暂不支持Raman的greedy_decode模式"}}})
+
+    module = _load_module()
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(handler))
+    raman = next(c for c in connectors if c.kind == "spec.task.raman")
+    text = await raman.fetch_error("T-9", {"config": {"base_url": "http://spec.test"}})
+    assert "50001" in text
+    assert "暂不支持Raman的greedy_decode模式" in text
+
+
+async def test_fetch_error_empty_when_no_error_payload(connectors, monkeypatch):
+    """上游没给 error 时返回空串（宿主保持 error 字段为空，不写噪音）。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "code": 0, "message": "ok",
+            "data": {"task_id": "T-9", "status": "SUCCESS",
+                     "result": {"a": 1}, "error": None}})
+
+    module = _load_module()
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(handler))
+    raman = next(c for c in connectors if c.kind == "spec.task.raman")
+    text = await raman.fetch_error("T-9", {"config": {"base_url": "http://spec.test"}})
+    assert text == ""

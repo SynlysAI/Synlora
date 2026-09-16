@@ -1010,3 +1010,82 @@ async def test_refresh_passes_workspace_root_to_connector(store):
         ctx_extra={"workspace_root": "/w/from-submit"})
     await service.refresh(await service.get(submitted.data["job_id"]))
     assert seen[-1]["workspace_root"] == "/w/from-submit"
+
+
+async def test_refresh_fetches_error_on_failure(store):
+    """失败终态回填连接器给出的失败原因（否则 job.status 只有个 failed）。"""
+    class FailConnector(FakeConnector):
+        async def fetch_error(self, external_id, ctx):
+            return "[50001] 任务执行失败：暂不支持Raman的greedy_decode模式"
+
+    service, reg = _job_service(store)
+    reg.register(FailConnector("k", plugin_id="p1", script=["failed"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "failed"
+    assert "greedy_decode" in doc["error"]
+
+
+async def test_refresh_without_fetch_error_leaves_error_empty(store):
+    """连接器未实现 fetch_error 时错误字段保持空（不报错）。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["failed"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "failed"
+    assert not doc.get("error")
+
+
+async def test_fetch_error_failure_does_not_break_transition(store):
+    """取失败原因本身出错时只告警，状态照常落地。"""
+    class BrokenErrConnector(FakeConnector):
+        async def fetch_error(self, external_id, ctx):
+            raise RuntimeError("取错误详情炸了")
+
+    service, reg = _job_service(store)
+    reg.register(BrokenErrConnector("k", plugin_id="p1", script=["failed"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "failed"
+    assert not doc.get("error")
+
+
+async def test_wake_text_includes_failure_reason(store):
+    """唤醒文本带上失败原因（模型据此解释，而不是拿旧文档猜）。"""
+    seen: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        seen.append(text)
+
+    class FailConnector(FakeConnector):
+        async def fetch_error(self, external_id, ctx):
+            return "暂不支持Raman的greedy_decode模式"
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    reg.register(FailConnector("k", plugin_id="p1", script=["failed"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert "greedy_decode" in seen[0]
+
+
+async def test_status_shows_failure_reason(store):
+    """job.status 摘要里能看到失败原因（用户与模型都不该只看到一个 failed）。"""
+    class FailConnector(FakeConnector):
+        async def fetch_error(self, external_id, ctx):
+            return "暂不支持Raman的greedy_decode模式"
+
+    service, reg = _job_service(store)
+    reg.register(FailConnector("k", plugin_id="p1", script=["failed"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    await service.refresh(await service.get(job_id))
+    result = await service.handle({"action": "status", "job_id": job_id},
+                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert "greedy_decode" in result.content

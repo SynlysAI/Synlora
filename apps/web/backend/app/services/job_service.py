@@ -498,26 +498,29 @@ class JobService:
                 doc = fresh
             return await self._refresh_locked(doc)
 
-    async def _fetch_result(self, connector: Any, external_id: str,
-                            ctx: dict) -> str:
-        """取任务结果（连接器未实现或取回失败时返回空串）。
+    async def _fetch_optional(self, connector: Any, hook: str, external_id: str,
+                              ctx: dict) -> str:
+        """调用连接器的可选取数能力（未实现或失败时返回空串）。
 
         Args:
             connector: 连接器实例。
+            hook: 方法名（连接器协议未定义者，用 getattr 探测以不破坏既有
+                连接器的 isinstance 校验）。
             external_id: 外部任务 id。
             ctx: 连接器调用上下文。
 
         Returns:
-            结果文本；失败时空串（只告警，不影响状态落地与唤醒）。
+            文本；连接器未实现该方法、或调用失败时返回空串（只告警，不影响
+            状态落地与唤醒）。
         """
-        fetch = getattr(connector, "fetch_result", None)
+        fetch = getattr(connector, hook, None)
         if not callable(fetch):
             return ""
         try:
             return str(await fetch(external_id, ctx) or "")
-        except Exception:  # noqa: BLE001 取结果失败不阻断状态流转
-            _LOGGER.warning("取任务结果失败 job_external_id=%s", external_id,
-                            exc_info=True)
+        except Exception:  # noqa: BLE001 取数失败不阻断状态流转
+            _LOGGER.warning("连接器取数失败 hook=%s external_id=%s",
+                            hook, external_id, exc_info=True)
             return ""
 
     async def _refresh_locked(self, doc: dict) -> dict | None:
@@ -576,10 +579,21 @@ class JobService:
         updated = await self._repo.update(doc["_id"], fields)
         if mapped is JobStatus.COMPLETED:
             # 成功终态回填结果：唤醒文本带上它，模型才不用反问用户
-            result = await self._fetch_result(registered.connector,
-                                              str(doc.get("external_id", "")), ctx)
+            result = await self._fetch_optional(
+                registered.connector, "fetch_result",
+                str(doc.get("external_id", "")), ctx)
             if result:
                 updated = await self._repo.update(doc["_id"], {"result": result})
+        elif mapped is JobStatus.FAILED:
+            # 失败终态回填上游给出的失败原因：上游状态接口的 message 往往只是
+            # "failed"，真正的原因（如"暂不支持Raman的greedy_decode模式"）在结果
+            # 接口的 error 字段里。不回填的话，job.status 与唤醒文本都只有一个
+            # "failed"，模型只能凭空猜原因（实测它会拿工作区旧文档瞎归因）
+            reason = await self._fetch_optional(
+                registered.connector, "fetch_error",
+                str(doc.get("external_id", "")), ctx)
+            if reason:
+                updated = await self._repo.update(doc["_id"], {"error": reason})
         if is_terminal(mapped):
             # 终态：唤醒会话，让 agent 继续整合结果
             await self._notify_wake(updated or doc)
