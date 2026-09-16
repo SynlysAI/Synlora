@@ -94,6 +94,20 @@ conda run -n synlysagent python docker/spec-agent/mint_token.py --username <账�
 
 脚本自动读 Spec_Agent 的 `AUTH_SECRET` / `AUTH_MONGODB_URI`（默认 `E:/github_project/Spec_Agent/backend/.env`，可用 `--env-file` 指定），Mongo 不可达时可用 `--user-id/--username/--role` 直接指定账号。签出的 token 粘进管理后台「插件」页 → Spec_Agent → 配置 → **访问凭证**（保存即生效，无需重启；轮换时重跑脚本覆盖即可）。
 
+## 后台任务（Job 注册表）
+
+长耗时作业（谱图解析等）走统一的异步任务机制，避免占满对话 step：
+
+- **提交**：模型调用 `job.submit(kind, params, label)`，宿主经连接器提交到子平台后**立即返回 job_id**，不阻塞本轮对话。
+- **轮询**：进程内 `JobPoller` 每 5 秒把未完成任务的状态从子平台同步回来（`app/services/job_poller.py`）。agent 侧不轮询，避免浪费 step。
+- **唤醒**：任务进入终态（completed/failed/cancelled）时自动向所属会话注入一条系统消息并起新一轮对话，模型据此整合结果并向用户汇报；会话正忙则先排队，等本轮结束后补发。
+- **状态机**：`pending → running → completed/failed/cancelled`（harness `jobs.py`）；子平台状态由连接器映射，**未映射或查询失败一律保持原状态**，不倒退、不误判失败。
+- **连接器**：新增一个子平台的异步任务 = 在插件内实现 `JobConnector`（`submit`/`poll`/`cancel` + 状态映射）并注册到 `JobConnectorRegistry`，宿主零改动。当前 registry 在 lifespan 中创建（**无插件扩展点，只能运行期注册**；`FakeConnector` 供测试与本地演示）。
+- **查询**：`GET /api/v1/jobs`（当前用户，可按 `session_id` 过滤）、`GET /api/v1/jobs/{job_id}`；提交与取消不单独开 API，只经对话工具（单一入口）。
+- **`job.*` 是平台交互工具**：与 `ask_user`/`file.send` 一样无条件追加到助手白名单，因此配了工具白名单的专家（如「谱图解析专家」）同样可用。
+
+**单实例前提**：轮询器与待唤醒队列都是进程内状态，与既有的 `workers=1` 约束一致；多副本会导致同一任务被重复轮询与重复唤醒。待唤醒队列为内存态，进程重启会丢失尚未补发的完成通知（已接受）。
+
 ## 能力目录与可见性（市场机制）
 
 **设计原则：内置项随仓库走，可见性由策略控制，用户安装只写记录。** 「专家 / 技能 / 插件」统一纳入能力目录（`app/catalog/`），三层模型如下（参考 jiuwen 的目录分层 + DSH 的配置分层）：

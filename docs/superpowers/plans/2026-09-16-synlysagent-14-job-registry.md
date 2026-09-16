@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 / pydantic v2 / FastAPI / asyncio（`DocumentStore` sqlite+mongodb 双后端）/ pytest（`asyncio_mode = "auto"`）；conda 环境 `synlysagent`。
 
-**执行进度（分支 `feat/job-registry`）**：Task 1–5 ✅ 完成；Task 6 起待做。分支上的实现以代码为准，本文档中嵌入的代码块已随审查修正同步。
+**执行进度（分支 `feat/job-registry`）**：Task 1–14 ✅ 全部完成，逐任务通过 spec 与代码质量两轮审查。
 
 **执行期的接线约定（审查中发现的真实坑，重跑本文档时必须遵守）**：
 - Task 5 已定义公开的 `refresh` / `cancel` 占位，Task 6 **只替换函数体**，不得新增同名方法（否则 `describe` 可能继续调旧的恒 None 实现，而测试直调新方法会全绿通过）
@@ -16,6 +16,20 @@
 - Task 2 的测试 tripwire 依赖 fake 脚本首态映射出**不同于 pending** 的状态，否则断言不会真正变红
 
 **范围说明（重要）:** 本计划**不含**真实 Spec_Agent 异步接口对接（那是 C2）。为让本计划可独立端到端验收，Task 4 提供一个**测试用 Connector**（`FakeConnector`，纯内存，不依赖外部系统），并在测试中用它跑通"提交 → 轮询 → 完成唤醒"全链路。
+
+## 执行记录：落地时对本文档的修正
+
+编码期经两轮审查（spec 合规 + 代码质量）发现并修正了以下偏差。**重跑本文档时必须按这里为准**：
+
+1. **`resolve_session_runtime` 改用显式参数**（`settings, project_service, repos, doc, user`），不再鸭子类型取 `app.state`——否则 Task 8 的唤醒路径要注入整个 state 才能取两个属性。
+2. **`refresh` 是公开方法**（Task 5 定义占位、Task 6 替换函数体），不存在私有 `_refresh`；照文档旧稿新增同名方法会造成"describe 调恒 None 占位、测试直调新方法全绿"的静默分叉。
+3. **`TooManyRuns` / `WakeTargetGone` 下沉到 `session_runtime.py`**，由 `agent_service` 重导出；`job_service` 不再从 `agent_service` 导入（消除 job→agent 反向依赖）。
+4. **`AgentService.set_runtime_deps(repos, project_service)`**（不是注入 `app_state`，也不是 `set_repos`）。
+5. **`refresh` 加任务级锁 + 锁内重读**：并发刷新（poller 与模型查 `job.status` 可能同时命中）若不加锁会对同一任务**重复唤醒、重复起 run**。
+6. **唤醒包装函数不得吞 `TooManyRuns`/`WakeTargetGone`**：它们被 `JobService._wake_now` 用来决定"重新入队"与"静默跳过"，在包装里 `except Exception` 会静默丢弃通知。
+7. **`FAKE_STATUS_MAP`**：注册 `FakeConnector` 时用它而非手写映射（漏项会让状态被静默忽略、任务永不终结）。
+8. **前端没有 compaction 提示可参考**：`session/compaction` 只有类型声明、无渲染分支，本任务的提示条是项目里第一个"系统提示"元素；底色不能用 `--sa-alias-bg-layer-1`（浅色等于页面底色，白底白条）。
+9. **前端分流标志用 `kind`** 而非 `job_id` 是否存在（前端模型里是 `systemWake`，不再投影 `job_id`）。
 
 ---
 
@@ -84,7 +98,7 @@ class JobConnector(Protocol):
 - Modify: `packages/synlys-harness/src/synlys_harness/__init__.py`
 - Test: `packages/synlys-harness/tests/test_jobs.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `packages/synlys-harness/tests/test_jobs.py`：
 
@@ -171,7 +185,7 @@ def test_transition_table_covers_all_states():
     assert set(_ALLOWED_TRANSITIONS) == set(JobStatus)
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd packages/synlys-harness
@@ -179,7 +193,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_jobs.py
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'synlys_harness.jobs'`
 
-- [ ] **Step 3: 实现状态机**
+- [x] **Step 3: 实现状态机**
 
 创建 `packages/synlys-harness/src/synlys_harness/jobs.py`：
 
@@ -245,7 +259,7 @@ def is_terminal(status: JobStatus) -> bool:
     return status in TERMINAL_STATUSES
 ```
 
-- [ ] **Step 4: 导出符号**
+- [x] **Step 4: 导出符号**
 
 修改 `packages/synlys-harness/src/synlys_harness/__init__.py`，在既有 import 段落中加入（保持文件现有排序风格）：
 
@@ -261,7 +275,7 @@ from .jobs import (
 
 并在 `__all__`（若存在）中加入对应名字；若该文件不使用 `__all__`，则跳过这一步。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 cd packages/synlys-harness
@@ -269,7 +283,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_jobs.py
 ```
 Expected: 7 passed
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add packages/synlys-harness/src/synlys_harness/jobs.py packages/synlys-harness/src/synlys_harness/__init__.py packages/synlys-harness/tests/test_jobs.py
@@ -287,7 +301,7 @@ git commit -m "harness 新增后台任务状态机
 - Modify: `packages/synlys-harness/src/synlys_harness/tools/builtin.py`
 - Test: `packages/synlys-harness/tests/test_builtin.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `packages/synlys-harness/tests/test_builtin.py` 中：
 1. 把顶部 import 改为 `from synlys_harness.types import ToolContext, ToolResult`（新增 ToolResult）。
@@ -357,7 +371,7 @@ async def test_job_submit_forwards_payload(tmp_path):
     assert seen[0]["tool_call_id"] == "tc-9"
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd packages/synlys-harness
@@ -365,7 +379,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_builtin
 ```
 Expected: FAIL — `test_all_registered` 断言不符（缺 4 个 job 工具），3 个新测试报工具不存在
 
-- [ ] **Step 3: 实现四个工具**
+- [x] **Step 3: 实现四个工具**
 
 先在 `packages/synlys-harness/src/synlys_harness/tools/builtin.py` 顶部做两处准备：
 
@@ -507,7 +521,7 @@ async def job_cancel(ctx: ToolContext, args: dict) -> ToolResult:
     })
 ```
 
-- [ ] **Step 4: 注册到内置工具表**
+- [x] **Step 4: 注册到内置工具表**
 
 修改同文件末尾的 `register_builtin_tools`：
 
@@ -527,7 +541,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         registry.register(fn)
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 cd packages/synlys-harness
@@ -535,7 +549,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_builtin
 ```
 Expected: 全绿（含 3 个新测试）
 
-- [ ] **Step 6: 全量回归**
+- [x] **Step 6: 全量回归**
 
 ```bash
 cd packages/synlys-harness
@@ -543,7 +557,7 @@ conda run -n synlysagent --no-capture-output python -m pytest -v
 ```
 Expected: 全绿（新增工具不应影响既有用例）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add packages/synlys-harness/src/synlys_harness/tools/builtin.py packages/synlys-harness/tests/test_builtin.py
@@ -562,7 +576,7 @@ git commit -m "harness 新增 job.submit/status/list/cancel 四个内置工具
 - Modify: `apps/web/backend/app/db/repos.py`
 - Test: `apps/web/backend/tests/test_repos.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `apps/web/backend/tests/test_repos.py` 末尾追加：
 
@@ -609,7 +623,7 @@ async def test_job_repo_update_status(store):
 > 不依赖墙钟前进（严格 `>` 在时钟粒度粗的平台上会 flaky）。
 > 同时确保已 import `JobRepo`（加到既有 `from app.db.repos import ...` 行）。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -617,7 +631,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_repos.p
 ```
 Expected: FAIL — `ImportError: cannot import name 'JobRepo'`
 
-- [ ] **Step 3: 加集合与索引**
+- [x] **Step 3: 加集合与索引**
 
 修改 `apps/web/backend/app/db/store.py` 的 `COLLECTION_INDEXES`，在 `user_capabilities` 之后加一行：
 
@@ -631,7 +645,7 @@ Expected: FAIL — `ImportError: cannot import name 'JobRepo'`
 > 是 no-op），所以趁集合还空着就不加。同理不提 `created_at`/`updated_at`：sqlite 的
 > 索引列一律以 TEXT 落地，按时间排序会退化成字典序，排序只能在 Python 侧做。
 
-- [ ] **Step 4: 加 JobRepo**
+- [x] **Step 4: 加 JobRepo**
 
 在 `apps/web/backend/app/db/repos.py` 末尾追加：
 
@@ -645,7 +659,7 @@ class JobRepo(BaseRepo):
 > 说明：状态过滤不走 store 的 `filters`（sqlite 后端为单值等值匹配），
 > 活跃态筛选在 `JobService.list_active()` 里用 Python 侧判定，保持双后端一致。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -653,7 +667,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_repos.p
 ```
 Expected: 加上 3 个新用例后全绿
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add apps/web/backend/app/db/store.py apps/web/backend/app/db/repos.py apps/web/backend/tests/test_repos.py
@@ -671,7 +685,7 @@ git commit -m "宿主新增 jobs 集合与 JobRepo
 - Create: `apps/web/backend/app/services/job_connectors.py`
 - Test: `apps/web/backend/tests/test_job_service.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `apps/web/backend/tests/test_job_service.py`：
 
@@ -736,7 +750,7 @@ async def test_fake_connector_submit_failure():
         await conn.submit({}, ctx={})
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -744,7 +758,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.services.job_connectors'`
 
-- [ ] **Step 3: 实现连接器协议与注册表**
+- [x] **Step 3: 实现连接器协议与注册表**
 
 创建 `apps/web/backend/app/services/job_connectors.py`：
 
@@ -989,7 +1003,7 @@ def make_fake_connector(kind: str, plugin_id: str = "fake",
                          fail_submit=fail_submit)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -997,7 +1011,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: 5 passed
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/backend/app/services/job_connectors.py apps/web/backend/tests/test_job_service.py
@@ -1021,7 +1035,7 @@ git commit -m "新增任务连接器协议与注册表
 > 手写漏项会让对应状态被静默忽略、任务永不终结。下面的用例里若见到手写映射，
 > 等价于 `FAKE_STATUS_MAP` 的子集，两种写法都可通过。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `apps/web/backend/tests/test_job_service.py` 末尾追加：
 
@@ -1129,7 +1143,7 @@ async def test_status_of_foreign_job_is_not_visible(store):
     assert other.ok is False and other.error == "not_found"
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -1137,7 +1151,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.services.job_service'`
 
-- [ ] **Step 3: 实现 JobService 骨架**
+- [x] **Step 3: 实现 JobService 骨架**
 
 创建 `apps/web/backend/app/services/job_service.py`：
 
@@ -1422,7 +1436,7 @@ class JobService:
         return " | ".join(parts)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -1430,7 +1444,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: 11 passed（Task 4 的 5 个 + 本任务的 6 个）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/backend/app/services/job_service.py apps/web/backend/tests/test_job_service.py
@@ -1461,7 +1475,7 @@ git commit -m "新增 JobService：任务提交与查询
 > - 替换 `cancel` 时把 `not_implemented` 的占位实现整段删掉
 - Test: `apps/web/backend/tests/test_job_service.py`（追加）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 追加到 `apps/web/backend/tests/test_job_service.py`：
 
@@ -1565,7 +1579,7 @@ async def test_cancel_terminal_job_is_rejected(store):
 
 > 测试里用到 `FakeConnector`，请在文件头补 `from app.services.job_connectors import FakeConnector`。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -1573,7 +1587,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: FAIL — `AttributeError: 'JobService' object has no attribute 'refresh'`
 
-- [ ] **Step 3: 实现 refresh / cancel**
+- [x] **Step 3: 实现 refresh / cancel**
 
 在 `apps/web/backend/app/services/job_service.py` 的 `_render` 之前插入：
 
@@ -1673,7 +1687,7 @@ Expected: FAIL — `AttributeError: 'JobService' object has no attribute 'refres
                           data={"job_id": job_id, "status": "cancelled"})
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -1681,7 +1695,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: 17 passed
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/backend/app/services/job_service.py apps/web/backend/tests/test_job_service.py
@@ -1701,7 +1715,7 @@ git commit -m "JobService 补状态流转与取消
 - Modify: `apps/web/backend/app/api/sessions_api.py:398-447`
 - Test: `apps/web/backend/tests/test_session_runtime.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `apps/web/backend/tests/test_session_runtime.py`：
 
@@ -1814,7 +1828,7 @@ def project_service(store, tmp_path):
     return ProjectService(store, str(tmp_path))
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -1822,7 +1836,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_session
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.services.session_runtime'`
 
-- [ ] **Step 3: 实现解析函数**
+- [x] **Step 3: 实现解析函数**
 
 创建 `apps/web/backend/app/services/session_runtime.py`：
 
@@ -1942,7 +1956,7 @@ async def resolve_session_runtime(state: Any, repos: Any, doc: dict,
         workspace_root=workspace_root, ownership={"session_id": str(doc["_id"])})
 ```
 
-- [ ] **Step 4: 让 sessions_api 复用它**
+- [x] **Step 4: 让 sessions_api 复用它**
 
 修改 `apps/web/backend/app/api/sessions_api.py`：
 1. 删除本文件内的 `_resolve_provider` 函数（第 53-84 行整段）。
@@ -1965,7 +1979,7 @@ from app.services.session_runtime import resolve_session_runtime
 
 并删除不再使用的 import（若 `ModelProviderConfig` 与 `_validate_provider` 在本文件其他地方仍有使用则保留；`_validate_provider` 仍被 `create_session`/`update_session` 使用，保留）。
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -1973,7 +1987,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_session
 ```
 Expected: 全绿（含既有发消息链路回归）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add apps/web/backend/app/services/session_runtime.py apps/web/backend/app/api/sessions_api.py apps/web/backend/tests/test_session_runtime.py
@@ -1991,7 +2005,7 @@ git commit -m "抽出会话运行装配解析（发消息与任务唤醒共用�
 - Modify: `apps/web/backend/app/services/agent_service.py`
 - Test: `apps/web/backend/tests/test_agent_wake.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `apps/web/backend/tests/test_agent_wake.py`：
 
@@ -2097,7 +2111,7 @@ async def session_doc(store):
     })
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -2105,7 +2119,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_agent_w
 ```
 Expected: FAIL — `AttributeError: 'AgentService' object has no attribute 'is_busy'`
 
-- [ ] **Step 3: 实现三处改动**
+- [x] **Step 3: 实现三处改动**
 
 在 `apps/web/backend/app/services/agent_service.py` 中：
 
@@ -2280,7 +2294,7 @@ def job_wake_kind(wake_source: dict) -> str:
     return "job_completed" if wake_source.get("job_id") else ""
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -2292,7 +2306,7 @@ conda run -n synlysagent --no-capture-output python -m pytest -v
 ```
 Expected: 两个仓库全绿
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/backend/app/services/agent_service.py packages/synlys-harness/src/synlys_harness/agent.py packages/synlys-harness/src/synlys_harness/jobs.py apps/web/backend/tests/test_agent_wake.py
@@ -2311,7 +2325,7 @@ git commit -m "AgentService 支持空闲判定、系统唤醒与运行结束回�
 - Modify: `apps/web/backend/app/services/job_service.py`
 - Test: `apps/web/backend/tests/test_job_service.py`（追加）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 追加到 `apps/web/backend/tests/test_job_service.py`：
 
@@ -2404,7 +2418,7 @@ async def test_wake_composes_result_text(store):
     assert "completed" in seen[0]
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -2412,7 +2426,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: FAIL — `AttributeError: 'JobService' object has no attribute 'set_busy_check'`
 
-- [ ] **Step 3: 实现唤醒与队列**
+- [x] **Step 3: 实现唤醒与队列**
 
 在 `apps/web/backend/app/services/job_service.py` 的 `__init__` 中追加字段：
 
@@ -2536,7 +2550,7 @@ return，改为先落库、通知、再返回）：
             return failed
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -2544,7 +2558,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_ser
 ```
 Expected: 21 passed
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/backend/app/services/job_service.py apps/web/backend/tests/test_job_service.py
@@ -2563,7 +2577,7 @@ git commit -m "任务终态唤醒会话：空闲立即注入，忙则排队
 - Create: `apps/web/backend/app/services/job_poller.py`
 - Test: `apps/web/backend/tests/test_job_poller.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `apps/web/backend/tests/test_job_poller.py`：
 
@@ -2637,7 +2651,7 @@ async def test_start_stop_loop(store):
     assert poller.running is False
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -2645,7 +2659,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_pol
 ```
 Expected: FAIL — `ModuleNotFoundError: No module named 'app.services.job_poller'`
 
-- [ ] **Step 3: 实现轮询器**
+- [x] **Step 3: 实现轮询器**
 
 创建 `apps/web/backend/app/services/job_poller.py`：
 
@@ -2732,7 +2746,7 @@ class JobPoller:
                 _LOGGER.warning("刷新任务失败 job=%s", doc.get("_id"), exc_info=True)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -2740,7 +2754,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_job_pol
 ```
 Expected: 3 passed
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add apps/web/backend/app/services/job_poller.py apps/web/backend/tests/test_job_poller.py
@@ -2759,7 +2773,7 @@ git commit -m "新增任务轮询器：后台同步未完成任务状态
 - Modify: `apps/web/backend/app/main.py`（注册路由）
 - Test: `apps/web/backend/tests/test_jobs_api.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `apps/web/backend/tests/test_jobs_api.py`：
 
@@ -2823,7 +2837,7 @@ async def test_get_unknown_job_404(client, user_headers):
 > `client` 是 `httpx.AsyncClient`（ASGI 直连），故测试函数必须 `async def` 且 `await client.get(...)`；
 > `user_headers` / `app` 为 conftest 既有 fixture（`user_headers` 的 sub 固定为 `u-user`）。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -2831,7 +2845,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_jobs_ap
 ```
 Expected: FAIL — 404（路由不存在）
 
-- [ ] **Step 3: 实现 API**
+- [x] **Step 3: 实现 API**
 
 创建 `apps/web/backend/app/api/jobs_api.py`：
 
@@ -2924,7 +2938,7 @@ async def get_job(job_id: str, request: Request,
     return docs
 ```
 
-- [ ] **Step 4: 注册路由**
+- [x] **Step 4: 注册路由**
 
 在 `apps/web/backend/app/main.py` 中：
 1. import 段加：
@@ -2939,7 +2953,7 @@ from app.api.jobs_api import router as jobs_router
     app.include_router(jobs_router)
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -2947,7 +2961,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_jobs_ap
 ```
 Expected: 4 passed
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add apps/web/backend/app/api/jobs_api.py apps/web/backend/app/services/job_service.py apps/web/backend/app/main.py apps/web/backend/tests/test_jobs_api.py
@@ -2967,7 +2981,7 @@ git commit -m "新增任务查询 API
 - Modify: `apps/web/backend/app/services/agent_service.py`（注入 job_handler）
 - Test: `apps/web/backend/tests/test_jobs_e2e.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `apps/web/backend/tests/test_jobs_e2e.py`：
 
@@ -3037,7 +3051,7 @@ async def test_poller_started_with_app(app):
 
 > `app` 用 conftest 既有 fixture（已跑 lifespan、sqlite store、真实 Fernet key）。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 ```bash
 cd apps/web/backend
@@ -3045,7 +3059,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_jobs_e2
 ```
 Expected: FAIL — `AttributeError: 'State' object has no attribute 'job_service'`
 
-- [ ] **Step 3: 装配 JobService / Poller / 回调**
+- [x] **Step 3: 装配 JobService / Poller / 回调**
 
 修改 `apps/web/backend/app/main.py` 的 `lifespan`，在 `app.state.agent_service = AgentService(...)` **之后**追加：
 
@@ -3182,7 +3196,7 @@ SKILL_TOOLS = ("skill.list", "skill.read", "ask_user", "file.send",
     app.state.agent_service.set_job_service(app.state.job_service)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 ```bash
 cd apps/web/backend
@@ -3190,7 +3204,7 @@ conda run -n synlysagent --no-capture-output python -m pytest tests/test_jobs_e2
 ```
 Expected: 2 passed
 
-- [ ] **Step 5: 全量回归**
+- [x] **Step 5: 全量回归**
 
 ```bash
 cd apps/web/backend
@@ -3198,7 +3212,7 @@ conda run -n synlysagent --no-capture-output python -m pytest -v
 ```
 Expected: 全绿（含既有 411+ 用例）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add apps/web/backend/app/main.py apps/web/backend/app/services/agent_service.py apps/web/backend/tests/test_jobs_e2e.py
@@ -3235,7 +3249,7 @@ git commit -m "装配后台任务链路：连接器注册表 + 任务服务 + �
 
 **背景（照抄对象）:** 系统注入的唤醒消息在事件流里就是一条 `user/message`，若直接按用户气泡渲染，用户会看到"自己"发了一条莫名其妙的指令。因此按 `payload.kind === 'job_completed'` 分流，渲染成居中的浅色提示条。参考实现是 Jiuwen `ChatPanel/MessageItem.tsx` 的 system 分支（`flex justify-center` + 药丸 + `bg-secondary border border-border`）；本项目此前没有这类元素（事件类型里的 `session/compaction` 只有类型声明，前端无渲染分支），这是第一个。
 
-- [ ] **Step 1: 给视图模型加标记**
+- [x] **Step 1: 给视图模型加标记**
 
 修改 `apps/web/frontend/src/stores/chat.ts` 第 25 行：
 
@@ -3249,7 +3263,7 @@ git commit -m "装配后台任务链路：连接器注册表 + 任务服务 + �
     }
 ```
 
-- [ ] **Step 2: 投影时识别唤醒消息**
+- [x] **Step 2: 投影时识别唤醒消息**
 
 修改同文件 `reduceEvent` 的 `user/message` 分支（第 212-219 行）：
 
@@ -3272,7 +3286,7 @@ git commit -m "装配后台任务链路：连接器注册表 + 任务服务 + �
     }
 ```
 
-- [ ] **Step 3: 渲染提示条**
+- [x] **Step 3: 渲染提示条**
 
 修改 `apps/web/frontend/src/components/chat/UserMessage.tsx`，把组件改为按 `systemWake` 分流（新增一个内部展示分支，沿用既有 token）：
 
@@ -3326,7 +3340,7 @@ export default function UserMessage({ text, attachments, systemWake }: UserMessa
 > 提示条**只显示固定文案**，不回显 `text`（唤醒文本是给模型的指令，对用户没有意义）；
 > 完整的任务结论由紧随其后的助手回答承载。
 
-- [ ] **Step 4: 传递标记**
+- [x] **Step 4: 传递标记**
 
 修改 `apps/web/frontend/src/components/chat/MessageList.tsx` 第 214 行：
 
@@ -3340,7 +3354,7 @@ export default function UserMessage({ text, attachments, systemWake }: UserMessa
       )}
 ```
 
-- [ ] **Step 5: 类型检查与构建**
+- [x] **Step 5: 类型检查与构建**
 
 ```bash
 cd apps/web/frontend
@@ -3348,7 +3362,7 @@ npm run build
 ```
 Expected: 构建通过（`tsc -b` 无类型错误）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add apps/web/frontend/src/stores/chat.ts apps/web/frontend/src/components/chat/UserMessage.tsx apps/web/frontend/src/components/chat/MessageList.tsx
@@ -3368,7 +3382,7 @@ git commit -m "后台任务完成消息渲染为系统提示条
 - Modify: `docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md`
 - Modify: `apps/web/backend/app/version.py`、`apps/web/frontend/package.json`
 
-- [ ] **Step 1: 后端 README 补任务机制章节**
+- [x] **Step 1: 后端 README 补任务机制章节**
 
 在 `apps/web/backend/README.md` 的「AI⁴MS 子平台接入（插件机制）」章节之后新增一节：
 
@@ -3387,7 +3401,7 @@ git commit -m "后台任务完成消息渲染为系统提示条
 **单实例前提**：轮询器是进程内任务，与既有的 `workers=1` 约束一致；多副本会导致同一任务被重复轮询与重复唤醒。
 ```
 
-- [ ] **Step 2: 根 README 更新路线状态**
+- [x] **Step 2: 根 README 更新路线状态**
 
 在 `README.md` 的「后续路线」三阶段表格下方补一行进展说明：
 
@@ -3401,7 +3415,7 @@ git commit -m "后台任务完成消息渲染为系统提示条
 后台长任务走统一 Job 注册表（提交即返回、完成自动唤醒 agent）。
 ```
 
-- [ ] **Step 3: 更新 13 号文档的勾选状态**
+- [x] **Step 3: 更新 13 号文档的勾选状态**
 
 在 `docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md` 的 C1 章节，把标题行改为带完成标记的形式，并勾选全部子项：
 
@@ -3411,7 +3425,7 @@ git commit -m "后台任务完成消息渲染为系统提示条
 
 （子项 checkbox 逐个改为 `- [x]`。）
 
-- [ ] **Step 4: 升版本号**
+- [x] **Step 4: 升版本号**
 
 C1 是向下兼容的新功能（新增能力，不破坏既有行为）→ 按语义化版本规则升**次版本**：
 
@@ -3420,7 +3434,7 @@ C1 是向下兼容的新功能（新增能力，不破坏既有行为）→ 按�
 
 两处必须一致（前端经 `GET /api/health` 读取后端版本展示，`version.py` 头部注释已声明该约束）。
 
-- [ ] **Step 5: 验证版本口径一致**
+- [x] **Step 5: 验证版本口径一致**
 
 ```bash
 cd E:/agent_projects/Synlora
@@ -3428,7 +3442,7 @@ grep -n "0.11.0-beta.1" apps/web/backend/app/version.py apps/web/frontend/packag
 ```
 Expected: 两个文件各命中一行
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add README.md apps/web/backend/README.md docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md apps/web/backend/app/version.py apps/web/frontend/package.json
@@ -3443,13 +3457,13 @@ git commit -m "文档同步后台任务机制并升至 0.11.0-beta.1
 
 ## 验收清单（全部任务完成后逐条核对）
 
-- [ ] `cd packages/synlys-harness && conda run -n synlysagent python -m pytest -v` 全绿
-- [ ] `cd apps/web/backend && conda run -n synlysagent python -m pytest -v` 全绿
-- [ ] `cd apps/web/frontend && npm run build` 通过
-- [ ] 本地起服务后，用 `FakeConnector` 临时注册一个演示 kind（可写在 `main.py` 装配处的调试分支或测试中），走通：对话里让 agent 提交任务 → 30 秒内（两个 tick 周期）会话中自动出现一条"后台任务已完成"提示条 → agent 自动整合并给出回答
-- [ ] 任务中断验证：提交后立刻 `Ctrl+C` 重启服务 → 重启后轮询器继续跟踪该任务 → 完成时仍能唤醒（会话不卡死）
-- [ ] 跨用户隔离：用户 B 无法通过 `GET /api/v1/jobs/{id}` 看到用户 A 的任务（404）
-- [ ] 版本口径：`GET /api/health` 返回 `0.11.0-beta.1`，与前端展示一致
+- [x] `cd packages/synlys-harness && conda run -n synlysagent python -m pytest -v` 全绿
+- [x] `cd apps/web/backend && conda run -n synlysagent python -m pytest -v` 全绿
+- [x] `cd apps/web/frontend && npm run build` 通过
+- [x] 本地起服务后，用 `FakeConnector` 临时注册一个演示 kind（可写在 `main.py` 装配处的调试分支或测试中），走通：对话里让 agent 提交任务 → 30 秒内（两个 tick 周期）会话中自动出现一条"后台任务已完成"提示条 → agent 自动整合并给出回答
+- [x] 任务中断验证：提交后立刻 `Ctrl+C` 重启服务 → 重启后轮询器继续跟踪该任务 → 完成时仍能唤醒（会话不卡死）
+- [x] 跨用户隔离：用户 B 无法通过 `GET /api/v1/jobs/{id}` 看到用户 A 的任务（404）
+- [x] 版本口径：`GET /api/health` 返回 `0.11.0-beta.1`，与前端展示一致
 
 ---
 
