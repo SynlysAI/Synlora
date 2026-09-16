@@ -17,7 +17,8 @@ interface BrandMarkProps {
 export default function BrandMark({ size = 28, className }: BrandMarkProps) {
   return (
     <img
-      src="/logo.svg"
+      // ?v 与 favicon 同步升版：图标更新后强制浏览器重取（绕开 img 缓存）
+      src="/logo.svg?v=5"
       width={size}
       height={size}
       alt=""
