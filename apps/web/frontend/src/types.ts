@@ -186,6 +186,20 @@ export interface CapabilityDetail {
   experts?: Array<{ id: string; name: string }>
   /** 仅插件：注册的工具名。 */
   tools?: string[]
+  /** 仅插件：个人配置里非敏感字段的当前值（用于编辑表单预填；未安装/已下架时不返回）。 */
+  config?: Record<string, string>
+  /** 仅插件：个人配置里敏感字段是否已存值（true = 表单留空即保持不变）。 */
+  secrets_set?: Record<string, boolean>
+}
+
+/** 插件个人配置快照（对应 PUT /me/plugins/{id}/config 的响应，与详情里的同名字段同形）。 */
+export interface PluginConfigSnapshot {
+  kind: 'plugin'
+  id: string
+  /** 非敏感字段的当前值（敏感字段永不回传）。 */
+  config: Record<string, string>
+  /** 敏感字段是否已配置。 */
+  secrets_set: Record<string, boolean>
 }
 
 /** 会话元数据文档。 */

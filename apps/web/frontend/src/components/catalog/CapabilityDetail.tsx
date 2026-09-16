@@ -7,7 +7,7 @@
  *
  * 动作按 origin 四态分支：
  * - market      → 安装（插件先弹配置框）
- * - installed   → 启用/停用 + 卸载
+ * - installed   → 编辑配置（仅声明了 config_schema 的插件）+ 启用/停用 + 卸载
  * - mine        → 编辑 + 删除
  * - builtin     → 普通用户只读；管理员给「在管理后台编辑」跳转
  */
@@ -21,7 +21,12 @@ import { useRouterStore } from '@/routing/router'
 import type { CapabilityKind } from '@/routing/route'
 import type { CapabilityDetail as Detail, CatalogItem, MyCapability } from '@/types'
 import { CardBadge } from './CapabilityCard'
-import { ExpertModal, PluginInstallModal, SkillModal } from './CapabilityModals'
+import {
+  ExpertModal,
+  PluginEditConfigModal,
+  PluginInstallModal,
+  SkillModal,
+} from './CapabilityModals'
 
 /** 类型展示名。 */
 const KIND_LABEL: Record<CapabilityKind, string> = {
@@ -123,6 +128,8 @@ export default function CapabilityDetail({
   const [busy, setBusy] = useState(false)
   const [editing, setEditing] = useState<MyCapability | null | undefined>(undefined)
   const [configuring, setConfiguring] = useState<CatalogItem | null>(null)
+  // 插件个人配置编辑（详情页：非敏感字段预填自 detail.config，敏感字段留空保持原值）
+  const [editingConfig, setEditingConfig] = useState(false)
 
   /** 拉取详情（写操作后也走它刷新）。 */
   const refresh = useCallback(async () => {
@@ -172,14 +179,14 @@ export default function CapabilityDetail({
 
   if (loading) {
     return (
-      <div className="mx-auto w-full max-w-[1200px] px-6 py-6 text-[13px] text-[var(--sa-alias-label-caption)]">
+      <div className="mx-auto w-full max-w-[1400px] px-12 pt-8 pb-10 text-sm text-[var(--sa-alias-label-caption)]">
         加载中…
       </div>
     )
   }
   if (error || !detail) {
     return (
-      <div className="mx-auto flex w-full max-w-[1200px] flex-col items-start gap-3 px-6 py-6">
+      <div className="mx-auto flex w-full max-w-[1400px] flex-col items-start gap-3 px-12 pt-8 pb-10">
         <button type="button" onClick={goBack} className={actionClass}>← 返回</button>
         <p className="text-[13px] text-[var(--sa-alias-state-error-primary)]">{error || '条目不存在'}</p>
         <button type="button" onClick={() => void refresh()} className={actionClass}>重试</button>
@@ -199,11 +206,11 @@ export default function CapabilityDetail({
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1200px] px-6 py-6">
+    <div className="mx-auto w-full max-w-[1400px] px-12 pt-8 pb-10">
       <button
         type="button"
         onClick={goBack}
-        className="mb-5 flex items-center gap-1.5 text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+        className="mb-5 flex items-center gap-1.5 text-sm text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
       >
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M6.5 3 3 8l3.5 5M13 8H3.2" />
@@ -255,6 +262,16 @@ export default function CapabilityDetail({
           {detail.origin === 'installed' && (
             <>
               {/* 被管理员下架的条目只保留卸载（启用一个已下架的能力没有意义） */}
+              {!detail.revoked && (detail.config_schema?.length ?? 0) > 0 && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setEditingConfig(true)}
+                  className={actionClass}
+                >
+                  编辑配置
+                </button>
+              )}
               {!detail.revoked && (
                 <button
                   type="button"
@@ -367,25 +384,41 @@ export default function CapabilityDetail({
           <>
             <Section title="配置字段">
               {(detail.config_schema ?? []).length === 0 ? (
-                <span className="text-[13px] text-[var(--sa-alias-label-caption)]">该插件无需配置</span>
+                <span className="text-sm text-[var(--sa-alias-label-caption)]">该插件无需配置</span>
               ) : (
-                <div className="flex flex-col gap-2">
-                  {(detail.config_schema ?? []).map((field) => (
-                    <div
-                      key={field.key}
-                      className="flex flex-wrap items-center gap-2 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l1)] px-3 py-2"
-                    >
-                      <span className="text-[13px] text-[var(--sa-alias-label-primary)]">{field.label}</span>
-                      <span className="font-mono text-xs text-[var(--sa-alias-label-caption)]">{field.key}</span>
-                      {field.required && <CardBadge>必填</CardBadge>}
-                      {(detail.config_ready_keys ?? []).includes(field.key) && (
-                        <CardBadge>系统默认已就绪</CardBadge>
-                      )}
-                      {field.description && (
-                        <span className="w-full text-xs text-[var(--sa-alias-label-caption)]">{field.description}</span>
-                      )}
-                    </div>
-                  ))}
+                <div className="flex flex-col gap-4">
+                  {(detail.config_schema ?? []).map((field) => {
+                    const ready = (detail.config_ready_keys ?? []).includes(field.key)
+                    const marks = [
+                      field.required ? '必填' : null,
+                      ready ? '系统默认已就绪' : null,
+                      // 个人已存值的敏感字段只给标记（明文不回显）；保存后刷新详情即更新
+                      field.secret && (detail.secrets_set ?? {})[field.key] ? '已配置' : null,
+                    ].filter(Boolean)
+                    return (
+                      <div key={field.key} className="flex flex-col gap-1">
+                        {/* 字段名用与下方「自带技能」同款的标签，key 用等宽字紧随其后 */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <CardBadge>{field.label}</CardBadge>
+                          <span className="font-mono text-xs text-[var(--sa-alias-label-caption)]">
+                            {field.key}
+                          </span>
+                        </div>
+                        {/* 标记与描述一律走次级文字：同一行里标签与暗字交替会让人分不清
+                            哪是名称哪是说明（标签只用来表示名称） */}
+                        {marks.length > 0 && (
+                          <p className="text-xs text-[var(--sa-alias-label-secondary)]">
+                            {marks.join(' · ')}
+                          </p>
+                        )}
+                        {field.description && (
+                          <p className="text-xs leading-[18px] text-[var(--sa-alias-label-caption)]">
+                            {field.description}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </Section>
@@ -429,6 +462,24 @@ export default function CapabilityDetail({
           onClose={() => setConfiguring(null)}
           onDone={(message) => {
             setConfiguring(null)
+            toast('success', message)
+            void refresh()
+          }}
+        />
+      )}
+
+      {/* 插件个人配置编辑弹窗（已安装；保存后刷新详情，让"已配置"标记与预填值同步） */}
+      {editingConfig && detail.kind === 'plugin' && (
+        <PluginEditConfigModal
+          pluginId={detail.id}
+          name={detail.name}
+          schema={detail.config_schema ?? []}
+          current={detail.config ?? {}}
+          secretsSet={detail.secrets_set ?? {}}
+          readyKeys={detail.config_ready_keys ?? []}
+          onClose={() => setEditingConfig(false)}
+          onDone={(message) => {
+            setEditingConfig(false)
             toast('success', message)
             void refresh()
           }}

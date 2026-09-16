@@ -10,7 +10,7 @@
  * 且重拉失败不算写失败（写已落库，下次加载自愈）。
  */
 import { create } from 'zustand'
-import type { CapabilityDetail, CatalogItem } from '@/types'
+import type { CapabilityDetail, CatalogItem, PluginConfigSnapshot } from '@/types'
 import { api } from '@/api/client'
 
 /** 市场按类型分组存放（三类分别拉取，避免一次请求混排后再在前端切分）。 */
@@ -32,6 +32,16 @@ interface CatalogState {
   uninstall: (kind: CatalogItem['kind'], itemId: string) => Promise<void>
   /** 启用/停用已安装条目，成功后重拉。 */
   setEnabled: (kind: CatalogItem['kind'], itemId: string, enabled: boolean) => Promise<void>
+  /**
+   * 更新已安装插件的个人配置（敏感字段留空 = 保持原值，由后端存储层合并）。
+   *
+   * 不重拉市场列表：配置只影响插件自己的运行参数，市场行的可见性与开关态都不变；
+   * 调用方（详情页）自己 refresh 详情即可拿到最新值。
+   */
+  updatePluginConfig: (
+    pluginId: string,
+    config: Record<string, string>,
+  ) => Promise<PluginConfigSnapshot>
   /** 拉取单个能力详情（详情页与编辑回填共用；不缓存，每次实时读）。 */
   loadDetail: (kind: CatalogItem['kind'], itemId: string) => Promise<CapabilityDetail>
 }
@@ -98,6 +108,11 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     // 写已成功；重拉失败只影响列表刷新，不应报成"操作失败"（下次加载会自愈）
     await get().loadMarket().catch(() => undefined)
   },
+
+  updatePluginConfig: async (pluginId, config) => api<PluginConfigSnapshot>(
+    `/api/v1/me/plugins/${encodeURIComponent(pluginId)}/config`,
+    { method: 'PUT', body: { config } },
+  ),
 
   loadDetail: async (kind, itemId) => {
     // 路径与 PUT 同源（/me/capabilities/{kind}/{item_id}），语义为「我视角下的这个能力」；
