@@ -1,7 +1,7 @@
 ---
 name: spec-spectra
-description: 谱图解析异步任务（NMR / IR / GPC / Raman / LC-MS）。用户要求解析谱图文件、给出谱峰或分子量分布时使用；用 job.submit 提交，完成后系统会通知你。
-version: "1.0"
+description: 谱图解析异步任务（NMR / IR / GPC / Raman / LC-MS）。用户要求解析谱图文件、给出谱峰或分子量分布时使用；用 job.submit 提交，完成后系统会通知你。含五种任务的完整参数表与默认值。
+version: "1.1"
 author: AI⁴MS
 tags:
   - 谱图
@@ -13,60 +13,175 @@ tags:
 把工作区里的**谱图文件**提交给 Spec_Agent 做解析。任务在后台跑，完成后系统会
 自动通知你继续处理——**提交后不要反复查询，也不要重复提交同一文件**。
 
-## 用法
-
-用 `job.submit` 提交，`kind` 按下表选，`params` 至少给 `path`：
+## 调用方法
 
 ```
 job.submit(
-  kind="spec.task.nmr",
-  params={"path": "files/sample.nmr"},
-  label="样品 A 的核磁解析")
+  kind="spec.task.raman",              # 任务类型，见下表
+  params={
+    "path": "files/sample.txt",        # 必填：工作区内的相对路径
+    "params": {"mode": "beam_search"}, # 可选：透传给上游的任务参数对象
+  },
+  label="样品 A 的拉曼解析")            # 可选：给用户看的简述
 ```
 
-- `path`：**工作区内的相对路径**（用 `file.list` 查看有哪些文件）
-- `params.params`（可选）：透传给上游的**任务参数对象**。它是嵌套的 JSON 对象，
-  字段名必须用上游定义的参数名——**不要自己发明字段名**（写
-  `{"function_groups": true}` 这类自造字段不会被识别，上游会忽略它并套用默认值）。
+- `path`（**必填**）：工作区内的相对路径（用 `file.list` 看有哪些文件）。平台会自动
+  把文件上传给上游换取 file_id，你不需要关心上传。
+- `params.params`（可选）：**嵌套的任务参数对象**。里面的字段名必须用上游定义的
+  参数名（见各任务小节）——**不要自己发明字段名**，自造字段会被上游静默忽略并套用
+  默认值。
+- `label`（可选）：任务简述，用于向用户展示。
 
-```
-job.submit(
-  kind="spec.task.raman",
-  params={"path": "files/sample.txt", "params": {"mode": "function_groups"}},
-  label="样品 A 的拉曼解析")
-```
+失败时 `job.status` 会返回上游给出的失败原因（含错误码），先看原因再决定要不要重试。
 
 ## 五种任务
 
-| kind | 谱图类型 | 参数 |
-|---|---|---|
-| `spec.task.nmr` | 核磁共振（NMR） | 可给 `nucleus`、`threshold`、`min_distance` 等峰检测参数 |
-| `spec.task.ir` | 红外（IR） | — |
-| `spec.task.gpc` | 凝胶渗透色谱（GPC） | — |
-| `spec.task.raman` | 拉曼（Raman） | **必须给 `mode`**，见下 |
-| `spec.task.lcms` | 液质联用（LC-MS） | — |
-
-### Raman 必须显式指定 mode（重要）
-
-上游 Raman 的参数默认值是 `mode="greedy_decode"`，**但 Raman 实现不支持它**——
-不传 `mode` 一定失败，返回 `暂不支持Raman的greedy_decode模式`。所以 Raman 任务
-**每次都要在 `params.params.mode` 里显式指定**：
-
-| mode | 说明 |
+| kind | 谱图类型 |
 |---|---|
-| `function_groups` | 官能团归属（实测可跑通；谱图特征不明显时可能返回空结果） |
-| `beam_search` | 候选式解析，可配合 `k` 指定候选数 |
-| `retrieval` | 库检索式解析，可配合 `k` |
+| `spec.task.nmr` | 核磁共振（NMR） |
+| `spec.task.ir` | 红外（IR） |
+| `spec.task.gpc` | 凝胶渗透色谱（GPC） |
+| `spec.task.raman` | 拉曼（Raman） |
+| `spec.task.lcms` | 液质联用（LC-MS） |
 
-**不要传 `greedy_decode`**（Raman 不支持，必失败），也不要原样重试——上一次
-失败的原因会出现在 `job.status` 里，先看原因再决定怎么改。
+---
+
+## spec.task.nmr（核磁）
+
+`params.params` 全部可选，默认值如下：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `nucleus` | `"1H"` | 核类型：`1H` / `13C` |
+| `threshold` | `0.01` | 峰检测阈值（大于 0） |
+| `min_distance` | `0.3` | 最小峰距（大于 0） |
+| `min_prominence` | `0.01` | 最小显著性（大于 0） |
+| `width_multiplier` | `1.0` | 峰宽倍率 |
+| `baseline_degree` | `3` | 基线拟合阶数（1–10） |
+| `smooth_window` | `5` | 平滑窗口（1–99） |
+| `enable_multiplet` | `true` | 是否启用多重峰聚合 |
+| `max_coupling_hz` | `20.0` | 多重峰最大耦合常数阈值 |
+| `detection_range_mode` | `"full"` | `full` / `custom` |
+| `detection_range_min` | 无 | 检测范围下限（`custom` 时给） |
+| `detection_range_max` | 无 | 检测范围上限（`custom` 时给） |
+| `ppm_offset` | `0.0` | ppm 偏移 |
+| `integration_method` | `"voigt"` | 积分方法：`voigt` / `trapezoid` |
+| `internal_standard_policy` | `"auto"` | 内标策略，固定 `auto` |
+| `internal_standard_prefer` | `["solvent","tms"]` | 内标优先级 |
+
+```
+job.submit(kind="spec.task.nmr", params={
+  "path": "files/sample.nmr",
+  "params": {"nucleus": "13C", "threshold": 0.02}})
+```
+
+---
+
+## spec.task.ir（红外）
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `mode` | `"greedy_decode"` | 分析模式，IR 四种都支持 |
+| `k` | `3` | 候选数量（1–10），仅 `beam_search` / `retrieval` 有效 |
+| `x0` | `400.0` | 分析范围起点 |
+| `x1` | `4000.0` | 分析范围终点（必须大于 `x0`） |
+| `transmittance` | `false` | 是否把透射率转成吸光度（仅 IR 支持） |
+| `device` | `"auto"` | 推理设备：`cpu` / `cuda` / `auto` |
+
+`mode` 可选：`greedy_decode`（Top1 结构预测）/ `beam_search`（Top-K 候选）/
+`retrieval`（库检索）/ `function_groups`（官能团识别）。
+
+```
+job.submit(kind="spec.task.ir", params={
+  "path": "files/sample.ir",
+  "params": {"transmittance": true}})
+```
+
+---
+
+## spec.task.raman（拉曼）
+
+参数与 IR 相同，但有**两个必须注意的差异**：
+
+| 参数 | 默认值 | Raman 注意事项 |
+|---|---|---|
+| `mode` | `"greedy_decode"` | **Raman 不支持 `greedy_decode`**，见下 |
+| `k` | `3` | 同 IR |
+| `x0` / `x1` | `400.0` / `4000.0` | 同 IR |
+| `transmittance` | `false` | **Raman 不能设为 `true`**（会报错） |
+| `device` | `"auto"` | 同 IR |
+
+### 提交 Raman 必须显式指定 mode
+
+上游 `mode` 的默认值是 `greedy_decode`，**而 Raman 的实现不支持它**——不传
+`mode` 一定失败，返回 `暂不支持Raman的greedy_decode模式`。所以 Raman 每次都要显式传。
+
+**Raman 当前只有一个可直接使用的模式**：
+
+| mode | 可用性 | 说明 |
+|---|---|---|
+| `function_groups` | ✅ 可用 | 官能团识别 |
+| `retrieval` | ⚠️ 资源齐备但未实测 | 库检索，配合 `k` 用 |
+| `beam_search` | ❌ 当前部署缺模型文件 | 需要 `raman_generation.pth`，该文件在当前部署中缺失 |
+| `greedy_decode` | ❌ 上游不支持 | 就是上面那个默认值 |
+
+**默认就用 `function_groups`**。不要传 `greedy_decode`，也不要原样重试——先看
+`job.status` 返回的失败原因再决定怎么改。
+
+```
+job.submit(kind="spec.task.raman", params={
+  "path": "files/sample.txt",
+  "params": {"mode": "function_groups"}},
+  label="样品 A 的拉曼解析")
+```
+
+---
+
+## spec.task.gpc（凝胶渗透色谱）
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `detect_mode` | `"auto"` | 峰检测模式：`auto` / `manual` |
+| `manual_interval` | 无 | `manual` 时**必填**，形如 `[start, end]`（如 `[7.2, 8.9]`） |
+| `three_color_arw_file_ids` | 无 | 三色曲线文件 ID，传则必须**传满 3 个** |
+| `calibration_file_id` | 无 | 校准文件 ID |
+| `comparison_report_pdf_file_id` | 无 | 对比报告 PDF 文件 ID |
+| `source_file_name` | 无 | 上传的原始文件名（用于三色匹配） |
+
+除 `detect_mode` 外都可省略；用默认值即可跑通常规单文件解析。
+
+```
+job.submit(kind="spec.task.gpc", params={"path": "files/sample.txt"})
+```
+
+---
+
+## spec.task.lcms（液质联用）
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `source_file_name` | 无 | 上传的原始文件名 |
+
+基本无可调参数，通常直接提交即可：
+
+```
+job.submit(kind="spec.task.lcms", params={"path": "files/sample.raw"})
+```
+
+---
+
+## 关于 `spectype`
+
+IR 与 Raman 共用同一套上游接口，`spectype`（`ir` / `raman`）由平台按 `kind`
+自动填好，**你不要自己传**。
 
 ## 其他操作
 
-- 查进度：`job.status(job_id)`（只在用户主动问、或完成通知信息不足时用）
+- 查进度：`job.status(job_id)`（只在用户主动问、或完成通知信息不足时用）。
+  失败时会带上上游给出的错误原因。
 - 列任务：`job.list()`
 - 取消：`job.cancel(job_id)`——**上游无取消接口**，取消是本地停止跟踪，
-  上游任务仍会跑完；所以请在提交前确认文件选对了
+  上游任务仍会跑完；所以请在提交前确认文件与参数选对了
 
 ## 什么时候用同步三件套
 
