@@ -188,7 +188,7 @@ function UserMenu() {
               onClick={(e) => {
                 e.preventDefault()
                 setOpen(false)
-                navigate({ kind: 'capabilities' })
+                navigate({ kind: 'capabilities', capabilityKind: 'expert' })
               }}
               className={itemClass}
             >

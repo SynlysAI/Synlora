@@ -6,20 +6,27 @@
  * - `/`、`/chat`、`/chat/new` → 新对话草稿态
  * - `/chat/<id>`             → 指定会话（URL 是会话选中态的唯一事实源）
  * - `/admin/<tab>`           → 管理后台五页签
- * - `/capabilities`          → 用户侧能力中心（市场，任意登录用户）
+ * - `/capabilities[/<kind>[/<id>]]` → 用户侧能力中心（列表 / 详情，任意登录用户）
  * - 其余                     → not-found
  */
 
 /** 管理页页签（常规/模型服务/助手管理/技能管理/插件）。 */
 export type AdminTab = 'general' | 'models' | 'assistants' | 'skills' | 'plugins'
 
+/** 能力类型（能力中心左导航）。 */
+export type CapabilityKind = 'expert' | 'skill' | 'plugin'
+
 /** 应用路由（判别联合，kind 即分支）。 */
 export type AppRoute =
   | { kind: 'chat-new' }
   | { kind: 'chat-session'; sessionId: string }
   | { kind: 'admin'; tab: AdminTab }
-  | { kind: 'capabilities' }
+  | { kind: 'capabilities'; capabilityKind: CapabilityKind }
+  | { kind: 'capability-detail'; capabilityKind: CapabilityKind; itemId: string }
   | { kind: 'not-found'; pathname: string }
+
+/** 能力类型白名单（解析与构造共用，避免两处口径漂移）。 */
+const CAPABILITY_KINDS = 'expert|skill|plugin'
 
 /**
  * 解析 pathname 为应用路由。
@@ -37,7 +44,18 @@ export function parseAppRoute(pathname: string): AppRoute {
   if (chatMatch) return { kind: 'chat-session', sessionId: decodeURIComponent(chatMatch[1]) }
   const adminMatch = path.match(/^\/admin\/(general|models|assistants|skills|plugins)$/)
   if (adminMatch) return { kind: 'admin', tab: adminMatch[1] as AdminTab }
-  if (path === '/capabilities') return { kind: 'capabilities' }
+  // /capabilities 不带类型时按专家渲染（不重写 URL，旧链接继续可用）
+  if (path === '/capabilities') return { kind: 'capabilities', capabilityKind: 'expert' }
+  const detailMatch = path.match(new RegExp(`^/capabilities/(${CAPABILITY_KINDS})/([^/]+)$`))
+  if (detailMatch) {
+    return {
+      kind: 'capability-detail',
+      capabilityKind: detailMatch[1] as CapabilityKind,
+      itemId: decodeURIComponent(detailMatch[2]),
+    }
+  }
+  const listMatch = path.match(new RegExp(`^/capabilities/(${CAPABILITY_KINDS})$`))
+  if (listMatch) return { kind: 'capabilities', capabilityKind: listMatch[1] as CapabilityKind }
   return { kind: 'not-found', pathname }
 }
 
@@ -54,6 +72,9 @@ export function appRoutePath(route: AppRoute): string {
   if (route.kind === 'chat-new') return '/chat/new'
   if (route.kind === 'chat-session') return `/chat/${encodeURIComponent(route.sessionId)}`
   if (route.kind === 'admin') return `/admin/${route.tab}`
-  if (route.kind === 'capabilities') return '/capabilities'
+  if (route.kind === 'capabilities') return `/capabilities/${route.capabilityKind}`
+  if (route.kind === 'capability-detail') {
+    return `/capabilities/${route.capabilityKind}/${encodeURIComponent(route.itemId)}`
+  }
   return route.pathname
 }

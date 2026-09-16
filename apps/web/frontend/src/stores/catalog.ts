@@ -10,7 +10,7 @@
  * 且重拉失败不算写失败（写已落库，下次加载自愈）。
  */
 import { create } from 'zustand'
-import type { CatalogItem } from '@/types'
+import type { CapabilityDetail, CatalogItem } from '@/types'
 import { api } from '@/api/client'
 
 /** 市场按类型分组存放（三类分别拉取，避免一次请求混排后再在前端切分）。 */
@@ -32,6 +32,8 @@ interface CatalogState {
   uninstall: (kind: CatalogItem['kind'], itemId: string) => Promise<void>
   /** 启用/停用已安装条目，成功后重拉。 */
   setEnabled: (kind: CatalogItem['kind'], itemId: string, enabled: boolean) => Promise<void>
+  /** 拉取单个能力详情（详情页与编辑回填共用；不缓存，每次实时读）。 */
+  loadDetail: (kind: CatalogItem['kind'], itemId: string) => Promise<CapabilityDetail>
 }
 
 export const useCatalogStore = create<CatalogState>((set, get) => ({
@@ -95,5 +97,13 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
     })
     // 写已成功；重拉失败只影响列表刷新，不应报成"操作失败"（下次加载会自愈）
     await get().loadMarket().catch(() => undefined)
+  },
+
+  loadDetail: async (kind, itemId) => {
+    // 路径与 PUT 同源（/me/capabilities/{kind}/{item_id}），语义为「我视角下的这个能力」；
+    // 后端按「自建 → catalog 可见性」解析，前端不需要知道条目来源
+    return api<CapabilityDetail>(
+      `/api/v1/me/capabilities/${kind}/${encodeURIComponent(itemId)}`,
+    )
   },
 }))

@@ -153,6 +153,37 @@ export interface MyCapability {
   revoked?: boolean
 }
 
+/** 能力详情（对应后端 GET /me/capabilities/{kind}/{item_id}）。 */
+export interface CapabilityDetail {
+  kind: 'expert' | 'skill' | 'plugin'
+  id: string
+  name: string
+  description: string
+  /** 来源四态：自建 / 已装 / 内置 / 市场可见未装。 */
+  origin: 'mine' | 'installed' | 'builtin' | 'market'
+  enabled: boolean
+  /** 已安装后被管理员下架（仅该情形出现此键）：详情可读、只能卸载。 */
+  revoked?: boolean
+  /** 仅专家：头像 emoji。 */
+  avatar?: string
+  /** 仅专家：人设提示词。 */
+  system_prompt?: string
+  /** 仅专家：可用工具名（空 = 全部内置工具）。 */
+  tool_whitelist?: string[]
+  /** 仅技能：SKILL.md 正文。 */
+  content?: string
+  /** 仅插件：配置字段声明。 */
+  config_schema?: PluginConfigField[]
+  /** 仅插件：管理员公共配置已就绪的字段名。 */
+  config_ready_keys?: string[]
+  /** 仅插件：自带技能清单。 */
+  skills?: Array<{ name: string; description: string }>
+  /** 仅插件：播种的专家清单。 */
+  experts?: Array<{ id: string; name: string }>
+  /** 仅插件：注册的工具名。 */
+  tools?: string[]
+}
+
 /** 会话元数据文档。 */
 export interface Session {
   _id: string
