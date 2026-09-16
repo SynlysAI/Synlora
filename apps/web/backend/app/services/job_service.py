@@ -108,6 +108,18 @@ class JobService:
         docs = await self._repo.list(filters={"session_id": session_id})
         return sorted(docs, key=lambda d: float(d.get("created_at") or 0))
 
+    async def list_for_user(self, user_id: str) -> list[dict]:
+        """列出某用户的全部任务（创建时间升序）。
+
+        Args:
+            user_id: 用户 sub。
+
+        Returns:
+            任务文档列表。
+        """
+        docs = await self._repo.list(filters={"user_id": user_id})
+        return sorted(docs, key=lambda d: float(d.get("created_at") or 0))
+
     async def list_active(self) -> list[dict]:
         """列出全部未完成任务（轮询入口；终态任务不再纳入）。"""
         active_values = {s.value for s in ACTIVE_STATUSES}

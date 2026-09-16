@@ -12,6 +12,7 @@ from app.api.auth_api import router as auth_router
 from app.api.files_api import project_router as project_files_router
 from app.api.files_api import router as files_router
 from app.api.files_api import session_router as session_files_router
+from app.api.jobs_api import router as jobs_router
 from app.api.knowledge_api import router as knowledge_router
 from app.api.me_api import router as me_router
 from app.api.models_api import router as models_router
@@ -30,6 +31,7 @@ from app.db.repos import (
     AssistantRepo,
     EventRepo,
     FileRepo,
+    JobRepo,
     ProviderRepo,
     RunRepo,
     SessionRepo,
@@ -40,6 +42,8 @@ from app.plugins.api import router as plugins_router
 from app.services.agent_service import AgentService
 from app.services.ai4ms_identity import Ai4msIdentityService
 from app.services.expert_service import UserExpertService
+from app.services.job_connectors import JobConnectorRegistry
+from app.services.job_service import JobService
 from app.services.project_service import ProjectService
 from app.services.skill_service import SkillService
 from app.services.tool_registry import REGISTRY
@@ -115,6 +119,11 @@ async def lifespan(app: FastAPI):
     # AI⁴MS 身份代签：按登录用户为子平台（Spec_Agent 等）代签短效凭证，
     # 解析不到身份（sqlite 本地用户/匿名）时插件回落自身配置的服务 token
     app.state.ai4ms_identity = Ai4msIdentityService(settings)
+    # 后台任务服务（完整装配见 Task 12：轮询器启停与唤醒接线）
+    app.state.job_service = JobService(
+        repo=JobRepo(store), connectors=JobConnectorRegistry(),
+        plugin_config_store=plugin_config_store,
+        ai4ms_identity=app.state.ai4ms_identity)
     app.state.agent_service = AgentService(
         store, settings, app.state.event_repo, app.state.skill_service,
         file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
@@ -144,6 +153,7 @@ def create_app() -> FastAPI:
     app.include_router(plugins_router)
     app.include_router(catalog_router)
     app.include_router(me_router)
+    app.include_router(jobs_router)
 
     @app.get("/api/health")
     async def health() -> dict:
