@@ -577,15 +577,15 @@ async def test_job_repo_create_and_list_by_session(store):
     assert [d["_id"] for d in only_s1] == [a["_id"]]
 
 
-async def test_job_repo_list_active_for_poller(store):
-    """轮询入口能按 user_id 拉取任务（状态过滤由服务层做，避免依赖多值查询）。"""
+async def test_job_repo_list_by_user_includes_all_statuses(store):
+    """按 user_id 过滤不受状态影响（服务层不做服务端状态筛选）。"""
     repo = JobRepo(store)
     await repo.create({"kind": "k", "status": "running", "session_id": "s1",
                        "user_id": "u9", "external_id": "e1"})
     await repo.create({"kind": "k", "status": "completed", "session_id": "s1",
                        "user_id": "u9", "external_id": "e2"})
     docs = await repo.list(filters={"user_id": "u9"})
-    assert len(docs) == 2
+    assert {d["external_id"] for d in docs} == {"e1", "e2"}
 
 
 async def test_job_repo_update_status(store):
@@ -593,14 +593,14 @@ async def test_job_repo_update_status(store):
     repo = JobRepo(store)
     job = await repo.create({"kind": "k", "status": "pending", "session_id": "s1",
                              "user_id": "u1", "external_id": "e1"})
-    before = job["updated_at"]
-    await asyncio.sleep(0.01)
     updated = await repo.update(job["_id"], {"status": "running"})
     assert updated["status"] == "running"
-    assert updated["updated_at"] > before
+    assert updated["updated_at"] >= job["updated_at"]
 ```
 
-> 若该测试文件未 import `asyncio`，在文件头补 `import asyncio`；同时确保已 import `JobRepo`（加到既有 `from app.db.repos import ...` 行）。
+> 用 `>=` 而非严格 `>`：与同文件既有 `test_repo_autofill_and_update_touch` 的范式一致，
+> 不依赖墙钟前进（严格 `>` 在时钟粒度粗的平台上会 flaky）。
+> 同时确保已 import `JobRepo`（加到既有 `from app.db.repos import ...` 行）。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -615,8 +615,14 @@ Expected: FAIL — `ImportError: cannot import name 'JobRepo'`
 修改 `apps/web/backend/app/db/store.py` 的 `COLLECTION_INDEXES`，在 `user_capabilities` 之后加一行：
 
 ```python
-    "jobs": ["session_id", "user_id", "status"],  # 后台任务：按会话/用户/状态检索
+    "jobs": ["session_id", "user_id"],  # 后台任务：按会话/用户检索（状态筛选在服务层，不走 store）
 ```
+
+> 为什么不提 `status`：全链路没有任何一处按状态过滤（`list_active()` 是全表拉取后
+> 在 Python 侧判活跃态——sqlite 的 `filters` 只支持单值等值，多状态查询走不通），
+> 而索引列一旦有存量数据就只能加不能改（`CREATE TABLE IF NOT EXISTS` 对已存在的表
+> 是 no-op），所以趁集合还空着就不加。同理不提 `created_at`/`updated_at`：sqlite 的
+> 索引列一律以 TEXT 落地，按时间排序会退化成字典序，排序只能在 Python 侧做。
 
 - [ ] **Step 4: 加 JobRepo**
 
@@ -624,7 +630,7 @@ Expected: FAIL — `ImportError: cannot import name 'JobRepo'`
 
 ```python
 class JobRepo(BaseRepo):
-    """后台任务记录（kind/status/session_id/user_id/external_id）。"""
+    """后台任务记录（kind/plugin_id/status/session_id/user_id/external_id）。"""
 
     collection = "jobs"
 ```
@@ -646,7 +652,7 @@ Expected: 加上 3 个新用例后全绿
 git add apps/web/backend/app/db/store.py apps/web/backend/app/db/repos.py apps/web/backend/tests/test_repos.py
 git commit -m "宿主新增 jobs 集合与 JobRepo
 
-- jobs 索引列 session_id/user_id/status
+- jobs 索引列 session_id/user_id（状态筛选在服务层，不走 store）
 - 活跃态筛选交给服务层做，保持 sqlite/mongodb 口径一致"
 ```
 
