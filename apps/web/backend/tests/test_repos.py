@@ -1,4 +1,6 @@
 """repository 单测（sqlite 全跑；mongo 随 conftest 参数化跳过）。"""
+import asyncio
+
 import pytest
 from cryptography.fernet import Fernet
 from synlys_harness import EventType, SessionEvent
@@ -6,6 +8,7 @@ from synlys_harness import EventType, SessionEvent
 from app.db.repos import (
     AssistantRepo,
     EventRepo,
+    JobRepo,
     ProjectRepo,
     ProviderRepo,
     RunRepo,
@@ -194,3 +197,43 @@ async def test_project_rename_missing_returns_none(store):
 async def test_project_delete_missing_returns_false(store):
     repo = ProjectRepo(store)
     assert await repo.delete("nope") is False
+
+
+async def test_job_repo_create_and_list_by_session(store):
+    """JobRepo 建档补 _id/created_at，且能按 session_id 过滤列举。"""
+    repo = JobRepo(store)
+    a = await repo.create({
+        "kind": "spec.nmr.forward", "status": "pending",
+        "session_id": "s1", "user_id": "u1", "external_id": "e1",
+    })
+    assert a["_id"]
+    assert a["created_at"] > 0
+    await repo.create({
+        "kind": "spec.nmr.forward", "status": "pending",
+        "session_id": "s2", "user_id": "u1", "external_id": "e2",
+    })
+    only_s1 = await repo.list(filters={"session_id": "s1"})
+    assert [d["_id"] for d in only_s1] == [a["_id"]]
+
+
+async def test_job_repo_list_active_for_poller(store):
+    """轮询入口能按 user_id 拉取任务（状态过滤由服务层做，避免依赖多值查询）。"""
+    repo = JobRepo(store)
+    await repo.create({"kind": "k", "status": "running", "session_id": "s1",
+                       "user_id": "u9", "external_id": "e1"})
+    await repo.create({"kind": "k", "status": "completed", "session_id": "s1",
+                       "user_id": "u9", "external_id": "e2"})
+    docs = await repo.list(filters={"user_id": "u9"})
+    assert len(docs) == 2
+
+
+async def test_job_repo_update_status(store):
+    """状态更新走 BaseRepo.update，自动刷新 updated_at。"""
+    repo = JobRepo(store)
+    job = await repo.create({"kind": "k", "status": "pending", "session_id": "s1",
+                             "user_id": "u1", "external_id": "e1"})
+    before = job["updated_at"]
+    await asyncio.sleep(0.01)
+    updated = await repo.update(job["_id"], {"status": "running"})
+    assert updated["status"] == "running"
+    assert updated["updated_at"] > before

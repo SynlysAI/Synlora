@@ -367,3 +367,9 @@ class FileRepo(BaseRepo):
     """
 
     collection = "files"
+
+
+class JobRepo(BaseRepo):
+    """后台任务记录（kind/status/session_id/user_id/external_id）。"""
+
+    collection = "jobs"
