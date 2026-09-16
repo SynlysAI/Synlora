@@ -70,6 +70,23 @@ def _clip(text: str, limit: int = RESULT_PREVIEW_CHARS) -> str:
     return text[:limit] + f"…（已截断，原文 {len(text)} 字）"
 
 
+def _signing_identity(user: dict) -> dict:
+    """从登录 payload 摘出代签所需的最小身份（落库供轮询路径重签凭证）。
+
+    Args:
+        user: 当前用户 payload（sub/username/role/ai4ms_user_id）。
+
+    Returns:
+        可直接喂给 `Ai4msIdentityService.token_for` 的身份字典。
+    """
+    return {
+        "sub": str(user.get("sub") or ""),
+        "username": str(user.get("username") or ""),
+        "role": str(user.get("role") or ""),
+        "ai4ms_user_id": str(user.get("ai4ms_user_id") or ""),
+    }
+
+
 class JobService:
     """后台任务编排（单例，挂 app.state.job_service）。"""
 
@@ -83,9 +100,9 @@ class JobService:
             connectors: 连接器注册表（kind → 连接器）。
             plugin_config_store: 插件配置存储（轮询时按 job 的 user_id 重新解析
                 配置；None 时轮询只用空配置）。
-            ai4ms_identity: AI⁴MS 代签服务（预留）。注意：轮询路径目前只带
-                user_id，而代签需要完整用户 payload，故 `_ctx_for` 的轮询
-                分支不注入用户凭证——需要凭证的插件须依赖配置里的服务 token。
+            ai4ms_identity: AI⁴MS 代签服务。轮询路径用它按 job 文档里落库的
+                身份**现签**用户凭证（提交时那份只有 1 小时有效期，存下来会过期）；
+                None 时代签不出凭证，需鉴权的插件只能依赖配置里的服务 token。
         """
         self._repo = repo
         self._connectors = connectors
@@ -258,7 +275,8 @@ class JobService:
 
     async def _ctx_for(self, user_id: str, plugin_id: str,
                        ctx_extra: dict | None = None,
-                       workspace_root: str = "") -> dict:
+                       workspace_root: str = "",
+                       identity: dict | None = None) -> dict:
         """构造连接器调用上下文。
 
         Args:
@@ -267,6 +285,8 @@ class JobService:
             ctx_extra: 提交路径可直接给出的运行上下文（含 plugins/ai4ms_token/
                 workspace_root）；为 None 时（轮询路径）从插件配置存储与代签服务重建。
             workspace_root: 轮询路径的工作区根（提交路径从 ctx_extra 取，忽略本参数）。
+            identity: 轮询路径的用户身份（提交时落库到 job 文档的 user_identity），
+                用于现签用户凭证；提交路径忽略本参数。
 
         Returns:
             {"config": {插件配置}, "ai4ms_token": "<token 或空串>",
@@ -287,7 +307,32 @@ class JobService:
             except Exception:  # noqa: BLE001 解密失败等：按无配置处理，任务照常轮询
                 _LOGGER.warning("轮询时解析插件配置失败 plugin=%s user=%s",
                                 plugin_id, user_id, exc_info=True)
-        return {"config": config, "ai4ms_token": "", "workspace_root": workspace_root}
+        return {"config": config,
+                "ai4ms_token": await self._resign_token(identity or {}),
+                "workspace_root": workspace_root}
+
+    async def _resign_token(self, identity: dict) -> str:
+        """按落库的身份现签一个短效用户凭证（签不出时返回空串）。
+
+        每次轮询都重签、而非复用提交时那份：代签凭证只有 1 小时有效期，
+        落库复用会让跑满 1 小时的任务集体 401（这正是"任务永远停在 pending"
+        的成因）。签不出（sqlite 本地用户/匿名/未注入代签服务）时返回空串，
+        插件回落自身配置里的服务 token。
+
+        Args:
+            identity: 提交时摘下的代签身份（sub/username/role/ai4ms_user_id）。
+
+        Returns:
+            代签 token；无身份或代签失败时空串。
+        """
+        if self._ai4ms_identity is None or not identity.get("username"):
+            return ""
+        try:
+            return str(await self._ai4ms_identity.token_for(identity) or "")
+        except Exception:  # noqa: BLE001 代签失败降级为无凭证，不阻断轮询
+            _LOGGER.warning("轮询时代签用户凭证失败 user=%s", identity.get("sub"),
+                            exc_info=True)
+            return ""
 
     # ---------- 工具入口 ----------
 
@@ -310,7 +355,8 @@ class JobService:
                 session_id=session_id, user_id=str(user["sub"]),
                 kind=str(payload.get("kind", "")),
                 params=payload.get("params") or {},
-                label=str(payload.get("label", "")), ctx_extra=ctx_extra)
+                label=str(payload.get("label", "")), ctx_extra=ctx_extra,
+                identity=_signing_identity(user))
         if action == "status":
             return await self.describe(str(payload.get("job_id", "")),
                                        user_id=str(user["sub"]), refresh=True)
@@ -323,7 +369,8 @@ class JobService:
                           error="invalid_arguments")
 
     async def submit(self, *, session_id: str, user_id: str, kind: str,
-                     params: dict, label: str, ctx_extra: dict) -> ToolResult:
+                     params: dict, label: str, ctx_extra: dict,
+                     identity: dict | None = None) -> ToolResult:
         """提交任务：调连接器 → 落库 pending → 立即返回（不等待任务完成）。
 
         Args:
@@ -333,6 +380,7 @@ class JobService:
             params: 任务参数。
             label: 任务简述（给用户看）。
             ctx_extra: 本轮运行上下文（取插件配置与代签 token）。
+            identity: 代签身份（落库供轮询路径现签凭证，见 `_resign_token`）。
 
         Returns:
             ok=True 且 data["job_id"]；失败时错误码为 unknown_job_kind /
@@ -372,6 +420,8 @@ class JobService:
             "params": params,
             # 工作区根落库：轮询路径据此重建 ctx（插件读用户文件上传时用）
             "workspace_root": str((ctx_extra or {}).get("workspace_root") or ""),
+            # 代签身份落库：轮询路径据此现签用户凭证（提交时那份 1 小时就过期）
+            "user_identity": dict(identity or {}),
             "result": "",
             "error": "",
         })
@@ -497,7 +547,8 @@ class JobService:
             return failed
         ctx = await self._ctx_for(str(doc.get("user_id", "")),
                                   registered.connector.plugin_id,
-                                  workspace_root=str(doc.get("workspace_root") or ""))
+                                  workspace_root=str(doc.get("workspace_root") or ""),
+                                  identity=doc.get("user_identity") or {})
         try:
             raw = await registered.connector.poll(str(doc.get("external_id", "")), ctx)
         except JobPollFailed as exc:
@@ -585,7 +636,8 @@ class JobService:
                 ctx = await self._ctx_for(str(doc.get("user_id", "")),
                                           registered.connector.plugin_id,
                                           workspace_root=str(
-                                              doc.get("workspace_root") or ""))
+                                              doc.get("workspace_root") or ""),
+                                          identity=doc.get("user_identity") or {})
                 try:
                     accepted = bool(await registered.connector.cancel(
                         str(doc.get("external_id", "")), ctx))
@@ -608,6 +660,12 @@ class JobService:
             params = json.dumps(doc["params"], ensure_ascii=False, default=str)
             parts.append(f"参数: {_clip(params, 200)}")
         parts.append(f"状态: {doc.get('status')}")
+        failures = int(doc.get("poll_failures") or 0)
+        if failures:
+            # 轮询失败刻意不改状态（防网络抖动误判失败），但必须让模型/用户看见：
+            # 否则 401 这类不可自愈的失败会把任务静默挂成 pending，模型只会说"正常"
+            parts.append(f"轮询失败 {failures} 次: "
+                         f"{_clip(str(doc.get('last_poll_error') or '原因未知'), 200)}")
         if doc.get("error"):
             parts.append(f"错误: {_clip(str(doc['error']), 400)}")
         if doc.get("result"):

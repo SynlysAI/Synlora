@@ -901,6 +901,98 @@ async def test_failed_task_does_not_fetch_result(store):
     assert calls == []
 
 
+class _FakeIdentity:
+    """代签服务替身：记录收到的身份并返回固定 token。"""
+
+    def __init__(self):
+        """初始化空的调用记录。"""
+        self.calls: list[dict] = []
+
+    async def token_for(self, user_payload):
+        """记录身份并返回可辨识的假 token。"""
+        self.calls.append(dict(user_payload))
+        return "tok-resigned"
+
+
+class _CtxSpyConnector(FakeConnector):
+    """记录每次 poll 收到的 ctx（验证轮询路径到底传了什么）。"""
+
+    def __init__(self, *args, **kwargs):
+        """在 FakeConnector 之上加一个 poll 上下文记录器。"""
+        super().__init__(*args, **kwargs)
+        self.polled: list[dict] = []
+
+    async def poll(self, external_id, ctx):
+        """记录上下文后走原逻辑。"""
+        self.polled.append(dict(ctx))
+        return await super().poll(external_id, ctx)
+
+
+async def test_poll_path_resigns_user_credential(store):
+    """轮询路径按落库的身份重签用户凭证，而不是无凭证裸奔。
+
+    回归：早期实现把轮询 ctx 的 ai4ms_token 写死为空串、只回落插件配置里的
+    服务 token；对 spec_agent 这类上游强制鉴权、配置里又没有服务 token 的插件，
+    每次轮询都被 401 拒绝 → 状态永远停在 pending，只累加 poll_failures。
+    """
+    identity = _FakeIdentity()
+    service, reg = _job_service(store, ai4ms_identity=identity)
+    conn = _CtxSpyConnector("k", plugin_id="p1", script=["done"])
+    reg.register(conn)
+    submitted = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1", "username": "alice", "role": "user",
+              "ai4ms_user_id": "u_x"},
+        session_id="s1", ctx_extra={"ai4ms_token": "tok-submit"})
+    # 提交路径用当轮现成的 token，不额外代签
+    assert conn.submitted[0]["ctx"]["ai4ms_token"] == "tok-submit"
+    assert identity.calls == []
+
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "completed"
+    # 轮询路径：现签一个新 token，身份取自提交时落库的字段
+    assert identity.calls[-1]["username"] == "alice"
+    assert identity.calls[-1]["ai4ms_user_id"] == "u_x"
+    assert conn.polled[-1]["ai4ms_token"] == "tok-resigned"
+
+
+async def test_poll_path_without_resigner_keeps_empty_token(store):
+    """未注入代签服务时轮询照常进行、token 为空串（回落插件配置的服务 token）。"""
+    service, reg = _job_service(store)
+    conn = _CtxSpyConnector("k", plugin_id="p1", script=["done"])
+    reg.register(conn)
+    submitted = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "completed"
+    assert conn.polled[-1]["ai4ms_token"] == ""
+
+
+async def test_status_summary_surfaces_poll_failures(store):
+    """轮询失败的次数与原因必须出现在状态摘要里。
+
+    否则模型只看到 "状态: pending" 就对用户说"正常，稍等"——失败被完整藏起来
+    （本次故障中连藏 7 分钟 83 次）。
+    """
+    class FlakyConnector(FakeConnector):
+        async def poll(self, external_id, ctx):
+            raise JobPollFailed("访问凭证无效或已过期")
+
+    service, reg = _job_service(store)
+    reg.register(FlakyConnector("k", plugin_id="p1", script=["queued"]))
+    submitted = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    await service.refresh(await service.get(job_id))
+    result = await service.handle({"action": "status", "job_id": job_id},
+                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    # 计数为 2 = 上面显式 refresh 一次 + job.status 自带刷新一次（describe 的 refresh=True）
+    assert "轮询失败 2 次" in result.content
+    assert "访问凭证无效" in result.content
+
+
 async def test_refresh_passes_workspace_root_to_connector(store):
     """轮询路径的 ctx 带上工作根（提交时落库、刷新时从 job 文档取回）。"""
     seen: list[dict] = []
