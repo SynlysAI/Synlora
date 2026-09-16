@@ -717,15 +717,21 @@ class AgentService:
                 active.ask_future.set_result("（本轮已被新的用户消息中止）")
             if active.session is not None:
                 active.session.cancel()
+        # 等待收尾用**总预算**而非每 run 一份：N 个 run 各等 PREEMPT_TIMEOUT_S
+        # 会把用户消息拖成 N×5s 的阻塞（实测踩过：请求被阻塞 25s）
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + PREEMPT_TIMEOUT_S
         for active in actives:
             if active is None:
                 continue
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
             try:
-                await asyncio.wait_for(active.done.wait(), PREEMPT_TIMEOUT_S)
+                await asyncio.wait_for(active.done.wait(), remaining)
             except TimeoutError:
-                # 收尾超时不阻塞用户的新消息：占位会在 _drive 的 finally 里
-                # 自然释放，此处只告警（真要卡住也已被 wait_for 断开）
-                _LOGGER.warning("抢占 run 收尾超时，按已抢占继续")
+                _LOGGER.warning("抢占 run 收尾超时（超过 %.1fs 预算）",
+                                PREEMPT_TIMEOUT_S)
 
     async def _admit_run(self, session_id: str, *, wake: bool) -> None:
         """会话准入：有占位时先尝试让位，让不掉才拒绝。
@@ -735,23 +741,28 @@ class AgentService:
             wake: 本次是否为后台唤醒轮。
 
         Raises:
-            TooManyRuns: 会话已有不可让位的进行中 run。
+            TooManyRuns: 会话已有不可让位的进行中 run，或可让位者未能在
+                预算内收尾。
 
         Note:
             **调用方必须在返回后同步完成占位**（`session_runs.add(run_id)`，
-            中间不得插入 await）——本方法只在"无占位"时同步返回，占位的原子性
-            由"检查与占位之间无 await"保证（原实现的前提，不能因引入抢占而丢）。
-            循环重查是因为抢占含 await，期间可能有别的调用方抢先占位。
+            中间不得插入 await）——本方法有 await（抢占），占位的原子性由
+            "检查与占位之间无 await"保证（原实现的前提，不能因引入抢占而丢）。
+
+            **只抢占一次、不循环重试**：取消是协作式的（run 若正卡在模型的
+            网络调用里，要等下一个检查点才注意到旗标），循环重试会把用户消息
+            变成一段一段 5s 的无限阻塞。超预算就直接拒绝，让用户稍候重试。
         """
         for_user = not wake
-        while True:
-            session_runs = self._active_by_session.setdefault(session_id, set())
-            if not session_runs:
-                return
-            if not all(self._yieldable(rid, for_user=for_user)
-                       for rid in session_runs):
-                raise TooManyRuns("该会话已有进行中的消息")
-            await self._preempt_runs(list(session_runs))
+        session_runs = self._active_by_session.setdefault(session_id, set())
+        if not session_runs:
+            return
+        if not all(self._yieldable(rid, for_user=for_user)
+                   for rid in session_runs):
+            raise TooManyRuns("该会话已有进行中的消息")
+        await self._preempt_runs(list(session_runs))
+        if self._active_by_session.get(session_id):
+            raise TooManyRuns("会话正忙，请稍候重试")
 
     async def wake(self, session_id: str, text: str, job_id: str = "") -> str:
         """以系统通知文本启动一轮新 run（后台任务完成后唤醒 agent）。

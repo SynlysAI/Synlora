@@ -298,3 +298,28 @@ async def test_wait_for_answer_without_future(agent_service):
     from app.services.agent_service import ActiveRun
 
     assert await agent_service._wait_for_answer(ActiveRun(), 1) == ""  # noqa: SLF001
+
+
+async def test_admit_run_gives_up_after_bounded_wait(agent_service, session_doc,
+                                                     monkeypatch):
+    """让位者迟迟不收尾时，准入在总预算内放弃并拒绝（不无限阻塞用户消息）。
+
+    回归：早期实现用 `while True` 循环重试抢占，每轮各等 PREEMPT_TIMEOUT_S，
+    run 卡在模型的网络调用里时会把用户消息阻塞成多个 5s 段（实测 25s）。
+    """
+    from app.services import agent_service as mod
+    from app.services.agent_service import TooManyRuns
+
+    monkeypatch.setattr(mod, "PREEMPT_TIMEOUT_S", 0.01)
+    service, sid = agent_service, session_doc["_id"]
+
+    class _NeverEnds:
+        """cancel 只置旗标、从不收尾（模拟卡在模型网络调用里的 run）。"""
+
+        def cancel(self):
+            """对应真实实现里 session.cancel() 只置旗标的语义。"""
+
+    active = _register_run(service, sid, "wake-1", kind="wake")
+    active.session = _NeverEnds()
+    with pytest.raises(TooManyRuns):
+        await service._admit_run(sid, wake=False)  # noqa: SLF001
