@@ -1,12 +1,14 @@
 """JobService / JobConnector 单测。"""
 import pytest
 
+from app.db.repos import JobRepo
 from app.services.job_connectors import (
     FAKE_STATUS_MAP,
     JobConnectorRegistry,
     JobSubmitFailed,
     make_fake_connector,
 )
+from app.services.job_service import JobService
 from synlys_harness import JobStatus
 
 
@@ -119,10 +121,6 @@ async def test_fake_status_map_covers_all_script_states():
     assert make_fake_connector("k", script=["queued"]).kind == "k"
 
 
-from app.db.repos import JobRepo
-from app.services.job_service import JobService
-
-
 def _job_service(store, **kwargs):
     """构造最小可用的 JobService（无插件/身份服务，走 FakeConnector）。"""
     reg = JobConnectorRegistry()
@@ -190,7 +188,10 @@ async def test_submit_failure_maps_to_tool_error(store):
 async def test_status_and_list_render_summary(store):
     """status/list 返回人类可读摘要，含任务 ID 与状态。"""
     service, reg = _job_service(store)
-    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued", "done"]),
+    # 脚本首个状态刻意映射为非 pending：一旦 status 真的触发刷新（Task 6），
+    # 首次 poll 会把状态改成 running，下面「状态: pending」的断言即变红，
+    # 把「占位与真实实现分叉」暴露成可见失败，而不是静默通过。
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["doing", "done"]),
                  status_map=FAKE_STATUS_MAP)
     submitted = await service.handle(
         {"action": "submit", "kind": "k", "params": {}, "label": "试算"},
@@ -199,6 +200,7 @@ async def test_status_and_list_render_summary(store):
     one = await service.handle({"action": "status", "job_id": job_id},
                                user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert one.ok is True and job_id in one.content
+    assert "状态: pending" in one.content  # Task 5 契约：status 不触发刷新
     many = await service.handle({"action": "list"},
                                 user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert many.ok is True and "试算" in many.content
@@ -216,3 +218,42 @@ async def test_status_of_foreign_job_is_not_visible(store):
     other = await service.handle({"action": "status", "job_id": job_id},
                                  user={"sub": "u2"}, session_id="s2", ctx_extra={})
     assert other.ok is False and other.error == "not_found"
+
+
+async def test_ctx_for_poll_path_rebuilds_config(store):
+    """轮询路径（无 ctx_extra）从插件配置存储重建配置；解析失败降级为空。"""
+    class _ConfigStore:
+        """最小配置存储替身（记录解析结果或模拟解密失败）。"""
+
+        def __init__(self, fail=False):
+            """fail=True 时解析抛异常（模拟解密失败）。"""
+            self.fail = fail
+
+        async def resolved_for_user(self, user_id, plugin_id):
+            """返回该用户该插件的配置。"""
+            if self.fail:
+                raise RuntimeError("解密失败")
+            return {"base_url": "http://poll", "user": user_id}
+
+    service, reg = _job_service(store, plugin_config_store=_ConfigStore())
+    ctx = await service._ctx_for("u1", "spec_agent", None)  # noqa: SLF001
+    assert ctx["config"]["base_url"] == "http://poll"
+    assert ctx["ai4ms_token"] == ""
+
+    degraded, _ = _job_service(store, plugin_config_store=_ConfigStore(fail=True))
+    ctx2 = await degraded._ctx_for("u1", "spec_agent", None)  # noqa: SLF001
+    assert ctx2["config"] == {}
+
+
+async def test_handle_unknown_action_and_render_list_isolation(store):
+    """未知 action 报 invalid_arguments；list 不泄露他人任务。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued"]),
+                 status_map=FAKE_STATUS_MAP)
+    bad = await service.handle({"action": "nope"}, user={"sub": "u1"},
+                               session_id="s1", ctx_extra={})
+    assert bad.ok is False and bad.error == "invalid_arguments"
+    await service.handle({"action": "submit", "kind": "k", "params": {}},
+                         user={"sub": "u2"}, session_id="s1", ctx_extra={})
+    mine = await service.render_list("s1", user_id="u1")
+    assert mine.data["count"] == 0

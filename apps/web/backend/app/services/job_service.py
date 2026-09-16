@@ -4,11 +4,12 @@
 （任务文档在哪），不认识任何具体子平台。任务完成后的"唤醒 agent 继续处理"
 通过构造期注入的 wake 回调完成（Task 9 提供 set_wake_callback）。
 
-状态流转与取消（Task 6）在本类里以最小可用形态存在：`_refresh` 暂不刷新、
+状态流转与取消（Task 6）在本类里以最小可用形态存在：`refresh` 暂不刷新、
 `cancel` 返回 not_implemented，保证「只查询、不流转」时服务自洽可交付。
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any, Awaitable, Callable
@@ -60,7 +61,9 @@ class JobService:
             connectors: 连接器注册表（kind → 连接器）。
             plugin_config_store: 插件配置存储（轮询时按 job 的 user_id 重新解析
                 配置；None 时轮询只用空配置）。
-            ai4ms_identity: AI⁴MS 代签服务（轮询时重建用户凭证；None 时为空）。
+            ai4ms_identity: AI⁴MS 代签服务（预留）。注意：轮询路径目前只带
+                user_id，而代签需要完整用户 payload，故 `_ctx_for` 的轮询
+                分支不注入用户凭证——需要凭证的插件须依赖配置里的服务 token。
         """
         self._repo = repo
         self._connectors = connectors
@@ -209,8 +212,7 @@ class JobService:
         Args:
             job_id: 任务 id。
             user_id: 调用者（非本人一律 not_found，不泄露存在性）。
-            refresh: 是否先向外部系统拉一次最新状态。刷新实现见 Task 6 的
-                `refresh()`；本任务尚未提供时静默跳过（不影响查询本身）。
+            refresh: 是否先向外部系统拉一次最新状态（终态任务不刷新）。
 
         Returns:
             工具结果；content 为任务摘要。
@@ -219,21 +221,23 @@ class JobService:
         if doc is None or str(doc.get("user_id")) != user_id:
             return ToolResult(ok=False, content=f"任务不存在: {job_id}",
                               error="not_found")
-        if refresh and not is_terminal(JobStatus(doc["status"])):
-            refreshed = await self._refresh(doc)
+        if refresh and not is_terminal(doc.get("status")):
+            refreshed = await self.refresh(doc)
             if refreshed is not None:
                 doc = refreshed
         return ToolResult(ok=True, content=self._render(doc),
-                          data={"job_id": doc["_id"], "status": doc["status"]})
+                          data={"job_id": doc.get("_id", ""),
+                                "status": doc.get("status", "")})
 
-    async def _refresh(self, doc: dict) -> dict | None:
-        """刷新任务的内部入口（Task 6 实现真正的对外查询逻辑）。
+    async def refresh(self, doc: dict) -> dict | None:
+        """向外部系统拉一次最新状态并落库（Task 6 实现真实逻辑）。
 
         Args:
             doc: 任务文档。
 
         Returns:
-            更新后的文档；未实现刷新时返回 None（调用方沿用原文档）。
+            更新后的任务文档；本任务尚未提供刷新时返回 None，
+            调用方沿用原文档。
         """
         return None
 
@@ -254,8 +258,11 @@ class JobService:
     @staticmethod
     def _render(doc: dict) -> str:
         """任务文档 → 一行摘要（给 LLM 与用户看）。"""
-        parts = [f"[{doc['_id']}] {doc.get('label') or doc.get('kind')}",
-                 f"状态: {doc.get('status')}"]
+        parts = [f"[{doc['_id']}] {doc.get('label') or doc.get('kind')}"]
+        if doc.get("params"):
+            params = json.dumps(doc["params"], ensure_ascii=False, default=str)
+            parts.append(f"参数: {_clip(params, 200)}")
+        parts.append(f"状态: {doc.get('status')}")
         if doc.get("error"):
             parts.append(f"错误: {_clip(str(doc['error']), 400)}")
         if doc.get("result"):
