@@ -360,16 +360,38 @@ Expected: FAIL — `test_all_registered` 断言不符（缺 4 个 job 工具）�
 
 - [ ] **Step 3: 实现四个工具**
 
-在 `packages/synlys-harness/src/synlys_harness/tools/builtin.py` 中，`skill_read` 之后、`register_builtin_tools` 之前插入：
+先在 `packages/synlys-harness/src/synlys_harness/tools/builtin.py` 顶部做两处准备：
+
+1. 模块 docstring 目前是枚举式清单（`"""内置工具集：file.* / python.run / ... / skill.*。"""`），早已漏掉 `ask_user` / `file.send`，本次又会漏 `job.*`——枚举注定跟不上新增工具。改成不枚举的描述：
 
 ```python
-def _job_handler(ctx: ToolContext):
-    """取宿主注入的任务处理器（缺失返回 None）。"""
+"""内置工具声明集合：文件读写、受限 Python 执行、知识检索、联网访问、
+技能读取、用户交互（问答/交付）与后台任务。
+
+工具通过 ctx.extra 取宿主注入的通道（ask_user_handler / send_file_handler /
+job_handler 等）；缺少对应通道时工具 fail-closed 返回 no_handler。
+"""
+```
+
+2. 若文件顶部尚未导入 `Callable`，补上（与包内其他模块统一用 `from typing import Callable`）。
+
+然后在 `skill_read` 之后、`register_builtin_tools` 之前插入：
+
+```python
+def _job_handler(ctx: ToolContext) -> Callable | None:
+    """取宿主注入的任务处理器。
+
+    Args:
+        ctx: 工具上下文。
+
+    Returns:
+        宿主注入的 handler；缺失或非可调用时返回 None（调用方据此 fail-closed）。
+    """
     handler = ctx.extra.get("job_handler")
     return handler if callable(handler) else None
 
 
-def _no_jobs() -> ToolResult:
+def _no_job_handler() -> ToolResult:
     """无任务处理器时的统一失败结果。"""
     return ToolResult(ok=False, content="当前运行环境不支持后台任务", error="no_handler")
 
@@ -377,13 +399,17 @@ def _no_jobs() -> ToolResult:
 @tool(
     name="job.submit",
     description=(
-        "提交一个后台长任务（谱图解析、批量计算等耗时数分钟以上的作业）。"
-        "提交后立即返回任务 ID，任务完成时系统会自动通知你继续处理。"
-        "不要重复提交同一请求，也不要在提交后反复调用 job.status 轮询。"
+        "提交一个后台长任务（谱图解析、批量计算等耗时数分钟以上的作业）。\n"
+        "注意：提交后立即返回任务 ID，任务完成时系统会自动通知你继续处理。"
+        "不要重复提交同一请求，也不要在提交后反复调用 job.status 轮询——那样只会浪费步骤。\n"
+        "任务类型与参数格式先用 skill.list / skill.read 查对应技能说明。"
     ),
     parameters={"type": "object", "properties": {
-        "kind": {"type": "string", "description": "任务类型（见技能说明，如 spec.nmr.forward）"},
-        "params": {"type": "object", "description": "任务参数（随任务类型而定）"},
+        "kind": {"type": "string",
+                 "description": "任务类型，如 spec.nmr.forward。不确定时先用 skill.list 找相关技能、"
+                                "再用 skill.read 读其说明，拿到准确的 kind 与参数格式"},
+        "params": {"type": "object",
+                   "description": "任务参数对象，字段随 kind 而定（格式见对应技能的说明）"},
         "label": {"type": "string", "description": "任务简述，用于向用户展示（可选）"},
     }, "required": ["kind", "params"]},
     timeout_s=30,  # 只覆盖"提交"这一次请求；任务本身在后台跑
@@ -392,8 +418,8 @@ async def job_submit(ctx: ToolContext, args: dict) -> ToolResult:
     """提交后台任务（宿主经 ctx.extra 注入 job_handler）。"""
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
-    kind = str(args.get("kind", "")).strip()
+        return _no_job_handler()
+    kind = str(args.get("kind") or "").strip()
     if not kind:
         return ToolResult(ok=False, content="kind 不能为空", error="invalid_arguments")
     params = args.get("params")
@@ -404,7 +430,7 @@ async def job_submit(ctx: ToolContext, args: dict) -> ToolResult:
         "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
         "kind": kind,
         "params": params,
-        "label": str(args.get("label", ""))[:200],
+        "label": str(args.get("label") or "")[:200],
     })
 
 
@@ -423,8 +449,8 @@ async def job_status(ctx: ToolContext, args: dict) -> ToolResult:
     """查询单个任务状态（宿主经 ctx.extra 注入 job_handler）。"""
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
-    job_id = str(args.get("job_id", "")).strip()
+        return _no_job_handler()
+    job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")
     return await handler({
@@ -437,15 +463,14 @@ async def job_status(ctx: ToolContext, args: dict) -> ToolResult:
 @tool(
     name="job.list",
     description="列出本会话提交过的后台任务（含状态与结果摘要），用于汇报整体进度。",
-    parameters={"type": "object", "properties": {}},
+    parameters={"type": "object", "properties": {}, "required": []},
     timeout_s=30,
 )
 async def job_list(ctx: ToolContext, args: dict) -> ToolResult:
     """列出本会话的任务（宿主经 ctx.extra 注入 job_handler）。"""
-    del args  # 无参数
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
+        return _no_job_handler()
     return await handler({
         "action": "list",
         "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
@@ -464,8 +489,8 @@ async def job_cancel(ctx: ToolContext, args: dict) -> ToolResult:
     """取消任务（宿主经 ctx.extra 注入 job_handler）。"""
     handler = _job_handler(ctx)
     if handler is None:
-        return _no_jobs()
-    job_id = str(args.get("job_id", "")).strip()
+        return _no_job_handler()
+    job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")
     return await handler({
@@ -3030,6 +3055,26 @@ from app.services.job_service import JobService
 
 然后 `RunSession(..., context_extra=ctx_extra_snapshot)`。**注意别把 `job_handler` 放进 job_service 自己读的 `ctx_extra`（会形成自引用）**——`JobService.handle` 只读其中的 `plugins` 与 `ai4ms_token`，多余键无害。
 
+**(h) 把 job.* 加入平台工具白名单（否则有白名单的专家拿不到后台任务）**
+
+`agent_service.py:53` 的常量：
+
+```python
+SKILL_TOOLS = ("skill.list", "skill.read", "ask_user", "file.send")
+```
+
+它的语义是「平台交互工具：无条件追加到助手白名单，平台能力不依赖助手自行声明」——后台任务正是同一类宿主注入通道。不改的话，`chat()` 里 `tool_names = [*whitelist, *SKILL_TOOLS]` 会让**所有配了工具白名单的专家拿不到 `job.*`**，而 `catalog/plugins/spec_agent/plugin.json` 的「谱图解析专家」恰恰是显式白名单——异步谱图任务这个旗舰能力会对它静默不可见。
+
+改为：
+
+```python
+# 技能与平台交互工具：无条件追加到助手白名单（平台能力，不依赖助手自行声明；
+# ask_user=问答回路、file.send=产物交付、job.*=后台任务通道，是宿主注入的
+# 交互通道，任何助手都可用）
+SKILL_TOOLS = ("skill.list", "skill.read", "ask_user", "file.send",
+               "job.submit", "job.status", "job.list", "job.cancel")
+```
+
 4. `main.py` 中 JobService 构造之后（`set_wake_callback` 附近）追加回填：
 
 ```python
@@ -3073,6 +3118,21 @@ git commit -m "装配后台任务链路：连接器注册表 + 任务服务 + �
 - Modify: `apps/web/frontend/src/stores/chat.ts:25`、`apps/web/frontend/src/stores/chat.ts:212-219`
 - Modify: `apps/web/frontend/src/components/chat/UserMessage.tsx`
 - Modify: `apps/web/frontend/src/components/chat/MessageList.tsx:214`
+- Modify: `apps/web/frontend/src/components/chat/toolLabels.ts`
+
+**新增一个 Step 0（先做，属于本任务的前置）：给四个 job 工具补中文标签**
+
+`toolLabels.ts` 顶部的 `TOOL_LABELS` 注释写明「与后端 ToolRegistry 注册项一一对应」，其 key 驱动两处：`RunInfoPanel` 的工具中文标签（缺失会回退显示 `job.submit` 原名），以及 `AssistantsAdmin` 的 `TOOL_NAMES = Object.keys(TOOL_LABELS)`（管理员配工具白名单的勾选框——缺标签就**根本列不出**这四个工具）。Task 2 已在后端注册这四个工具，这里补齐前端映射：
+
+```ts
+  // 后台任务
+  'job.submit': '提交后台任务',
+  'job.status': '查询任务状态',
+  'job.list': '列出任务',
+  'job.cancel': '取消任务',
+```
+
+按文件既有的分组与书写风格插入（先读该文件的前 20 行确认格式）。改完随本任务的构建校验一起验证。
 
 **背景（照抄对象）:** 系统注入的唤醒消息在事件流里就是一条 `user/message`，若直接按用户气泡渲染，用户会看到"自己"发了一条莫名其妙的指令。因此按 `payload.kind === 'job_completed'` 分流，渲染成居中的浅色提示条——与 `session/compaction` 的压缩提示同属"系统提示"族。
 
