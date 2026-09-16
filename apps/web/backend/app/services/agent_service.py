@@ -460,6 +460,8 @@ class AgentService:
                 # 系统唤醒来源（任务完成唤醒本轮时非空；harness 据此把
                 # user/message 事件标成 job_completed 提示条）
                 "wake_source": wake_source or {},
+                # 工作区根：插件连接器读取用户文件（如谱图上传）时用
+                "workspace_root": str(workspace_root),
                 "http_allowed_hosts": self._settings.allowed_hosts,
                 # python.run 执行器（部署级注入，缺省工具回落本机执行）
                 "code_executor": await self._code_executor(),

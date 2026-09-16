@@ -800,3 +800,38 @@ async def test_register_rejects_non_dict_status_map(store):
         reg.register(conn)
     assert "list" in str(exc.value)     # 报错文案给出实际类型名，便于排查
     assert reg.kinds == []
+
+
+async def test_submit_persists_workspace_root(store):
+    """提交时把工作区根落进 job 文档（轮询路径据此重建 ctx）。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued"]))
+    result = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1",
+        ctx_extra={"workspace_root": "/data/users/u1/sessions/s1/workspace"})
+    doc = await service.get(result.data["job_id"])
+    assert doc["workspace_root"] == "/data/users/u1/sessions/s1/workspace"
+
+
+async def test_ctx_for_carries_workspace_root_on_both_paths(store):
+    """提交路径从 ctx_extra 取工作根；轮询路径从参数取。"""
+    service, reg = _job_service(store)
+    conn = make_fake_connector("k", plugin_id="p1", script=["queued"])
+    reg.register(conn)
+    await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1",
+        ctx_extra={"workspace_root": "/w/sub"})
+    # 提交路径：连接器收到的 ctx 带工作根
+    assert conn.submitted[0]["ctx"]["workspace_root"] == "/w/sub"
+    # 轮询路径：无 ctx_extra 时由调用方传入（refresh 从 job 文档取）
+    ctx = await service._ctx_for("u1", "p1", workspace_root="/w/sub")  # noqa: SLF001
+    assert ctx["workspace_root"] == "/w/sub"
+
+
+async def test_ctx_for_without_workspace_root_is_empty_string(store):
+    """无工作区（历史任务）时给空串，插件据此给出可读错误。"""
+    service, _ = _job_service(store)
+    ctx = await service._ctx_for("u1", "p1")  # noqa: SLF001
+    assert ctx["workspace_root"] == ""

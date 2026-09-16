@@ -258,23 +258,27 @@ class JobService:
     # ---------- 配置解析（提交/轮询共用） ----------
 
     async def _ctx_for(self, user_id: str, plugin_id: str,
-                       ctx_extra: dict | None = None) -> dict:
+                       ctx_extra: dict | None = None,
+                       workspace_root: str = "") -> dict:
         """构造连接器调用上下文。
 
         Args:
             user_id: 任务归属用户（轮询路径用它重新解析配置）。
             plugin_id: 归属插件 id。
-            ctx_extra: 提交路径可直接给出的运行上下文（含 plugins/ai4ms_token）；
-                为 None 时（轮询路径）从插件配置存储与代签服务重建。
+            ctx_extra: 提交路径可直接给出的运行上下文（含 plugins/ai4ms_token/
+                workspace_root）；为 None 时（轮询路径）从插件配置存储与代签服务重建。
+            workspace_root: 轮询路径的工作区根（提交路径从 ctx_extra 取，忽略本参数）。
 
         Returns:
-            {"config": {插件配置}, "ai4ms_token": "<token 或空串>"}。
+            {"config": {插件配置}, "ai4ms_token": "<token 或空串>",
+             "workspace_root": "<工作区根或空串>"}。
         """
         if ctx_extra is not None:
             plugins = ctx_extra.get("plugins") or {}
             return {
                 "config": dict(plugins.get(plugin_id) or {}),
                 "ai4ms_token": str(ctx_extra.get("ai4ms_token") or ""),
+                "workspace_root": str(ctx_extra.get("workspace_root") or ""),
             }
         config: dict = {}
         if self._plugin_config_store is not None:
@@ -284,7 +288,7 @@ class JobService:
             except Exception:  # noqa: BLE001 解密失败等：按无配置处理，任务照常轮询
                 _LOGGER.warning("轮询时解析插件配置失败 plugin=%s user=%s",
                                 plugin_id, user_id, exc_info=True)
-        return {"config": config, "ai4ms_token": ""}
+        return {"config": config, "ai4ms_token": "", "workspace_root": workspace_root}
 
     # ---------- 工具入口 ----------
 
@@ -363,6 +367,8 @@ class JobService:
             "external_id": str(external_id),
             "label": label,
             "params": params,
+            # 工作区根落库：轮询路径据此重建 ctx（插件读用户文件上传时用）
+            "workspace_root": str((ctx_extra or {}).get("workspace_root") or ""),
             "result": "",
             "error": "",
         })
@@ -465,7 +471,8 @@ class JobService:
             await self._notify_wake(failed or doc)
             return failed
         ctx = await self._ctx_for(str(doc.get("user_id", "")),
-                                  registered.connector.plugin_id)
+                                  registered.connector.plugin_id,
+                                  workspace_root=str(doc.get("workspace_root") or ""))
         try:
             raw = await registered.connector.poll(str(doc.get("external_id", "")), ctx)
         except JobPollFailed as exc:
@@ -545,7 +552,9 @@ class JobService:
             accepted = False
             if registered is not None:
                 ctx = await self._ctx_for(str(doc.get("user_id", "")),
-                                          registered.connector.plugin_id)
+                                          registered.connector.plugin_id,
+                                          workspace_root=str(
+                                              doc.get("workspace_root") or ""))
                 try:
                     accepted = bool(await registered.connector.cancel(
                         str(doc.get("external_id", "")), ctx))
