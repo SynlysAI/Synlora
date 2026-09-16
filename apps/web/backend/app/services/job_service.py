@@ -243,8 +243,7 @@ class JobService:
         if doc.get("error"):
             lines.append(f"错误信息：{_clip(str(doc['error']), 1000)}")
         if doc.get("result"):
-            # 结果正文暂无写入方：连接器 poll 只回状态，结果落库留给后续（C2 的
-            # Spec_Agent 接入）；此分支先留着，届时由连接器或工具补齐
+            # 由连接器的可选 fetch_result 在成功终态回填（见 _fetch_result）
             lines.append(f"任务结果：\n{_clip(str(doc['result']))}")
         # 按终态分流：失败/取消时不能给"可继续调用工具"的开放邀请（模型会原样
         # 重提同一任务 → submit → fail → wake，每轮都是真金白银的 LLM 调用）
