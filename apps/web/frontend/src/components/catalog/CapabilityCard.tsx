@@ -21,6 +21,13 @@ interface CapabilityCardProps {
   badges?: ReactNode
   /** 右上动作按钮图标（null = 不渲染按钮）。 */
   actionIcon?: ReactNode
+  /**
+   * 右上自定义动作节点，优先于 `actionIcon`。
+   *
+   * 给「启停开关」这类自带状态的控件用——图标按钮表达不了"当前处于启用中"，
+   * 开关本身就是状态的载体。
+   */
+  actionSlot?: ReactNode
   /** 动作按钮的无障碍标签与 tooltip。 */
   actionLabel?: string
   /** 动作按钮点击（已内部 stopPropagation）。 */
@@ -38,6 +45,7 @@ export default function CapabilityCard({
   avatar,
   badges,
   actionIcon,
+  actionSlot,
   actionLabel,
   onAction,
   actionBusy = false,
@@ -86,7 +94,8 @@ export default function CapabilityCard({
           {badges && <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">{badges}</div>}
         </div>
 
-        {actionIcon && (
+        {/* 右上动作：自定义节点优先（如启停开关），否则是图标按钮 */}
+        {actionSlot ?? (actionIcon && (
           <button
             type="button"
             title={actionLabel}
@@ -97,7 +106,7 @@ export default function CapabilityCard({
           >
             {actionIcon}
           </button>
-        )}
+        ))}
       </div>
 
       {/* 描述：两行截断（照 PageCard 的 -webkit-line-clamp:2） */}

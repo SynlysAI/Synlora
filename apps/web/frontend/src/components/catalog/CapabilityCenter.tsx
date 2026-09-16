@@ -33,6 +33,16 @@ const NAV: Array<{ kind: CapabilityKind; label: string }> = [
   { kind: 'plugin', label: '插件' },
 ]
 
+/**
+ * 各类型的页内标题与副标题：随左导航切换（顶栏固定为「能力中心」，页内标题才是当前模块，
+ * 两者不重复）。页签文案也由此拼出——「专家市场 / 我的专家」。
+ */
+const KIND_HEADING: Record<CapabilityKind, { title: string; subtitle: string }> = {
+  expert: { title: '专家管理', subtitle: '平台提供的专家，安装后即可在自己的对话里选用' },
+  skill: { title: '技能管理', subtitle: '平台提供的技能，安装后即可在自己的对话里调用' },
+  plugin: { title: '插件管理', subtitle: '平台提供的插件，安装后即可在自己的对话里使用' },
+}
+
 /** 类型图标（16px 线性，与全站图标风格一致）。 */
 function kindIcon(kind: CapabilityKind): ReactNode {
   const common = {
@@ -75,6 +85,65 @@ const INSTALL_ICON = (
     <path d="M8 3.5v9M3.5 8h9" />
   </svg>
 )
+
+/** 工具行搜索框（照参考项目 PageToolbarSearch：前置放大镜、12px 字、有值时显示清除按钮）。 */
+function SearchBox({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder: string
+}) {
+  return (
+    <div className="relative w-[320px] max-w-full shrink-0">
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--sa-alias-label-tertiary)]"
+        aria-hidden="true"
+      >
+        <path d="M21 21l-4.35-4.35M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z" />
+      </svg>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        aria-label={placeholder}
+        className="w-full rounded-[6px] border border-[var(--sa-alias-border-l2)] py-1.5 pl-8 pr-7 text-xs text-[var(--sa-alias-label-primary)] outline-none transition-colors duration-[var(--sa-duration-fast)] placeholder:text-[var(--sa-alias-label-caption)] focus:border-[var(--sa-alias-button-ghost-active-border)]"
+      />
+      {value.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          aria-label="清除搜索"
+          className="absolute right-2 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center text-[var(--sa-alias-label-tertiary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="M6 18 18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
+    </div>
+  )
+}
 
 /** 占位卡（虚线圈内一行提示，空态与加载态共用）。 */
 function PlaceholderCard({ text }: { text: string }) {
@@ -210,6 +279,12 @@ function CapabilityList({
   const rows = byKind[capabilityKind]
   const query = tab === 'market' ? marketQuery : mineQuery
   const setQuery = tab === 'market' ? onMarketQueryChange : onMineQueryChange
+  /** 类型名（专家/技能/插件）：页签文案带它，切类型时能一眼看出范围变了。 */
+  const kindLabel = NAV.find((n) => n.kind === capabilityKind)?.label ?? ''
+  const tabs = [
+    { key: 'market' as const, label: `${kindLabel}市场` },
+    { key: 'mine' as const, label: `我的${kindLabel}` },
+  ]
 
   /** 搜索过滤（名称 + 描述）。 */
   const filtered = useMemo(() => {
@@ -259,42 +334,65 @@ function CapabilityList({
   }
 
   return (
-    <div className="mx-auto w-full max-w-[1200px] px-6 py-6">
-      {/* 工具行：页签 + 搜索 + 我的态新建入口 */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-1">
-          {([['market', '市场'], ['mine', '我的']] as const).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              aria-selected={tab === key}
-              role="tab"
-              onClick={() => onTabChange(key)}
-              className={
-                tab === key
-                  ? 'rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] px-3 py-[5px] text-[13px] font-medium text-[var(--sa-alias-label-primary)]'
-                  : 'rounded-[var(--sa-radius-md)] border border-transparent px-3 py-[5px] text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]'
-              }
-            >
-              {label}
-            </button>
-          ))}
+    <div className="mx-auto w-full max-w-[1400px] px-12 pt-8 pb-10">
+      {/* 页头：照参考项目 PageHeader（24px semibold 主标题 + 14px 次要色副标题），
+          标题与副标题随左导航的类型切换（顶栏固定为「能力中心」） */}
+      <header>
+        <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">
+          {KIND_HEADING[capabilityKind].title}
+        </h2>
+        <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
+          {KIND_HEADING[capabilityKind].subtitle}
+        </p>
+      </header>
+
+      {/* 工具行：照参考项目 .page-toolbar（上 32 / 下 16 间距，页签靠左、搜索靠右） */}
+      <div className="mb-4 mt-8 flex items-center justify-between gap-2">
+        {/* 页签：照参考项目 .chat-picker-panel__tabs——16px 字、18px 间距、
+            整行 1px 分隔线上压激活项的 2px 下划线（非胶囊按钮） */}
+        <div role="tablist" className="relative flex items-stretch gap-[18px] text-base">
+          <span
+            aria-hidden="true"
+            className="absolute inset-x-0 bottom-0 h-px bg-[var(--sa-alias-border-l2)]"
+          />
+          {tabs.map(({ key, label }) => {
+            const active = tab === key
+            return (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => onTabChange(key)}
+                className={`relative whitespace-nowrap px-0.5 pb-2 transition-colors duration-[var(--sa-duration-fast)] ${
+                  active
+                    ? 'font-semibold text-[var(--sa-alias-label-primary)]'
+                    : 'text-[var(--sa-alias-label-secondary)] hover:text-[var(--sa-alias-label-primary)]'
+                }`}
+              >
+                {label}
+                {active && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-x-0 bottom-0 h-0.5 bg-[var(--sa-alias-label-primary)]"
+                  />
+                )}
+              </button>
+            )
+          })}
         </div>
 
-        <input
-          type="text"
+        <SearchBox
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={setQuery}
           placeholder={tab === 'market' ? '搜索可用能力' : '搜索我的能力'}
-          aria-label={tab === 'market' ? '搜索可用能力' : '搜索我的能力'}
-          className="h-8 max-w-[320px] min-w-0 flex-1 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] px-2.5 text-[13px] text-[var(--sa-alias-label-primary)] outline-none transition-colors placeholder:text-[var(--sa-alias-label-caption)] focus:border-[var(--sa-alias-button-ghost-active-border)]"
         />
       </div>
 
-      <div className="pt-5">
+      <div>
         {tab === 'market' ? (
           marketLoaded ? (
-            <CardGrid items={filtered.length} empty={query ? '无匹配能力' : `暂无可用${NAV.find((n) => n.kind === capabilityKind)?.label ?? ''}`}>
+            <CardGrid items={filtered.length} empty={query ? '无匹配能力' : `暂无可用${kindLabel}`}>
               {filtered.map((item) => (
                 <CapabilityCard
                   key={item.id}
@@ -326,6 +424,7 @@ function CapabilityList({
         ) : (
           <MinePanel
             capabilityKind={capabilityKind}
+            kindLabel={kindLabel}
             query={mineQuery}
             sub={mineSub}
             onSubChange={onMineSubChange}

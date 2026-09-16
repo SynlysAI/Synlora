@@ -14,6 +14,7 @@ import { toast } from '@/stores/toasts'
 import { useMyCapabilitiesStore } from '@/stores/myCapabilities'
 import type { MyCapability } from '@/types'
 import CapabilityCard, { CardBadge } from './CapabilityCard'
+import Switch from './Switch'
 import { ExpertModal, SkillModal } from './CapabilityModals'
 
 /** 「我的」子页签（state 由列表页壳层持有，进详情返回后不丢）。 */
@@ -29,6 +30,8 @@ const SUB_TABS: Array<{ key: SubTab; label: string }> = [
 interface MinePanelProps {
   /** 当前类型（左导航选中项）。 */
   capabilityKind: 'expert' | 'skill' | 'plugin'
+  /** 类型展示名（专家/技能/插件）：空态文案用，由列表页传入以免两处各写一份映射。 */
+  kindLabel: string
   /** 搜索词（由列表页统一持有，与市场页各自独立）。 */
   query: string
   /** 子页签（由列表页壳层持有：本面板会随「进详情/返回」卸载重建，放这里会被重置）。 */
@@ -44,7 +47,7 @@ interface MinePanelProps {
 
 /** 「我的」面板。 */
 export default function MinePanel({
-  capabilityKind, query, sub, onSubChange, onOpen, onToggle, busyKey,
+  capabilityKind, kindLabel, query, sub, onSubChange, onOpen, onToggle, busyKey,
 }: MinePanelProps) {
   const items = useMyCapabilitiesStore((s) => s.items)
   const builtinItems = useMyCapabilitiesStore((s) => s.builtinItems)
@@ -94,21 +97,27 @@ export default function MinePanel({
             </button>
           ))}
         </div>
+        {/* 新建入口只保留当前类型对应的那一个（左导航已按类型分隔；
+            插件不支持用户自建，故插件页不出现新建入口） */}
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setEditingSkill(null)}
-            className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
-          >
-            + 新建技能
-          </button>
-          <button
-            type="button"
-            onClick={() => setEditingExpert(null)}
-            className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
-          >
-            + 新建专家
-          </button>
+          {capabilityKind === 'skill' && (
+            <button
+              type="button"
+              onClick={() => setEditingSkill(null)}
+              className="text-sm text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+            >
+              + 新建技能
+            </button>
+          )}
+          {capabilityKind === 'expert' && (
+            <button
+              type="button"
+              onClick={() => setEditingExpert(null)}
+              className="text-sm text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+            >
+              + 新建专家
+            </button>
+          )}
         </div>
       </div>
 
@@ -118,7 +127,9 @@ export default function MinePanel({
             ? '暂无平台内置条目'
             : query
               ? '无匹配能力'
-              : '还没有条目，去「市场」安装，或点右上角自己创建一个'}
+              : capabilityKind === 'plugin'
+                ? '还没有安装插件，去「插件市场」安装'
+                : `还没有${kindLabel}，去「${kindLabel}市场」安装，或点右上角新建`}
         </div>
       ) : (
         <div className="grid justify-center gap-4 [grid-template-columns:repeat(auto-fill,minmax(360px,1fr))]">
@@ -141,19 +152,20 @@ export default function MinePanel({
                   {item.revoked && <CardBadge>已被管理员下架</CardBadge>}
                 </>
               }
-              actionIcon={
-                // 内置对普通用户只读；下架条目后端启停会 404，只保留详情页的卸载入口
+              actionSlot={
+                // 内置对普通用户只读；下架条目后端启停会 404，只保留详情页的卸载入口。
+                // 用开关而非图标按钮：图标表达不了"当前启用中"，开关本身就是状态载体。
                 item.source === 'builtin' || item.revoked
                   ? undefined
                   : (
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      {item.enabled ? <path d="M5.5 11.5h5" /> : <path d="M6 4.5 10.5 8 6 11.5" />}
-                    </svg>
+                    <Switch
+                      checked={item.enabled}
+                      onChange={() => onToggle(item)}
+                      disabled={busyKey === `${item.kind}:${item.id}`}
+                      label={item.enabled ? `停用 ${item.name}` : `启用 ${item.name}`}
+                    />
                   )
               }
-              actionLabel={item.enabled ? `停用 ${item.name}` : `启用 ${item.name}`}
-              actionBusy={busyKey === `${item.kind}:${item.id}`}
-              onAction={() => onToggle(item)}
               onClick={() => onOpen(item)}
             />
           ))}

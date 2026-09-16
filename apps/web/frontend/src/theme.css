@@ -322,6 +322,9 @@ body[data-sa-dark-theme] {
 body {
   margin: 0;
   font-family: var(--sa-font-family);
+  /* 字距收紧 -0.02em：照 jiuwenswarm 的全局排版（其 src/index.css 的 body 设定），
+     中英混排下整体更紧凑，是观感差异的主要来源之一 */
+  letter-spacing: -0.02em;
   background-color: var(--sa-alias-bg-base);
   color: var(--sa-alias-label-primary);
   -webkit-font-smoothing: antialiased;
