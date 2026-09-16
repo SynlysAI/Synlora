@@ -1,5 +1,44 @@
-"""能力详情接口测试（GET /api/v1/me/capabilities/{kind}/{item_id}）。"""
+"""能力详情接口测试（GET /api/v1/me/capabilities/{kind}/{item_id}）+ 用户插件个人配置更新。
+
+个人配置更新（PUT /api/v1/me/plugins/{id}/config）与详情回显同属"详情页编辑配置"
+一条链，故合在本文件：详情给表单预填值与已配置标记，更新端点写回。
+"""
 from __future__ import annotations
+
+import pytest
+
+# 插件唯一内置条目：spec_agent（catalog/plugins/spec_agent）。用户安装它会把
+# spec.* 工具注册进进程级单例 REGISTRY，用例收尾必须回收，否则污染后续用例
+# （照抄 tests/test_plugins_api.py 的 clean_plugin_state 模式）。
+PLUGIN = "spec_agent"
+
+
+@pytest.fixture(autouse=True)
+def clean_plugin_tools():
+    """收尾注销本文件安装插件时注册的 spec.* 工具。
+
+    Yields:
+        None（仅提供收尾清理）。
+    """
+    from app.services.tool_registry import REGISTRY
+
+    yield
+    for name in list(REGISTRY.names):
+        if name.startswith("spec."):
+            REGISTRY.unregister(name)
+
+
+async def _install_spec_agent(client, headers: dict, **config) -> None:
+    """以给定个人配置安装 spec_agent（校验安装路径本身可用）。
+
+    Args:
+        client: 异步测试客户端。
+        headers: 请求头。
+        **config: 个人配置字段（base_url 等）。
+    """
+    res = await client.post(f"/api/v1/catalog/plugin/{PLUGIN}/install",
+                            headers=headers, json={"config": config})
+    assert res.status_code == 201
 
 
 async def test_builtin_expert_detail(client, user_headers):
@@ -267,3 +306,82 @@ async def test_my_expert_detail_isolation(client, user_headers, admin_headers):
     assert (await client.get(
         f"/api/v1/me/capabilities/expert/{expert_id}",
         headers=admin_headers)).status_code == 404
+
+
+async def test_plugin_detail_returns_personal_config_without_secret(client, user_headers):
+    """详情回显个人配置：非敏感字段给明文，敏感字段只给"已配置"布尔，明文不出库。"""
+    await _install_spec_agent(client, user_headers,
+                              base_url="http://u.local", token="u-secret")
+    res = await client.get(f"/api/v1/me/capabilities/plugin/{PLUGIN}", headers=user_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["origin"] == "installed"
+    assert body["config"] == {"base_url": "http://u.local"}
+    assert body["secrets_set"] == {"token": True}
+    assert "u-secret" not in res.text
+
+
+async def test_plugin_detail_without_personal_layer_has_no_config_keys(client, user_headers):
+    """未安装（市场可见）的插件不带 config / secrets_set：没有个人层可编辑。
+
+    前端据此不渲染「编辑配置」入口；若给了空表，反而会显示一个存不进去的入口。
+    """
+    res = await client.get(f"/api/v1/me/capabilities/plugin/{PLUGIN}", headers=user_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["origin"] == "market"
+    assert "config" not in body and "secrets_set" not in body
+
+
+async def test_update_plugin_config_changes_non_secret(client, user_headers):
+    """更新非敏感字段：写回个人层，响应给出可直接刷新的最新快照。"""
+    await _install_spec_agent(client, user_headers,
+                              base_url="http://a", token="tok-1")
+    res = await client.put(f"/api/v1/me/plugins/{PLUGIN}/config",
+                           headers=user_headers, json={"config": {"base_url": "http://b"}})
+    assert res.status_code == 200
+    assert res.json() == {
+        "kind": "plugin", "id": PLUGIN,
+        "config": {"base_url": "http://b"}, "secrets_set": {"token": True},
+    }
+    detail = await client.get(
+        f"/api/v1/me/capabilities/plugin/{PLUGIN}", headers=user_headers)
+    assert detail.json()["config"] == {"base_url": "http://b"}
+
+
+async def test_update_plugin_config_blank_secret_keeps_stored_value(app, client, user_headers):
+    """敏感字段留空 = 保持已存值（核心行为）：既不回显明文，也不因空串被清掉。"""
+    await _install_spec_agent(client, user_headers,
+                              base_url="http://a", token="tok-1")
+    res = await client.put(f"/api/v1/me/plugins/{PLUGIN}/config", headers=user_headers,
+                           json={"config": {"base_url": "http://b", "token": "   "}})
+    assert res.status_code == 200
+    assert res.json()["config"] == {"base_url": "http://b"}
+    assert res.json()["secrets_set"] == {"token": True}
+    assert "tok-1" not in res.text
+    # 直读存储：旧凭证确实还在（"留空保持不变"必须落到库上，而不只是响应好看）
+    assert await app.state.plugin_config_store.resolved_for_user("u-user", PLUGIN) == {
+        "base_url": "http://b", "token": "tok-1"}
+
+
+async def test_update_plugin_config_not_installed_404(app, client, user_headers,
+                                                      admin_headers):
+    """未安装（含"别人装过"）→ 404：归属以安装记录为准，且不写任何人个人层。"""
+    # 先验未安装就写 → 404（不是 422/409，与未知插件同一响应，不泄露存在性）
+    assert (await client.put(f"/api/v1/me/plugins/{PLUGIN}/config",
+                             headers=user_headers,
+                             json={"config": {"base_url": "http://x"}})).status_code == 404
+    # 另一个用户装过，不等于本用户可写：管理员（u-admin）依旧 404
+    await _install_spec_agent(client, user_headers, base_url="http://a", token="tok-1")
+    assert (await client.put(f"/api/v1/me/plugins/{PLUGIN}/config",
+                             headers=admin_headers,
+                             json={"config": {"base_url": "http://hijack"}})).status_code == 404
+    assert await app.state.plugin_config_store.get_doc(
+        "user:u-admin:" + PLUGIN) is None
+
+
+async def test_update_plugin_config_unknown_plugin_404(client, user_headers):
+    """未知插件 id → 404（不因"未安装"而误报 422）。"""
+    res = await client.put("/api/v1/me/plugins/no-such-plugin/config",
+                           headers=user_headers, json={"config": {"a": "b"}})
+    assert res.status_code == 404

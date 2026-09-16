@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_user, require_admin
 from app.catalog.items import KINDS
+from app.plugins.config_store import user_doc_id
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,41 @@ async def _public_ready_keys(request: Request, plugin_id: str) -> set[str]:
     except RuntimeError:
         return set()
     return {k for k, v in resolved.items() if str(v or "").strip()}
+
+
+async def _personal_config_snapshot(request: Request, user_id: str, plugin_id: str,
+                                    schema: list[dict]) -> tuple[dict, dict]:
+    """用户个人配置快照（非敏感值明文 + 敏感字段是否已配置，绝不回传敏感明文）。
+
+    直接读原始个人文档（`user:<uid>:<pid>`）而非运行期缓存：缓存是公共配置，
+    个人值只在用户自己填过时才存在。敏感字段在库里是 `{value, encrypted}`
+    包装，这里只取"是否真有密文"的布尔——前端据此提示"已配置，留空保持不变"。
+
+    Args:
+        request: FastAPI 请求（取插件配置存储）。
+        user_id: 用户 sub。
+        plugin_id: 插件 id。
+        schema: 插件配置 schema（决定哪些 key 是敏感字段）。
+
+    Returns:
+        (非敏感字段值, {敏感字段: 是否已配置})；无个人记录或存储未就绪时为
+        ({}, {每个敏感字段: False})。
+    """
+    store = getattr(request.app.state, "plugin_config_store", None)
+    schema = schema or []
+    secret_keys = [f["key"] for f in schema if f.get("secret")]
+    if store is None:
+        return {}, {k: False for k in secret_keys}
+    doc = await store.get_doc(user_doc_id(user_id, plugin_id)) or {}
+    secrets = doc.get("secrets") or {}
+    config = {k: v for k, v in (doc.get("config") or {}).items()
+              if k not in set(secret_keys)}
+    secrets_set = {
+        k: bool(isinstance(secrets.get(k), dict)
+                and str(secrets[k].get("value") or "").strip())
+        for k in secret_keys
+    }
+    return config, secrets_set
 
 
 async def _own_skill_detail(request: Request, user_id: str, name: str) -> dict | None:
@@ -204,6 +240,12 @@ class CapabilitySwitchBody(BaseModel):
     enabled: bool | None = None
 
 
+class UserPluginConfigBody(BaseModel):
+    """用户维度插件配置请求体（schema 未声明的 key 由存储层忽略）。"""
+
+    config: dict[str, Any] = {}
+
+
 @router.post("/catalog/{kind}/{item_id}/install", status_code=201)
 async def install_capability(kind: str, item_id: str, request: Request,
                              body: InstallBody | None = None,
@@ -281,6 +323,54 @@ async def uninstall_capability(kind: str, item_id: str,
         raise HTTPException(404, f"未知类型: {kind}")
     removed = await service.installs.uninstall(user["sub"], kind, item_id)
     return {"kind": kind, "id": item_id, "installed": False, "removed": removed}
+
+
+@router.put("/me/plugins/{plugin_id}/config")
+async def update_user_plugin_config(plugin_id: str, body: UserPluginConfigBody,
+                                    request: Request,
+                                    user=Depends(get_current_user),
+                                    service=Depends(get_capability_service)) -> dict:
+    """更新当前用户的插件个人配置（已安装插件；敏感字段留空 = 保持原值）。
+
+    与管理员路径（`PUT /plugins/{id}/config`）的分工：本端点只写用户维度文档，
+    不碰公共配置。合并语义（非敏感覆盖、敏感留空保持、未声明 key 忽略）全部由
+    `PluginConfigStore.save_for_user` 实现，本层不重复实现，只做归属与就绪判定。
+
+    与安装路径同口径地丢弃空值：个人层优先于公共兜底，写空串会把管理员的公共
+    配置"覆盖"成未配置，插件运行期直接失效（详情页对系统默认字段不预填个人值，
+    留空保存是最常见的一次操作）。
+
+    Args:
+        plugin_id: 插件 id。
+        body: 配置请求体。
+        request: FastAPI 请求（取插件包与配置存储）。
+        user: 当前用户。
+        service: 能力服务（读安装记录）。
+
+    Returns:
+        {"kind": "plugin", "id", "config": {非敏感值}, "secrets_set": {敏感字段:
+        是否已配置}}——与详情端点同形，调用方无需二次请求即可刷新表单。
+
+    Raises:
+        HTTPException: 插件不存在或该用户未安装（404，两者同一响应，不泄露
+            hidden 插件的存在性）、配置存储未就绪（503）。
+    """
+    packages = getattr(request.app.state, "plugin_packages", None) or {}
+    package = packages.get(plugin_id)
+    if package is None:
+        raise HTTPException(404, f"插件不存在: {plugin_id}")
+    # 归属判定以安装记录为准：没装过的人（含"插件是 hidden 因而不可见"的人）
+    # 与未知插件得到同一个 404，不构成存在性探测
+    if not await service.installs.is_installed(user["sub"], "plugin", plugin_id):
+        raise HTTPException(404, f"插件未安装: {plugin_id}")
+    store = getattr(request.app.state, "plugin_config_store", None)
+    if store is None:
+        raise HTTPException(503, "插件配置存储未就绪")
+    values = {k: v for k, v in body.config.items() if str(v or "").strip()}
+    await store.save_for_user(user["sub"], plugin_id, values, package.config_schema)
+    config, secrets_set = await _personal_config_snapshot(
+        request, user["sub"], plugin_id, package.config_schema)
+    return {"kind": "plugin", "id": plugin_id, "config": config, "secrets_set": secrets_set}
 
 
 @router.get("/admin/catalog")
@@ -460,7 +550,9 @@ async def capability_detail(kind: str, item_id: str, request: Request,
 
     Returns:
         详情字典：公共字段 + origin/enabled + 按 kind 的特有字段；下架但已安装且
-        非内置的条目额外带 `revoked: True`。
+        非内置的条目额外带 `revoked: True`。插件在「用户自己装过且未下架」时额外
+        带 `config`（非敏感字段当前值，供编辑表单预填）与 `secrets_set`
+        （{敏感字段: 是否已配置}，供提示"留空保持不变"）；敏感明文一律不回传。
 
     Raises:
         HTTPException: 类型非法、条目不存在或不可见（404）、
@@ -531,4 +623,12 @@ async def capability_detail(kind: str, item_id: str, request: Request,
         row["skills"] = state["skills"]
         row["experts"] = state["experts"]
         row["tools"] = state["tools"]
+        # 个人配置快照只在"用户自己装过"（origin='installed'）时给出：没有个人层
+        # 可编辑的条目（市场未装 / 内置全员可用 / 已下架只留卸载）不给这两个键，
+        # 前端就不会渲染出"编辑配置"入口。敏感字段只回布尔，明文永不出库。
+        if origin == "installed" and not revoked:
+            config, secrets_set = await _personal_config_snapshot(
+                request, user_id, item_id, state["config_schema"])
+            row["config"] = config
+            row["secrets_set"] = secrets_set
     return row
