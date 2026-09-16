@@ -2,11 +2,15 @@
 
 职责边界：本服务只认 JobConnector 协议（怎么跟外部系统说话）与 JobRepo
 （任务文档在哪），不认识任何具体子平台。任务完成后的"唤醒 agent 继续处理"
-通过构造期注入的 wake 回调完成（Task 9 提供 set_wake_callback）。
+经装配阶段注入的 wake 回调完成（`set_wake_callback` / `set_busy_check`）。
 
 状态流转与取消（Task 6）已实现：`refresh` 把外部状态原文映射为统一状态并校验
 合法流转（查询失败/未映射一律保持原状态、只累计 poll_failures），`cancel` 调
 连接器请求取消后本地收敛为 cancelled（终态任务拒绝取消）。
+
+完成唤醒（Task 9）：`refresh` 落到终态后调 `_notify_wake`——会话空闲立即唤醒
+agent 整合结果，会话忙则进 `_pending_wake` 排队，等该会话的 run 结束后由
+`drain_pending`（AgentService 的 run 结束回调驱动）补发。
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ from synlys_harness import (
     is_terminal,
 )
 
+from app.services.agent_service import TooManyRuns, WakeTargetGone
 from app.services.job_connectors import (
     JobConnectorRegistry,
     JobPollFailed,
@@ -73,6 +78,11 @@ class JobService:
         self._connectors = connectors
         self._plugin_config_store = plugin_config_store
         self._ai4ms_identity = ai4ms_identity
+        self._wake: WakeCallback | None = None
+        # 待唤醒会话队列：会话忙时任务先在这里排队，run 结束后 drain
+        self._pending_wake: dict[str, list[str]] = {}
+        # 会话忙判定（装配阶段注入 AgentService.is_busy；缺省视为空闲）
+        self._busy_check: Callable[[str], bool] = lambda _sid: False
 
     # ---------- 查询 ----------
 
@@ -90,6 +100,113 @@ class JobService:
         active_values = {s.value for s in ACTIVE_STATUSES}
         docs = await self._repo.list()
         return [d for d in docs if d.get("status") in active_values]
+
+    # ---------- 完成唤醒 ----------
+
+    def set_wake_callback(self, callback: WakeCallback) -> None:
+        """注入唤醒回调（装配阶段传 AgentService 的唤醒包装函数）。
+
+        Args:
+            callback: (session_id, text, job_id) -> None。
+        """
+        self._wake = callback
+
+    def set_busy_check(self, check: Callable[[str], bool]) -> None:
+        """注入会话忙判定（装配阶段传 AgentService.is_busy）。
+
+        Args:
+            check: (session_id) -> bool。
+        """
+        self._busy_check = check
+
+    def pending_wake_count(self, session_id: str) -> int:
+        """该会话待唤醒的任务数（可观测/测试用）。"""
+        return len(self._pending_wake.get(session_id, []))
+
+    async def _notify_wake(self, doc: dict) -> None:
+        """任务终态后通知会话（空闲立即唤醒，忙则排队）。
+
+        Args:
+            doc: 已进入终态的任务文档。
+        """
+        job_id = str(doc.get("_id", ""))
+        session_id = str(doc.get("session_id", ""))
+        if not job_id or not session_id:
+            return
+        if self._busy_check(session_id):
+            self._pending_wake.setdefault(session_id, []).append(job_id)
+            return
+        await self._wake_now(doc)
+
+    async def _wake_now(self, doc: dict) -> None:
+        """立即唤醒（回调缺失记日志跳过；失败不抛出，避免打挂轮询循环）。
+
+        Args:
+            doc: 任务文档。
+        """
+        if self._wake is None:
+            _LOGGER.warning("未注入唤醒回调，任务完成通知被丢弃 job=%s", doc.get("_id"))
+            return
+        session_id = str(doc.get("session_id", ""))
+        job_id = str(doc.get("_id", ""))
+        try:
+            await self._wake(session_id, self.compose_wake_text(doc), job_id)
+        except TooManyRuns:
+            # "判定空闲"到"chat 取会话锁"之间有窗口（解析装配含多个 await），
+            # 用户此刻发消息就会撞上：重新入队等本轮结束补发，不丢通知
+            self._pending_wake.setdefault(session_id, []).append(job_id)
+        except WakeTargetGone:
+            # 会话已删（delete_session 不清理 jobs）：通知无接收方，静默跳过
+            _LOGGER.info("唤醒目标已不存在，跳过 job=%s", job_id)
+        except Exception:  # noqa: BLE001 唤醒失败不得影响轮询循环
+            _LOGGER.warning("任务完成唤醒失败 session=%s job=%s",
+                            session_id, job_id, exc_info=True)
+
+    async def drain_pending(self, session_id: str) -> None:
+        """会话空闲后补发待唤醒任务（由 AgentService 的 run 结束回调驱动）。
+
+        逐条出队处理：单条失败或被重新入队，都不牵连同会话其余的待唤醒通知。
+
+        Args:
+            session_id: 会话 id。
+        """
+        pending = list(self._pending_wake.get(session_id, []))
+        if not pending:
+            return
+        self._pending_wake.pop(session_id, None)
+        for job_id in pending:
+            try:
+                doc = await self._repo.get(job_id)
+            except Exception:  # noqa: BLE001 单条读取失败不牵连同会话其余通知
+                _LOGGER.warning("读取待唤醒任务失败 job=%s", job_id, exc_info=True)
+                continue
+            if doc is None:
+                continue
+            await self._wake_now(doc)
+
+    @staticmethod
+    def compose_wake_text(doc: dict) -> str:
+        """组装唤醒文本（模型据此继续处理任务结果）。
+
+        Args:
+            doc: 任务文档。
+
+        Returns:
+            系统通知文本。
+        """
+        lines = [
+            "【系统通知】你之前提交的后台任务已结束，请据此继续完成任务。",
+            f"任务 ID：{doc.get('_id')}",
+            f"任务类型：{doc.get('kind')}",
+            f"任务说明：{doc.get('label') or '（无）'}",
+            f"最终状态：{doc.get('status')}",
+        ]
+        if doc.get("error"):
+            lines.append(f"错误信息：{_clip(str(doc['error']), 1000)}")
+        if doc.get("result"):
+            lines.append(f"任务结果：\n{_clip(str(doc['result']))}")
+        lines.append("若结果已足够，直接向用户汇报结论；若还需补充计算，可继续调用工具。")
+        return "\n".join(lines)
 
     # ---------- 配置解析（提交/轮询共用） ----------
 
@@ -255,11 +372,13 @@ class JobService:
         registered = self._connectors.get(str(doc.get("kind", "")))
         if registered is None:
             # 连接器消失（插件被卸载）：任务无法继续跟踪，标记失败并说明原因
-            return await self._repo.update(doc["_id"], {
+            failed = await self._repo.update(doc["_id"], {
                 "status": JobStatus.FAILED.value,
                 "error": f"任务类型已不可用: {doc.get('kind')}",
                 "ended_at": time.time(),
             })
+            await self._notify_wake(failed or doc)
+            return failed
         ctx = await self._ctx_for(str(doc.get("user_id", "")),
                                   registered.connector.plugin_id)
         try:
@@ -286,8 +405,11 @@ class JobService:
         fields: dict = {"status": mapped.value, "last_raw_status": str(raw)}
         if is_terminal(mapped):
             fields["ended_at"] = time.time()
-        # 终态唤醒会话（通知 agent 继续处理）在 Task 9 补：本任务只负责落状态
-        return await self._repo.update(doc["_id"], fields)
+        updated = await self._repo.update(doc["_id"], fields)
+        if is_terminal(mapped):
+            # 终态：唤醒会话，让 agent 继续整合结果
+            await self._notify_wake(updated or doc)
+        return updated
 
     async def render_list(self, session_id: str, *, user_id: str) -> ToolResult:
         """列出本会话任务（供模型汇报整体进度）。"""

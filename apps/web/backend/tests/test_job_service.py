@@ -392,3 +392,163 @@ async def test_cancel_terminal_job_is_rejected(store):
                                   user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert result.ok is False
     assert result.error == "already_finished"
+
+
+async def test_terminal_status_triggers_wake(store):
+    """任务进入终态时调用唤醒回调，文本含任务与结果摘要。"""
+    woken: list[tuple[str, str, str]] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append((session_id, text, job_id))
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k",
+                                      "params": {}, "label": "试算"},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert len(woken) == 1
+    assert woken[0][0] == "s1"
+    assert woken[0][2] == submitted.data["job_id"]
+    assert "试算" in woken[0][1]
+
+
+async def test_busy_session_queues_wake_until_drain(store):
+    """会话忙时先排队，drain 后补发（不丢唤醒）。"""
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: True)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert woken == []
+    assert service.pending_wake_count("s1") == 1
+    await service.drain_pending("s1")
+    assert woken == [submitted.data["job_id"]]
+    assert service.pending_wake_count("s1") == 0
+
+
+async def test_only_notified_once_per_job(store):
+    """同一任务不重复唤醒（避免刷新抖动导致多轮注入）。"""
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    await service.refresh(await service.get(job_id))
+    await service.refresh(await service.get(job_id))
+    await service.refresh(await service.get(job_id))
+    assert woken == [job_id]
+
+
+async def test_wake_composes_result_text(store):
+    """唤醒文本包含任务类型、状态与结果正文（供模型直接整合）。"""
+    seen: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        seen.append(text)
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert "任务 ID" in seen[0]
+    assert "completed" in seen[0]
+
+
+async def test_wake_requeues_on_too_many_runs(store):
+    """唤醒撞上会话忙（TooManyRuns）时重新入队，不丢通知。"""
+    from app.services.agent_service import TooManyRuns
+
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+        # 只第一次撞上忙（"判定空闲"到"chat 取锁"之间有窗口，用户此刻发消息）；
+        # 会话空出来后再唤醒即成功——否则"补发成功"与"重新入队"两断言互相矛盾
+        if len(woken) == 1:
+            raise TooManyRuns("会话忙")
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)  # 判定时空闲，但 chat 取锁时被抢先
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    await service.refresh(await service.get(job_id))
+    # 第一次尝试失败 → 重新入队
+    assert service.pending_wake_count("s1") == 1
+    # 会话空闲后 drain 补发成功
+    service.set_busy_check(lambda sid: False)
+    await service.drain_pending("s1")
+    assert woken == [job_id, job_id]
+    assert service.pending_wake_count("s1") == 0
+
+
+async def test_wake_skips_deleted_session(store):
+    """会话已删（WakeTargetGone）时静默跳过，不重新入队也不抛错。"""
+    from app.services.agent_service import WakeTargetGone
+
+    async def wake(session_id, text, job_id):
+        raise WakeTargetGone("会话没了")
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: False)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert service.pending_wake_count("s1") == 0
+
+
+async def test_drain_keeps_other_jobs_when_one_fails(store):
+    """drain 逐条出队：单条失败不牵连同会话其余待唤醒任务。"""
+    woken: list[str] = []
+
+    async def wake(session_id, text, job_id):
+        woken.append(job_id)
+        if len(woken) == 1:
+            raise RuntimeError("第一条炸了")
+
+    service, reg = _job_service(store)
+    service.set_wake_callback(wake)
+    service.set_busy_check(lambda sid: True)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    first = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                 user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    second = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(first.data["job_id"]))
+    await service.refresh(await service.get(second.data["job_id"]))
+    assert service.pending_wake_count("s1") == 2
+    await service.drain_pending("s1")
+    # 两条都被尝试（第一条抛错不阻断第二条），队列清空
+    assert woken == [first.data["job_id"], second.data["job_id"]]
+    assert service.pending_wake_count("s1") == 0
