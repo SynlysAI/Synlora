@@ -2,12 +2,13 @@
 from synlys_harness.tools.builtin import register_builtin_tools, skill_list, skill_read
 from synlys_harness.tools.pipeline import ToolPipeline
 from synlys_harness.tools.registry import ToolRegistry
-from synlys_harness.types import ToolContext
+from synlys_harness.types import ToolContext, ToolResult
 
 EXPECTED = [
     "file.read", "file.write", "file.list", "python.run", "file.read_image",
     "knowledge.list", "knowledge.search", "web.search", "web.fetch", "http.request",
     "ask_user", "file.send", "skill.list", "skill.read",
+    "job.submit", "job.status", "job.list", "job.cancel",
 ]
 
 
@@ -743,3 +744,55 @@ async def test_file_send_tool(tmp_path):
     pipe = _setup()
     r = await pipe.run("file.send", _ctx(tmp_path), {"path": "report.docx"})
     assert not r.ok and r.error == "no_handler"
+
+
+async def test_job_submit_requires_handler(tmp_path):
+    """无 job_handler 时四个 job 工具都报 no_handler（fail-closed）。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path)
+    for name, args in (
+        ("job.submit", {"kind": "spec.nmr.forward", "params": {}}),
+        ("job.status", {"job_id": "j1"}),
+        ("job.list", {}),
+        ("job.cancel", {"job_id": "j1"}),
+    ):
+        result = await pipe.run(name, ctx, args)
+        assert result.ok is False
+        assert result.error == "no_handler"
+
+
+async def test_job_submit_validates_arguments(tmp_path):
+    """kind 为空或 params 非对象时不调 handler。"""
+    calls: list[dict] = []
+
+    async def handler(payload: dict):
+        calls.append(payload)
+        return ToolResult(ok=True, content="ok")
+
+    pipe = _setup()
+    ctx = _ctx(tmp_path, extra={"job_handler": handler})
+    bad_kind = await pipe.run("job.submit", ctx, {"kind": "  ", "params": {}})
+    assert bad_kind.ok is False and bad_kind.error == "invalid_arguments"
+    bad_params = await pipe.run("job.submit", ctx, {"kind": "k", "params": "oops"})
+    assert bad_params.ok is False and bad_params.error == "invalid_arguments"
+    assert calls == []
+
+
+async def test_job_submit_forwards_payload(tmp_path):
+    """submit 把 action/kind/params/label/tool_call_id 原样交给宿主 handler。"""
+    seen: list[dict] = []
+
+    async def handler(payload: dict):
+        seen.append(payload)
+        return ToolResult(ok=True, content="已提交，任务 ID: j-1")
+
+    pipe = _setup()
+    ctx = _ctx(tmp_path, extra={"job_handler": handler, "tool_call_id": "tc-9"})
+    result = await pipe.run("job.submit", ctx, {
+        "kind": "spec.nmr.forward", "params": {"smiles_input": "CCO"}, "label": "乙醇预测"})
+    assert result.ok is True
+    assert seen[0]["action"] == "submit"
+    assert seen[0]["kind"] == "spec.nmr.forward"
+    assert seen[0]["params"] == {"smiles_input": "CCO"}
+    assert seen[0]["label"] == "乙醇预测"
+    assert seen[0]["tool_call_id"] == "tc-9"

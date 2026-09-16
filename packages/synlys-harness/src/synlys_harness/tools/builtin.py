@@ -781,6 +781,118 @@ async def skill_read(ctx: ToolContext, args: dict) -> ToolResult:
     return ToolResult(ok=True, content=content, data={"name": name, "content": content})
 
 
+def _job_handler(ctx: ToolContext):
+    """取宿主注入的任务处理器（缺失返回 None）。"""
+    handler = ctx.extra.get("job_handler")
+    return handler if callable(handler) else None
+
+
+def _no_jobs() -> ToolResult:
+    """无任务处理器时的统一失败结果。"""
+    return ToolResult(ok=False, content="当前运行环境不支持后台任务", error="no_handler")
+
+
+@tool(
+    name="job.submit",
+    description=(
+        "提交一个后台长任务（谱图解析、批量计算等耗时数分钟以上的作业）。"
+        "提交后立即返回任务 ID，任务完成时系统会自动通知你继续处理。"
+        "不要重复提交同一请求，也不要在提交后反复调用 job.status 轮询。"
+    ),
+    parameters={"type": "object", "properties": {
+        "kind": {"type": "string", "description": "任务类型（见技能说明，如 spec.nmr.forward）"},
+        "params": {"type": "object", "description": "任务参数（随任务类型而定）"},
+        "label": {"type": "string", "description": "任务简述，用于向用户展示（可选）"},
+    }, "required": ["kind", "params"]},
+    timeout_s=30,  # 只覆盖"提交"这一次请求；任务本身在后台跑
+)
+async def job_submit(ctx: ToolContext, args: dict) -> ToolResult:
+    """提交后台任务（宿主经 ctx.extra 注入 job_handler）。"""
+    handler = _job_handler(ctx)
+    if handler is None:
+        return _no_jobs()
+    kind = str(args.get("kind", "")).strip()
+    if not kind:
+        return ToolResult(ok=False, content="kind 不能为空", error="invalid_arguments")
+    params = args.get("params")
+    if not isinstance(params, dict):
+        return ToolResult(ok=False, content="params 必须是 JSON 对象", error="invalid_arguments")
+    return await handler({
+        "action": "submit",
+        "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
+        "kind": kind,
+        "params": params,
+        "label": str(args.get("label", ""))[:200],
+    })
+
+
+@tool(
+    name="job.status",
+    description=(
+        "查询一个后台任务的当前状态与结果。仅在用户主动询问进度、"
+        "或任务完成通知里缺少必要信息时使用——不要在提交后反复轮询。"
+    ),
+    parameters={"type": "object", "properties": {
+        "job_id": {"type": "string", "description": "任务 ID（job.submit 返回的）"},
+    }, "required": ["job_id"]},
+    timeout_s=60,
+)
+async def job_status(ctx: ToolContext, args: dict) -> ToolResult:
+    """查询单个任务状态（宿主经 ctx.extra 注入 job_handler）。"""
+    handler = _job_handler(ctx)
+    if handler is None:
+        return _no_jobs()
+    job_id = str(args.get("job_id", "")).strip()
+    if not job_id:
+        return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")
+    return await handler({
+        "action": "status",
+        "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
+        "job_id": job_id,
+    })
+
+
+@tool(
+    name="job.list",
+    description="列出本会话提交过的后台任务（含状态与结果摘要），用于汇报整体进度。",
+    parameters={"type": "object", "properties": {}},
+    timeout_s=30,
+)
+async def job_list(ctx: ToolContext, args: dict) -> ToolResult:
+    """列出本会话的任务（宿主经 ctx.extra 注入 job_handler）。"""
+    del args  # 无参数
+    handler = _job_handler(ctx)
+    if handler is None:
+        return _no_jobs()
+    return await handler({
+        "action": "list",
+        "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
+    })
+
+
+@tool(
+    name="job.cancel",
+    description="取消一个尚未完成的后台任务（已结束的任务取消无效果）。",
+    parameters={"type": "object", "properties": {
+        "job_id": {"type": "string", "description": "任务 ID"},
+    }, "required": ["job_id"]},
+    timeout_s=60,
+)
+async def job_cancel(ctx: ToolContext, args: dict) -> ToolResult:
+    """取消任务（宿主经 ctx.extra 注入 job_handler）。"""
+    handler = _job_handler(ctx)
+    if handler is None:
+        return _no_jobs()
+    job_id = str(args.get("job_id", "")).strip()
+    if not job_id:
+        return ToolResult(ok=False, content="job_id 不能为空", error="invalid_arguments")
+    return await handler({
+        "action": "cancel",
+        "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
+        "job_id": job_id,
+    })
+
+
 def register_builtin_tools(registry: ToolRegistry) -> None:
     """把全部内置工具注册到注册表。
 
@@ -791,5 +903,6 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         file_read, file_write, file_list, python_run, file_read_image,
         knowledge_list, knowledge_search, web_search, web_fetch, http_request,
         ask_user, file_send, skill_list, skill_read,
+        job_submit, job_status, job_list, job_cancel,
     ):
         registry.register(fn)
