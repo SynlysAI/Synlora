@@ -38,6 +38,25 @@ def get_capability_service(request: Request):
     return service
 
 
+def _state_service(request: Request, name: str):
+    """从 app.state 取服务实例（未就绪时 503，与 me_api 同口径）。
+
+    Args:
+        request: FastAPI 请求。
+        name: app.state 上的服务属性名（skill_service / expert_service / plugin_service）。
+
+    Returns:
+        服务实例。
+
+    Raises:
+        HTTPException: 未就绪（503）。
+    """
+    service = getattr(request.app.state, name, None)
+    if service is None:
+        raise HTTPException(503, f"{name} 未就绪")
+    return service
+
+
 async def _require_installable(service, user_id: str, kind: str, item_id: str) -> None:
     """前置判定：条目不可安装则 404（新旧安装路径共用，保证文案只有一处）。
 
@@ -88,10 +107,11 @@ async def _own_skill_detail(request: Request, user_id: str, name: str) -> dict |
 
     Returns:
         详情字典（origin='mine'）；该用户没有此名自建技能时 None。
+
+    Raises:
+        HTTPException: 技能服务未就绪（503）。
     """
-    svc = getattr(request.app.state, "skill_service", None)
-    if svc is None:
-        return None
+    svc = _state_service(request, "skill_service")
     own = {s["name"]: s for s in svc.list_own_skills(user_id)}
     row = own.get(name)
     if row is None:
@@ -117,10 +137,11 @@ async def _own_expert_detail(request: Request, user_id: str, expert_id: str) -> 
 
     Returns:
         详情字典（origin='mine'）；该用户没有此专家时 None。
+
+    Raises:
+        HTTPException: 专家服务未就绪（503）。
     """
-    svc = getattr(request.app.state, "expert_service", None)
-    if svc is None:
-        return None
+    svc = _state_service(request, "expert_service")
     own = await svc.get_own(user_id, expert_id)
     if own is None:
         return None
@@ -408,8 +429,10 @@ async def capability_detail(kind: str, item_id: str, request: Request,
     """当前用户视角下某能力的详情（用户侧能力中心详情页）。
 
     解析顺序：用户自建（技能/专家，落 `users/<uid>/`）优先 → catalog 内置条目。
-    内置条目按市场同一可见性口径判定：hidden 一律 404（不泄露存在性），
-    未安装条目也可读（否则用户无法在安装前判断内容）。
+    内置条目按市场同一可见性口径判定：hidden 且未安装一律 404（不泄露存在性），
+    未安装条目也可读（否则用户无法在安装前判断内容）；hidden 但已安装的例外
+    ——列表刻意留着该行供用户卸载，详情要能打开才不会成为死路，返回时带
+    `revoked: True` 标记。
 
     `origin` 四态供前端决定渲染与动作：`mine` 自建（可编辑/删除）、
     `installed` 已安装（可启停/卸载）、`builtin` 内置（普通用户只读）、
@@ -427,10 +450,12 @@ async def capability_detail(kind: str, item_id: str, request: Request,
         service: 能力服务。
 
     Returns:
-        详情字典：公共字段 + origin/enabled + 按 kind 的特有字段。
+        详情字典：公共字段 + origin/enabled + 按 kind 的特有字段；下架但已安装的
+        条目额外带 `revoked: True`。
 
     Raises:
-        HTTPException: 类型非法、条目不存在或不可见（404）。
+        HTTPException: 类型非法、条目不存在或不可见（404）、
+            技能/专家/插件服务未就绪（503）。
     """
     if kind not in KINDS:
         raise HTTPException(404, f"未知类型: {kind}")
@@ -450,10 +475,13 @@ async def capability_detail(kind: str, item_id: str, request: Request,
     if item is None:
         raise HTTPException(404, f"条目不存在: {kind}:{item_id}")
     pol = await service.policy.get(kind, item_id)
-    if pol["visibility"] == "hidden":
+    installed = await service.installs.is_installed(user_id, kind, item_id)
+    # 已安装但被管理员下架（revoked）：列表（/me/skills、/me/experts）刻意保留该行
+    # 供用户卸载，详情同样不该 404（存在性本就不算泄露——行本来就在用户自己的列表里）
+    revoked = pol["visibility"] == "hidden"
+    if revoked and not installed:
         raise HTTPException(404, f"条目不存在: {kind}:{item_id}")
 
-    installed = await service.installs.is_installed(user_id, kind, item_id)
     enabled = await service.installs.is_enabled(user_id, kind, item_id)
     if pol["default_enabled"]:
         origin = "builtin"
@@ -470,6 +498,10 @@ async def capability_detail(kind: str, item_id: str, request: Request,
         # 内置条目恒为可用态（与 market_items 的 visible 口径一致）
         "enabled": bool(pol["default_enabled"]) or enabled,
     }
+    if revoked:
+        # 仅下架条目带此标记（前端据此提示"已下架"并只保留卸载动作）；
+        # 正常条目省掉该键，与其它 kind 特有字段"有意义才出现"的约定一致
+        row["revoked"] = True
 
     if kind == "expert":
         pkg = service.catalog.experts.get(item_id)
@@ -478,15 +510,13 @@ async def capability_detail(kind: str, item_id: str, request: Request,
             row["system_prompt"] = pkg.system_prompt
             row["tool_whitelist"] = list(pkg.tool_whitelist)
     elif kind == "skill":
-        svc = getattr(request.app.state, "skill_service", None)
-        row["content"] = (svc.read_body(item_id, user_id) if svc is not None else None) or ""
+        svc = _state_service(request, "skill_service")
+        row["content"] = svc.read_body(item_id, user_id) or ""
     elif kind == "plugin":
         row["config_ready_keys"] = sorted(await _public_ready_keys(request, item_id))
-        plugin_service = getattr(request.app.state, "plugin_service", None)
-        if plugin_service is not None:
-            state = plugin_service.state(item_id)
-            row["config_schema"] = state["config_schema"]
-            row["skills"] = state["skills"]
-            row["experts"] = state["experts"]
-            row["tools"] = state["tools"]
+        state = _state_service(request, "plugin_service").state(item_id)
+        row["config_schema"] = state["config_schema"]
+        row["skills"] = state["skills"]
+        row["experts"] = state["experts"]
+        row["tools"] = state["tools"]
     return row

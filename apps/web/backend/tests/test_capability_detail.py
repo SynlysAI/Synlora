@@ -112,3 +112,83 @@ async def test_unknown_kind_and_id_not_found(client, user_headers):
         "/api/v1/me/capabilities/nope/x", headers=user_headers)).status_code == 404
     assert (await client.get(
         "/api/v1/me/capabilities/skill/no-such-skill", headers=user_headers)).status_code == 404
+
+
+async def test_revoked_installed_item_detail_readable(client, admin_headers, user_headers):
+    """已安装后被下架的条目详情仍可读（origin='installed' + revoked=True）。
+
+    列表（/me/skills）刻意保留该行供用户卸载，详情若 404 则用户无路可走；
+    先安装再下架——hidden 之后连安装都进不来。
+    """
+    install = await client.put(
+        "/api/v1/me/capabilities/skill/data-analysis",
+        headers=user_headers, json={"installed": True},
+    )
+    assert install.status_code == 200
+    put = await client.put(
+        "/api/v1/admin/catalog/skill/data-analysis/policy",
+        headers=admin_headers, json={"visibility": "hidden", "default_enabled": False},
+    )
+    assert put.status_code == 200
+    res = await client.get("/api/v1/me/capabilities/skill/data-analysis", headers=user_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["origin"] == "installed"
+    assert body["revoked"] is True
+
+
+async def test_normal_item_has_no_revoked_flag(client, user_headers):
+    """正常条目不带 revoked 键（该标记只在有意义时出现）。"""
+    res = await client.get("/api/v1/me/capabilities/skill/office-doc", headers=user_headers)
+    assert res.status_code == 200
+    assert "revoked" not in res.json()
+
+
+async def test_builtin_item_origin_builtin(client, admin_headers, user_headers):
+    """管理员配为内置（default_enabled=True）的条目：origin='builtin' 且恒为启用态。"""
+    put = await client.put(
+        "/api/v1/admin/catalog/skill/pdf-extraction/policy",
+        headers=admin_headers, json={"visibility": "public", "default_enabled": True},
+    )
+    assert put.status_code == 200
+    res = await client.get("/api/v1/me/capabilities/skill/pdf-extraction", headers=user_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["origin"] == "builtin"
+    assert body["enabled"] is True
+
+
+async def test_installed_but_disabled_item(client, user_headers):
+    """已安装但停用：origin='installed' 且 enabled=False。"""
+    install = await client.put(
+        "/api/v1/me/capabilities/skill/office-doc",
+        headers=user_headers, json={"installed": True},
+    )
+    assert install.status_code == 200
+    disable = await client.put(
+        "/api/v1/me/capabilities/skill/office-doc",
+        headers=user_headers, json={"enabled": False},
+    )
+    assert disable.status_code == 200
+    res = await client.get("/api/v1/me/capabilities/skill/office-doc", headers=user_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["origin"] == "installed"
+    assert body["enabled"] is False
+
+
+async def test_my_expert_detail_isolation(client, user_headers, admin_headers):
+    """他人自建专家对本用户 404（多租户隔离；专家走另一条解析路径）。"""
+    created = await client.post("/api/v1/me/experts", headers=user_headers, json={
+        "name": "私密专家",
+        "description": "私密",
+        "system_prompt": "你是私密专家。",
+    })
+    assert created.status_code == 201
+    expert_id = created.json()["id"]
+    assert (await client.get(
+        f"/api/v1/me/capabilities/expert/{expert_id}",
+        headers=user_headers)).status_code == 200
+    assert (await client.get(
+        f"/api/v1/me/capabilities/expert/{expert_id}",
+        headers=admin_headers)).status_code == 404

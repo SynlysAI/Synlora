@@ -27,7 +27,6 @@ if TYPE_CHECKING:
         CatalogIndex,
         ExpertPackage,
         PluginPackage,
-        SkillPackage,
     )
 
 logger = logging.getLogger(__name__)
@@ -82,15 +81,6 @@ class CatalogService:
             专家包映射（只读用途；调用方不得就地修改）。
         """
         return self._index.experts
-
-    @property
-    def skills(self) -> dict[str, "SkillPackage"]:
-        """扫描到的技能包（{name: SkillPackage}）。
-
-        Returns:
-            技能包映射（只读用途；调用方不得就地修改）。
-        """
-        return self._index.skills
 
     def list_items(self, kind: str) -> list[CatalogItem]:
         """枚举某类内置条目。
