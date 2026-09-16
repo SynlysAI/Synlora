@@ -1,4 +1,4 @@
-"""七个 repository（基于 DocumentStore 的薄封装）。
+"""基于 DocumentStore 的薄封装 repository 集合。
 
 统一模式：create 自动补 _id/created_at/updated_at；update 自动补 updated_at；
 get/list/delete 直接透传 store。
@@ -370,6 +370,6 @@ class FileRepo(BaseRepo):
 
 
 class JobRepo(BaseRepo):
-    """后台任务记录（kind/status/session_id/user_id/external_id）。"""
+    """后台任务记录（kind/plugin_id/status/session_id/user_id/external_id）。"""
 
     collection = "jobs"
