@@ -64,6 +64,45 @@ async def test_on_run_finished_hook_is_awaited(agent_service, session_doc):
     assert seen == [session_doc["_id"]]
 
 
+async def test_drive_invokes_hook_after_releasing_session_slot(
+        agent_service, session_doc, store):
+    """_drive 收尾路径真的回调钩子，且回调时会话占位已释放（is_busy 为假）。"""
+    seen: dict = {}
+
+    class _Flag:
+        """最小取消旗标（_drive 读 session._cancel.is_set()）。"""
+
+        def is_set(self) -> bool:
+            """恒为未取消。"""
+            return False
+
+    class _StubSession:
+        """不跑 LLM 的假 RunSession：run 产出空事件流，无残留插话。"""
+
+        _cancel = _Flag()
+
+        async def run(self, text, attachments=None):
+            """空事件流。"""
+            return
+            yield  # pragma: no cover 使其成为 async generator
+
+        @staticmethod
+        def take_queued_turn():
+            """无残留插话（_drive 据此收尾）。"""
+            return None
+
+    sid = session_doc["_id"]
+
+    async def hook(session_id: str) -> None:
+        seen["session_id"] = session_id
+        seen["busy"] = agent_service.is_busy(session_id)
+
+    agent_service.set_run_finished_hook(hook)
+    agent_service._active_by_session.setdefault(sid, set()).add("r1")  # noqa: SLF001
+    await agent_service._drive("r1", _StubSession(), "hi", "u1", sid)
+    assert seen == {"session_id": sid, "busy": False}
+
+
 async def test_wake_starts_run_with_system_text(agent_service, session_doc,
                                                 store, tmp_path, monkeypatch):
     """wake 以系统通知文本起一轮新 run，并把 job_id 作为唤醒来源透传。"""
