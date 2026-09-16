@@ -37,7 +37,10 @@ def get_settings(request: Request) -> Settings:
 
 
 def get_repos(request: Request) -> Repos:
-    """从 app.state 集中取六个 repo。
+    """从 app.state 取 repo 集合（lifespan 装配时就绪）。
+
+    复用 lifespan 里构造的同一份 `app.state.repos`（不在此重新构造）：两处各建
+    一份会在 Repos 新增带默认值的字段时静默分叉——请求路径有、唤醒路径没有。
 
     Raises:
         HTTPException: 存储未就绪（503）。
@@ -45,14 +48,7 @@ def get_repos(request: Request) -> Repos:
     s = request.app.state
     if getattr(s, "store", None) is None:
         raise HTTPException(503, "存储未就绪")
-    return Repos(
-        provider=s.provider_repo,
-        assistant=s.assistant_repo,
-        session=s.session_repo,
-        run=s.run_repo,
-        file=s.file_repo,
-        event=s.event_repo,
-    )
+    return s.repos
 
 
 async def get_current_user(request: Request, settings=Depends(get_settings)) -> dict:

@@ -62,3 +62,30 @@ async def test_submit_poll_wake_roundtrip(app, session_id):
 async def test_poller_started_with_app(app):
     """应用启动后轮询器在跑（生命周期由 lifespan 管）。"""
     assert app.state.job_poller.running is True
+
+
+async def test_wake_wrapper_does_not_swallow_domain_errors(app, monkeypatch):
+    """唤醒包装必须放行 TooManyRuns / WakeTargetGone（否则通知被静默丢弃）。"""
+    from app.services.agent_service import TooManyRuns, WakeTargetGone
+
+    async def boom(session_id, text, job_id):
+        raise TooManyRuns("会话忙")
+
+    monkeypatch.setattr(app.state.agent_service, "wake", boom)
+    wake_cb = app.state.job_service._wake  # noqa: SLF001
+    with pytest.raises(TooManyRuns):
+        await wake_cb("s1", "text", "job-1")
+
+    async def gone(session_id, text, job_id):
+        raise WakeTargetGone("会话没了")
+
+    monkeypatch.setattr(app.state.agent_service, "wake", gone)
+    with pytest.raises(WakeTargetGone):
+        await wake_cb("s1", "text", "job-1")
+
+    # 其余异常必须被吞掉（只记日志）
+    async def other(session_id, text, job_id):
+        raise ValueError("别的错")
+
+    monkeypatch.setattr(app.state.agent_service, "wake", other)
+    await wake_cb("s1", "text", "job-1")  # 不抛

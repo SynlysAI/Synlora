@@ -127,11 +127,15 @@ async def lifespan(app: FastAPI):
         capability_service=app.state.capability_service,
         plugin_config_store=plugin_config_store,
         ai4ms_identity=app.state.ai4ms_identity)
-    # 后台任务：连接器注册表（插件在 startup 时注册各自的 kind）→ 任务服务 →
-    # 轮询器。唤醒回调双向接线：JobService → AgentService.wake；
+    # 后台任务：连接器注册表 → 任务服务 → 轮询器。
+    # 注意：registry 在此处创建（晚于 plugin_service.startup()），当前没有插件
+    # 扩展点，连接器只能**运行期注册**（测试与将来的 Spec_Agent 接入都走这条路）。
+    # 若将来要让插件在 startup 期注册，需把本行上提到 plugin_service.startup() 之前
+    # 并把 registry 透传进去。
+    # 唤醒回调双向接线：JobService → AgentService.wake；
     # AgentService run 结束 → JobService.drain_pending
     app.state.job_connectors = JobConnectorRegistry()
-    # repo 聚合（唤醒路径解析会话装配用）：deps.get_repos 与此同源
+    # repo 聚合（唤醒路径解析会话装配用）：唯一构造点，deps.get_repos 复用本对象
     app.state.repos = Repos(
         provider=app.state.provider_repo, assistant=app.state.assistant_repo,
         session=app.state.session_repo, run=app.state.run_repo,
