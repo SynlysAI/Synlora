@@ -135,7 +135,8 @@ export default function MinePanel({ capabilityKind, query, onOpen, onToggle, bus
                 </>
               }
               actionIcon={
-                item.source === 'builtin'
+                // 内置对普通用户只读；下架条目后端启停会 404，只保留详情页的卸载入口
+                item.source === 'builtin' || item.revoked
                   ? undefined
                   : (
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

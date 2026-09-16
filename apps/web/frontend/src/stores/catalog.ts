@@ -1,8 +1,8 @@
 /**
  * 用户侧能力中心-市场 store：按类型拉取可安装条目 + 安装/启用/停用/卸载。
  *
- * 走 `/api/v1/market/{kind}`（普通用户视角，不出现 hidden 条目）；安装与开关统一
- * 走 `PUT /api/v1/me/capabilities/{kind}/{id}`。插件只要声明了配置 schema 就改走既有
+ * 走 `/api/v1/market/{kind}`（普通用户视角，不出现 hidden 条目）；开关与卸载走
+ * `PUT /api/v1/me/capabilities/{kind}/{id}`，插件安装一律走既有
  * `POST /api/v1/catalog/plugin/{id}/install`——它按 schema 先校验必填再落安装记录
  * （原子），避免"先装后写配置失败"留下半装状态。
  * 拉取逐类容错：某类失败不影响其余两类，三类全失败才抛错。
@@ -61,12 +61,12 @@ export const useCatalogStore = create<CatalogState>((set, get) => ({
   },
 
   install: async (kind, itemId, config) => {
-    // 插件只要有配置 schema 就走既有 POST：它按 schema 先校验必填、通过后才落安装记录（原子）。
-    // 不能按"config 是否非空"判断——required+secret 字段允许空提交，那样会绕过校验留下半装状态。
-    const plugin = kind === 'plugin'
-      ? get().byKind.plugin.find((p) => p.id === itemId)
-      : undefined
-    if (kind === 'plugin' && (plugin?.config_schema?.length ?? 0) > 0) {
+    // 插件一律走 POST：它按 schema 先校验必填、通过后才落安装记录（原子）。
+    // 不要按缓存里的 config_schema 判断走哪条路径：详情页路由下市场缓存是空的，
+    // 插件会被误判为"无配置"而走 PUT，用户的配置被丢弃且跳过必填校验。
+    // 也不能按"config 是否非空"判断——required+secret 字段允许空提交，那样会绕过校验留下半装状态。
+    // POST 在空配置时跳过校验并照常写安装记录，是 PUT 路径的严格超集。
+    if (kind === 'plugin') {
       await api(`/api/v1/catalog/${kind}/${encodeURIComponent(itemId)}/install`, {
         method: 'POST',
         body: { config: config ?? {} },

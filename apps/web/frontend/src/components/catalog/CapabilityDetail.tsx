@@ -261,7 +261,11 @@ export default function CapabilityDetail({
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void run(`已卸载 ${detail.name}`, () => uninstall(detail.kind, detail.id))}
+                onClick={() => void (async () => {
+                  // 下架条目卸载后详情会 404（不可再读），成功后必须退回列表，
+                  // 否则 refresh 置错、页面停在「条目不存在」的错误屏；失败则留在原地看提示
+                  if (await run(`已卸载 ${detail.name}`, () => uninstall(detail.kind, detail.id))) goBack()
+                })()}
                 className={actionClass}
               >
                 卸载
