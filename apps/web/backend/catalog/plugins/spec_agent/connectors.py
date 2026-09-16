@@ -36,6 +36,7 @@ SPEC_STATUS_MAP: dict[str, JobStatus] = {
     "success": JobStatus.COMPLETED,
     "failed": JobStatus.FAILED,
     "canceled": JobStatus.CANCELLED,
+    "cancelled": JobStatus.CANCELLED,   # 兼容双 L 拼写（上游实测为单 L）
 }
 
 # 测试可经 monkeypatch 注入 MockTransport（None = 走真实网络）
@@ -47,24 +48,21 @@ class SpectraTaskConnector:
 
     Attributes:
         kind: 本平台的任务类型（如 spec.task.nmr）。
-        endpoint: 上游 URL 路径段（nmr/ir/gpc/raman/lcms）。
-        task_type: 上游 task_type（如 nmr_analysis）。
+        endpoint: 上游 URL 路径段（nmr/ir/gpc/raman/lcms）——决定实际行为。
         status_map: 上游状态原文 → 统一状态。
     """
 
     plugin_id = PLUGIN_ID
 
-    def __init__(self, kind: str, endpoint: str, task_type: str) -> None:
+    def __init__(self, kind: str, endpoint: str) -> None:
         """初始化。
 
         Args:
             kind: 本平台任务类型。
             endpoint: 上游 URL 路径段。
-            task_type: 上游任务类型标识。
         """
         self.kind = kind
         self.endpoint = endpoint
-        self.task_type = task_type
         self.status_map = dict(SPEC_STATUS_MAP)
 
     # ---------- 连接器协议 ----------
@@ -118,9 +116,9 @@ class SpectraTaskConnector:
 
         Raises:
             JobPollFailed: 查询失败（网络异常、上游 4xx/5xx、非 JSON 或
-                code != 0、以及未配置服务地址）。一律以上述异常抛出——若静默
-                返回空串，宿主会当成"未映射状态"而保持原状态且不记失败计数，
-                任务会永久挂起、用户与日志都无感知。
+                code != 0、未配置服务地址，以及 200 但响应缺 status）。一律以
+                上述异常抛出——若静默返回空串，宿主会当成"未映射状态"而保持
+                原状态且不记失败计数，任务会永久挂起、用户与日志都无感知。
         """
         try:
             base_url, headers = self._conn(ctx)
@@ -128,7 +126,11 @@ class SpectraTaskConnector:
                 resp = await client.get(
                     f"{base_url}/api/v1/tasks/{external_id}", headers=headers)
             data = self._unwrap(resp, "查询任务状态")
-            return str((data or {}).get("status") or "")
+            raw = str((data or {}).get("status") or "")
+            if not raw:
+                raise JobPollFailed(
+                    f"上游未返回任务状态: {str(data)[:200]}")
+            return raw
         except JobPollFailed:
             raise
         except JobSubmitFailed as exc:
@@ -211,7 +213,8 @@ class SpectraTaskConnector:
             谱图文件绝对路径。
 
         Raises:
-            JobSubmitFailed: 缺 path、无工作区、路径越界或文件不存在。
+            JobSubmitFailed: 缺 path、无工作区、路径越界（或指向目录）、
+                文件不存在。
         """
         rel = str(params.get("path") or "").strip()
         if not rel:
@@ -225,7 +228,8 @@ class SpectraTaskConnector:
         except OSError as exc:
             raise JobSubmitFailed(f"路径非法: {rel}") from exc
         if root not in target.parents:
-            raise JobSubmitFailed(f"路径越界: {rel}")
+            # 覆盖两种情形：真越界（../../etc/passwd）、或指向工作区根自身（"."）
+            raise JobSubmitFailed(f"路径越界或指向目录: {rel}")
         if not target.is_file():
             raise JobSubmitFailed(f"文件不存在: {rel}")
         return target
@@ -317,9 +321,9 @@ class SpectraTaskConnector:
 
 # 本插件贡献的连接器（宿主 PluginService 挂载时注册）
 CONNECTORS = [
-    SpectraTaskConnector("spec.task.nmr", "nmr", "nmr_analysis"),
-    SpectraTaskConnector("spec.task.ir", "ir", "ir_analysis"),
-    SpectraTaskConnector("spec.task.gpc", "gpc", "gpc_analysis"),
-    SpectraTaskConnector("spec.task.raman", "raman", "raman_analysis"),
-    SpectraTaskConnector("spec.task.lcms", "lcms", "lcms_analysis"),
+    SpectraTaskConnector("spec.task.nmr", "nmr"),
+    SpectraTaskConnector("spec.task.ir", "ir"),
+    SpectraTaskConnector("spec.task.gpc", "gpc"),
+    SpectraTaskConnector("spec.task.raman", "raman"),
+    SpectraTaskConnector("spec.task.lcms", "lcms"),
 ]

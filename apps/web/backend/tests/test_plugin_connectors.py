@@ -161,6 +161,62 @@ async def test_poll_raises_on_http_failure(connectors, monkeypatch):
         await nmr.poll("T-9", {"config": {}})
 
 
+async def test_poll_raises_when_status_missing(connectors, monkeypatch):
+    """上游 200 但缺 status 时抛 JobPollFailed（否则任务静默永久挂起）。"""
+    from app.services.job_connectors import JobPollFailed
+
+    module = _load_module()
+    nmr = next(c for c in connectors if c.kind == "spec.task.nmr")
+    ctx = {"config": {"base_url": "http://spec.test"}}
+
+    for payload in ({"code": 0, "data": {}}, {"code": 0, "data": None},
+                    {"code": 0, "data": {"task_id": "T-9"}},
+                    {"code": 0, "data": {"task_id": "T-9", "status": None}}):
+        monkeypatch.setattr(module, "_transport", httpx.MockTransport(
+            lambda r, p=payload: httpx.Response(200, json=p)))
+        with pytest.raises(JobPollFailed):
+            await nmr.poll("T-9", ctx)
+
+
+async def test_submit_forwards_task_params(connectors, workspace, monkeypatch):
+    """params.params 原样透传给上游；缺省为空对象。"""
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/files/upload":
+            return httpx.Response(200, json={"code": 0, "data": {"file_id": "F1"}})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"code": 0,
+                                         "data": {"task_id": "T-1",
+                                                  "status": "PENDING"}})
+
+    module = _load_module()
+    monkeypatch.setattr(module, "_transport", httpx.MockTransport(handler))
+    nmr = next(c for c in connectors if c.kind == "spec.task.nmr")
+
+    await nmr.submit({"path": "sample.nmr",
+                      "params": {"solvent": "CDCl3", "n": 3}}, _ctx(workspace))
+    await nmr.submit({"path": "sample.nmr"}, _ctx(workspace))
+    assert bodies[0]["params"] == {"solvent": "CDCl3", "n": 3}
+    assert bodies[1]["params"] == {}
+
+
+async def test_fetch_result_returns_empty_on_failures(connectors, monkeypatch):
+    """取结果失败一律返回空串（不抛，宿主只记日志）。"""
+    module = _load_module()
+    nmr = next(c for c in connectors if c.kind == "spec.task.nmr")
+    ctx = {"config": {"base_url": "http://spec.test"}}
+
+    for resp in (httpx.Response(401), httpx.Response(500, text="boom"),
+                 httpx.Response(200, json={"code": 1, "message": "x"}),
+                 httpx.Response(200, text="not json"),
+                 httpx.Response(200, json={"code": 0,
+                                           "data": {"result": None}})):
+        monkeypatch.setattr(module, "_transport",
+                            httpx.MockTransport(lambda r, x=resp: x))
+        assert await nmr.fetch_result("T-9", ctx) == ""
+
+
 async def test_fetch_result_serializes_payload(connectors, monkeypatch):
     """fetch_result 把上游 result 对象序列化为文本。"""
     def handler(request: httpx.Request) -> httpx.Response:
