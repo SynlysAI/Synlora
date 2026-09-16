@@ -373,8 +373,11 @@ def load_plugin_connectors(package: PluginPackage) -> list[Any]:
         sys.modules.pop(module_name, None)
         logger.warning("插件 %s 连接器模块导入失败: %s", package.id, exc)
         return []
-    raw = getattr(module, "CONNECTORS", None) or []
+    raw = getattr(module, "CONNECTORS", None)
+    if raw is None:
+        return []  # 未声明连接器（正常情形，不告警）
     if not isinstance(raw, (list, tuple)):
-        logger.warning("插件 %s 的 CONNECTORS 不是列表，已忽略", package.id)
+        logger.warning("插件 %s 的 CONNECTORS 必须是列表，实际为 %s，已忽略",
+                       package.id, type(raw).__name__)
         return []
     return list(raw)

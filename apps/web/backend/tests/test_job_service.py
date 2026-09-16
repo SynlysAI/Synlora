@@ -785,3 +785,18 @@ async def test_register_requires_some_status_map(store):
     conn.status_map = {}
     with pytest.raises(ValueError):
         reg.register(conn)
+
+
+async def test_register_rejects_non_dict_status_map(store):
+    """status_map 非 dict 时抛 ValueError（不能穿出 AttributeError 打挂启动）。
+
+    truthy 非 mapping（如列表）若放行，会在 `.items()` 处抛 AttributeError；
+    挂载逻辑只捕 ValueError，异常将穿透到 lifespan 让应用起不来。
+    """
+    reg = JobConnectorRegistry()
+    conn = make_fake_connector("k", plugin_id="p1", script=["done"])
+    conn.status_map = ["done"]          # truthy 但非 mapping
+    with pytest.raises(ValueError) as exc:
+        reg.register(conn)
+    assert "list" in str(exc.value)     # 报错文案给出实际类型名，便于排查
+    assert reg.kinds == []

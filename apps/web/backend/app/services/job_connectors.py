@@ -127,7 +127,13 @@ class JobConnectorRegistry:
 
         Raises:
             ValueError: kind 为空、连接器未实现协议（缺 submit/poll/cancel
-                或它们不是 async def）、未提供状态映射、或该 kind 已被注册。
+                或它们不是 async def）、状态映射不是 dict、未提供状态映射、
+                或该 kind 已被注册。
+
+        Note:
+            状态映射必须是 dict：非 mapping 的 truthy 值若放行，会在下面的
+            `.items()` 处抛 AttributeError，而调用方只捕 ValueError——
+            异常会穿透到 lifespan 让应用起不来。
         """
         kind = str(getattr(connector, "kind", "")).strip()
         if not kind:
@@ -148,6 +154,10 @@ class JobConnectorRegistry:
             raise ValueError(f"任务类型已注册: {kind}")
         source = status_map if status_map is not None else getattr(
             connector, "status_map", None)
+        if not isinstance(source, dict):
+            raise ValueError(
+                f"连接器 {kind} 的状态映射必须是 dict（外部状态原文 → JobStatus），"
+                f"实际为 {type(source).__name__}")
         if not source:
             raise ValueError(
                 f"连接器 {kind} 未提供状态映射（register 的 status_map 参数或"

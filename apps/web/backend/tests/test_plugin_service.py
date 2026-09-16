@@ -55,6 +55,36 @@ class _DemoConnector:
 CONNECTORS = [_DemoConnector()]
 '''
 
+# 畸形连接器模块：status_map 是 list（truthy 但非 mapping）。复现"打挂启动"的
+# 缺陷——register 若不校验类型会在 `.items()` 处抛 AttributeError，而挂载逻辑
+# 只捕 ValueError，异常穿透到 lifespan 让应用起不来。
+BROKEN_CONNECTORS_SOURCE = '''
+"""畸形插件连接器：status_map 写成了列表。"""
+
+
+class _BrokenConnector:
+    """形状非法：status_map 不是 dict。"""
+
+    kind = "broken.task"
+    plugin_id = "broken"
+    status_map = ["done"]
+
+    async def submit(self, params: dict, ctx: dict) -> str:
+        """返回假外部 id。"""
+        return "ext-1"
+
+    async def poll(self, external_id: str, ctx: dict) -> str:
+        """固定返回终态原文。"""
+        return "done"
+
+    async def cancel(self, external_id: str, ctx: dict) -> bool:
+        """固定受理取消。"""
+        return True
+
+
+CONNECTORS = [_BrokenConnector()]
+'''
+
 MANIFEST = {
     "id": "demo",
     "name": "示例插件",
@@ -86,6 +116,23 @@ def packages(tmp_path) -> dict:
     (pkg_dir / "connectors.py").write_text(CONNECTORS_SOURCE, encoding="utf-8")
     (pkg_dir / "skills" / "demo-skill" / "SKILL.md").write_text(
         "---\nname: demo-skill\ndescription: 示例技能\n---\n正文\n", encoding="utf-8")
+    return scan_catalog([tmp_path]).plugins
+
+
+@pytest.fixture
+def broken_packages(tmp_path) -> dict:
+    """造一个连接器畸形的插件包（status_map 为 list，非 mapping）。"""
+    pkg_dir = tmp_path / "plugins" / "broken"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "plugin.json").write_text(json.dumps({
+        "id": "broken", "name": "畸形插件", "version": "1.0.0",
+        "description": "用于测试的连接器畸形插件",
+        "tools_module": "tools.py", "connectors_module": "connectors.py",
+        "config_schema": [],
+    }, ensure_ascii=False), encoding="utf-8")
+    (pkg_dir / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
+    (pkg_dir / "connectors.py").write_text(BROKEN_CONNECTORS_SOURCE,
+                                           encoding="utf-8")
     return scan_catalog([tmp_path]).plugins
 
 
@@ -337,3 +384,32 @@ async def test_attach_without_job_registry_is_noop(store, packages, tmp_path):
     service.ensure_attached("demo")  # 不抛
 
     assert "demo.hello" in registry.names
+
+
+async def test_attach_survives_broken_connector(store, broken_packages, tmp_path):
+    """连接器形状非法时告警跳过，插件仍被挂载（不得打挂 startup）。"""
+    reg = JobConnectorRegistry()
+    service, registry, _ = _service(store, broken_packages, tmp_path,
+                                    job_connectors=reg)
+
+    service.ensure_attached("broken")     # 不抛
+    assert reg.kinds == []                # 畸形连接器未注册
+    assert "demo.hello" in registry.names  # 工具照常挂上（挂载未被阻断）
+
+
+async def test_startup_survives_broken_connector(store, broken_packages, tmp_path):
+    """端到端形态：装过畸形插件后重启，lifespan 不得被连接器异常打挂。
+
+    安装记录先落库、后挂载失败（API 层 500），下次重启 installed_ids 含它 →
+    startup 的 _attach 不在 try 内，异常即穿透 lifespan。此处断言不抛。
+    """
+    reg = JobConnectorRegistry()
+    service, _, _ = _service(store, broken_packages, tmp_path, job_connectors=reg)
+    await service.startup()
+    state = await service.install("broken", {})  # 安装记录落库
+    assert state["installed"] is True
+
+    reg2 = JobConnectorRegistry()
+    service2, _, _ = _service(store, broken_packages, tmp_path, job_connectors=reg2)
+    await service2.startup()  # 关键断言：不得抛 AttributeError
+    assert reg2.kinds == []

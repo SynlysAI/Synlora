@@ -186,8 +186,10 @@ class PluginService:
                 continue
             try:
                 self._job_connectors.register(connector)
-            except ValueError as exc:
-                # 连接器形状/映射不合法：告警跳过，不阻断插件挂载
+            except Exception as exc:  # noqa: BLE001 插件代码不可信：注册失败不得阻断挂载
+                # 形状/映射不合法（含插件自定义对象的意外异常）：告警跳过。
+                # 与 loader 对插件代码的口径一致——非法包只告警，绝不让 lifespan 失败：
+                # startup() 里的 _attach 不在 try 内，且安装记录可能已落库（重启即复现）。
                 logger.warning("插件 %s 的连接器 %s 注册失败: %s",
                                package.id, kind, exc)
                 continue

@@ -478,7 +478,7 @@ def test_load_plugin_connectors_collects_list(tmp_path):
 def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
     """连接器加载的四条降级路径各返回空列表并告警（不抛异常、不阻断启动）：
 
-    未声明模块 / 声明了但文件不存在 / 模块导入报错 / CONNECTORS 不是列表。
+    未声明模块 / 声明了但文件不存在 / 模块导入报错 / CONNECTORS 容器类型写错。
     """
     from app.catalog.loader import load_plugin_connectors
 
@@ -522,4 +522,37 @@ def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
         not_a_list = load_plugin_connectors(scan_catalog([tmp_path]).plugins["demo3"])
     assert not_a_list == []
-    assert "CONNECTORS 不是列表" in caplog.text
+    assert "必须是列表" in caplog.text
+
+
+def test_load_plugin_connectors_warns_on_empty_dict(tmp_path, caplog):
+    """写错容器类型即使为假值也要告警（原先 `or []` 会把 {} 静默当空表）。"""
+    from app.catalog.loader import load_plugin_connectors
+
+    bad = tmp_path / "plugins" / "bad-dict"
+    bad.mkdir(parents=True)
+    # {} / "" 这类假值：旧写法 `getattr(...) or []` 直接放行、无告警
+    (bad / "connectors.py").write_text("CONNECTORS = {}\n", encoding="utf-8")
+    (bad / "plugin.json").write_text(json.dumps({
+        "id": "bad-dict", "name": "BadDict", "version": "1.0.0",
+        "tools_module": "tools.py", "connectors_module": "connectors.py",
+    }), encoding="utf-8")
+    pkg = scan_catalog([tmp_path]).plugins["bad-dict"]
+
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        assert load_plugin_connectors(pkg) == []
+    assert "必须是列表" in caplog.text
+    assert "dict" in caplog.text  # 报错文案给出实际类型名
+
+    # 未声明 CONNECTORS（正常情形）不告警
+    caplog.clear()
+    (bad / "connectors.py").write_text("X = 1\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        assert load_plugin_connectors(pkg) == []
+    assert caplog.text == ""
+
+    # 显式声明零连接器（[]）合法，返回空表且不告警
+    (bad / "connectors.py").write_text("CONNECTORS = []\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
+        assert load_plugin_connectors(pkg) == []
+    assert caplog.text == ""
