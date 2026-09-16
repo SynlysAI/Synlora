@@ -445,6 +445,28 @@ class JobService:
                 doc = fresh
             return await self._refresh_locked(doc)
 
+    async def _fetch_result(self, connector: Any, external_id: str,
+                            ctx: dict) -> str:
+        """取任务结果（连接器未实现或取回失败时返回空串）。
+
+        Args:
+            connector: 连接器实例。
+            external_id: 外部任务 id。
+            ctx: 连接器调用上下文。
+
+        Returns:
+            结果文本；失败时空串（只告警，不影响状态落地与唤醒）。
+        """
+        fetch = getattr(connector, "fetch_result", None)
+        if not callable(fetch):
+            return ""
+        try:
+            return str(await fetch(external_id, ctx) or "")
+        except Exception:  # noqa: BLE001 取结果失败不阻断状态流转
+            _LOGGER.warning("取任务结果失败 job_external_id=%s", external_id,
+                            exc_info=True)
+            return ""
+
     async def _refresh_locked(self, doc: dict) -> dict | None:
         """refresh 的实际逻辑（调用方须持有该任务的锁）。
 
@@ -498,6 +520,12 @@ class JobService:
         if is_terminal(mapped):
             fields["ended_at"] = time.time()
         updated = await self._repo.update(doc["_id"], fields)
+        if mapped is JobStatus.COMPLETED:
+            # 成功终态回填结果：唤醒文本带上它，模型才不用反问用户
+            result = await self._fetch_result(registered.connector,
+                                              str(doc.get("external_id", "")), ctx)
+            if result:
+                updated = await self._repo.update(doc["_id"], {"result": result})
         if is_terminal(mapped):
             # 终态：唤醒会话，让 agent 继续整合结果
             await self._notify_wake(updated or doc)

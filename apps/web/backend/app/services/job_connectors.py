@@ -46,7 +46,9 @@ class JobConnector(Protocol):
 
         Args:
             params: 工具传入的参数对象。
-            ctx: 宿主填充的调用上下文 {"config": 插件配置, "ai4ms_token": 用户凭证}。
+            ctx: 宿主填充的调用上下文 {"config": 插件配置,
+                "ai4ms_token": 用户代签凭证,
+                "workspace_root": 用户工作区根的绝对路径（无工作区时为空串）}。
 
         Returns:
             外部系统的任务 id。
@@ -83,6 +85,10 @@ class JobConnector(Protocol):
             用户语义决定，见 JobService.cancel）。
         """
         ...
+
+    # 可选能力：实现 fetch_result(external_id, ctx) -> str 时，宿主会在任务
+    # 成功终态（COMPLETED）调用它，把返回文本写入 job 的 result 字段并带进
+    # 唤醒消息；未实现则结果保持为空。
 
 
 @dataclass

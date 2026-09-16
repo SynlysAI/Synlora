@@ -835,3 +835,80 @@ async def test_ctx_for_without_workspace_root_is_empty_string(store):
     service, _ = _job_service(store)
     ctx = await service._ctx_for("u1", "p1")  # noqa: SLF001
     assert ctx["workspace_root"] == ""
+
+
+async def test_refresh_fetches_result_on_success(store):
+    """成功终态时调连接器的 fetch_result 并把结果写入 job 文档。"""
+    class ResultConnector(FakeConnector):
+        async def fetch_result(self, external_id, ctx):
+            return '{"peaks": [1.2, 3.4]}'
+
+    service, reg = _job_service(store)
+    reg.register(ResultConnector("k", plugin_id="p1", script=["done"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "completed"
+    assert doc["result"] == '{"peaks": [1.2, 3.4]}'
+
+
+async def test_refresh_without_fetch_result_leaves_result_empty(store):
+    """连接器未实现 fetch_result 时结果保持空（不报错）。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "completed"
+    assert not doc.get("result")
+
+
+async def test_fetch_result_failure_does_not_break_transition(store):
+    """取结果失败只告警，任务状态照常落地（结果留空）。"""
+    class BrokenResultConnector(FakeConnector):
+        async def fetch_result(self, external_id, ctx):
+            raise RuntimeError("取结果炸了")
+
+    service, reg = _job_service(store)
+    reg.register(BrokenResultConnector("k", plugin_id="p1", script=["done"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "completed"
+
+
+async def test_failed_task_does_not_fetch_result(store):
+    """失败终态不取结果（上游失败时 result 无意义）。"""
+    calls: list[str] = []
+
+    class CountingResultConnector(FakeConnector):
+        async def fetch_result(self, external_id, ctx):
+            calls.append(external_id)
+            return "x"
+
+    service, reg = _job_service(store)
+    reg.register(CountingResultConnector("k", plugin_id="p1", script=["failed"]))
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "failed"
+    assert calls == []
+
+
+async def test_refresh_passes_workspace_root_to_connector(store):
+    """轮询路径的 ctx 带上工作根（提交时落库、刷新时从 job 文档取回）。"""
+    seen: list[dict] = []
+
+    class SpyConnector(FakeConnector):
+        async def poll(self, external_id, ctx):
+            seen.append(dict(ctx))
+            return await super().poll(external_id, ctx)
+
+    service, reg = _job_service(store)
+    reg.register(SpyConnector("k", plugin_id="p1", script=["done"]))
+    submitted = await service.handle(
+        {"action": "submit", "kind": "k", "params": {}},
+        user={"sub": "u1"}, session_id="s1",
+        ctx_extra={"workspace_root": "/w/from-submit"})
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert seen[-1]["workspace_root"] == "/w/from-submit"
