@@ -4,13 +4,15 @@
 （任务文档在哪），不认识任何具体子平台。任务完成后的"唤醒 agent 继续处理"
 通过构造期注入的 wake 回调完成（Task 9 提供 set_wake_callback）。
 
-状态流转与取消（Task 6）在本类里以最小可用形态存在：`refresh` 暂不刷新、
-`cancel` 返回 not_implemented，保证「只查询、不流转」时服务自洽可交付。
+状态流转与取消（Task 6）已实现：`refresh` 把外部状态原文映射为统一状态并校验
+合法流转（查询失败/未映射一律保持原状态、只累计 poll_failures），`cancel` 调
+连接器请求取消后本地收敛为 cancelled（终态任务拒绝取消）。
 """
 from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from typing import Any, Awaitable, Callable
 
@@ -18,11 +20,13 @@ from synlys_harness import (
     ACTIVE_STATUSES,
     JobStatus,
     ToolResult,
+    can_transition,
     is_terminal,
 )
 
 from app.services.job_connectors import (
     JobConnectorRegistry,
+    JobPollFailed,
     JobSubmitFailed,
 )
 
@@ -230,16 +234,60 @@ class JobService:
                                 "status": doc.get("status", "")})
 
     async def refresh(self, doc: dict) -> dict | None:
-        """向外部系统拉一次最新状态并落库（Task 6 实现真实逻辑）。
+        """向外部系统拉一次最新状态并落库（轮询与手工查询共用）。
 
         Args:
             doc: 任务文档。
 
         Returns:
-            更新后的任务文档；本任务尚未提供刷新时返回 None，
-            调用方沿用原文档。
+            更新后的文档；任务不存在返回 None。
+
+        Note:
+            查询失败或状态未映射时**保持原状态**并累计 poll_failures——
+            一次网络抖动不得把任务判为失败，也不得让状态倒退。
         """
-        return None
+        try:
+            status = JobStatus(doc["status"])
+        except (KeyError, ValueError):
+            return doc
+        if is_terminal(status):
+            return doc
+        registered = self._connectors.get(str(doc.get("kind", "")))
+        if registered is None:
+            # 连接器消失（插件被卸载）：任务无法继续跟踪，标记失败并说明原因
+            return await self._repo.update(doc["_id"], {
+                "status": JobStatus.FAILED.value,
+                "error": f"任务类型已不可用: {doc.get('kind')}",
+                "ended_at": time.time(),
+            })
+        ctx = await self._ctx_for(str(doc.get("user_id", "")),
+                                  registered.connector.plugin_id)
+        try:
+            raw = await registered.connector.poll(str(doc.get("external_id", "")), ctx)
+        except JobPollFailed as exc:
+            return await self._repo.update(doc["_id"], {
+                "poll_failures": int(doc.get("poll_failures") or 0) + 1,
+                "last_poll_error": str(exc),
+            })
+        except Exception as exc:  # noqa: BLE001 未归一化异常同样只记不改状态
+            _LOGGER.warning("任务轮询异常 job=%s", doc.get("_id"), exc_info=True)
+            return await self._repo.update(doc["_id"], {
+                "poll_failures": int(doc.get("poll_failures") or 0) + 1,
+                "last_poll_error": str(exc),
+            })
+        mapped = registered.map_status(raw)
+        if mapped is None:
+            # 外部状态不在映射表内：保持原状态（并记录原文，便于补映射）
+            return await self._repo.update(doc["_id"], {"last_raw_status": str(raw)})
+        if not can_transition(status, mapped):
+            _LOGGER.warning("任务状态非法流转 job=%s %s -> %s",
+                            doc.get("_id"), status, mapped)
+            return doc
+        fields: dict = {"status": mapped.value, "last_raw_status": str(raw)}
+        if is_terminal(mapped):
+            fields["ended_at"] = time.time()
+        # 终态唤醒会话（通知 agent 继续处理）在 Task 9 补：本任务只负责落状态
+        return await self._repo.update(doc["_id"], fields)
 
     async def render_list(self, session_id: str, *, user_id: str) -> ToolResult:
         """列出本会话任务（供模型汇报整体进度）。"""
@@ -252,8 +300,43 @@ class JobService:
                           data={"count": len(docs)})
 
     async def cancel(self, job_id: str, *, user_id: str) -> ToolResult:
-        """取消任务（真实实现见 Task 6）。"""
-        return ToolResult(ok=False, content="取消功能尚未提供", error="not_implemented")
+        """取消任务（已结束的任务拒绝并说明）。
+
+        Args:
+            job_id: 任务 id。
+            user_id: 调用者（非本人 not_found）。
+
+        Returns:
+            工具结果。
+        """
+        doc = await self._repo.get(job_id)
+        if doc is None or str(doc.get("user_id")) != user_id:
+            return ToolResult(ok=False, content=f"任务不存在: {job_id}",
+                              error="not_found")
+        status = JobStatus(doc["status"])
+        if is_terminal(status):
+            return ToolResult(
+                ok=False,
+                content=f"任务已结束（{status.value}），无需取消。",
+                error="already_finished")
+        registered = self._connectors.get(str(doc.get("kind", "")))
+        accepted = False
+        if registered is not None:
+            ctx = await self._ctx_for(str(doc.get("user_id", "")),
+                                      registered.connector.plugin_id)
+            try:
+                accepted = bool(await registered.connector.cancel(
+                    str(doc.get("external_id", "")), ctx))
+            except Exception:  # noqa: BLE001 取消失败不阻断本地状态收敛
+                _LOGGER.warning("任务取消失败 job=%s", job_id, exc_info=True)
+        await self._repo.update(job_id, {
+            "status": JobStatus.CANCELLED.value,
+            "cancel_accepted": accepted,
+            "ended_at": time.time(),
+        })
+        note = "已请求取消" if accepted else "已标记取消（外部系统未确认）"
+        return ToolResult(ok=True, content=f"任务 {job_id} {note}。",
+                          data={"job_id": job_id, "status": "cancelled"})
 
     @staticmethod
     def _render(doc: dict) -> str:

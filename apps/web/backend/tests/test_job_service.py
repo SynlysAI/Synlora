@@ -4,7 +4,9 @@ import pytest
 from app.db.repos import JobRepo
 from app.services.job_connectors import (
     FAKE_STATUS_MAP,
+    FakeConnector,
     JobConnectorRegistry,
+    JobPollFailed,
     JobSubmitFailed,
     make_fake_connector,
 )
@@ -188,9 +190,9 @@ async def test_submit_failure_maps_to_tool_error(store):
 async def test_status_and_list_render_summary(store):
     """status/list 返回人类可读摘要，含任务 ID 与状态。"""
     service, reg = _job_service(store)
-    # 脚本首个状态刻意映射为非 pending：一旦 status 真的触发刷新（Task 6），
-    # 首次 poll 会把状态改成 running，下面「状态: pending」的断言即变红，
-    # 把「占位与真实实现分叉」暴露成可见失败，而不是静默通过。
+    # 脚本首态刻意取非 pending：Task 6 落地后 status 会先真刷一次外部状态，
+    # 此处必须看到 running（若首态写成 queued 映射回 pending，断言就退化成
+    # "刷新没生效也通过"的静默失效，而不是守卫）。
     reg.register(make_fake_connector("k", plugin_id="p1", script=["doing", "done"]),
                  status_map=FAKE_STATUS_MAP)
     submitted = await service.handle(
@@ -200,7 +202,7 @@ async def test_status_and_list_render_summary(store):
     one = await service.handle({"action": "status", "job_id": job_id},
                                user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert one.ok is True and job_id in one.content
-    assert "状态: pending" in one.content  # Task 5 契约：status 不触发刷新
+    assert "状态: running" in one.content  # Task 6：status 先刷新再渲染
     many = await service.handle({"action": "list"},
                                 user={"sub": "u1"}, session_id="s1", ctx_extra={})
     assert many.ok is True and "试算" in many.content
@@ -257,3 +259,100 @@ async def test_handle_unknown_action_and_render_list_isolation(store):
                          user={"sub": "u2"}, session_id="s1", ctx_extra={})
     mine = await service.render_list("s1", user_id="u1")
     assert mine.data["count"] == 0
+
+
+async def test_refresh_advances_status_via_status_map(store):
+    """刷新把外部状态原文映射为统一状态并落库。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued", "doing", "done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    job_id = submitted.data["job_id"]
+    doc = await service.refresh(await service.get(job_id))
+    assert doc["status"] in ("pending", "running", "completed")
+    # 连推三次必然到 completed
+    for _ in range(3):
+        doc = await service.refresh(await service.get(job_id))
+    assert doc["status"] == "completed"
+
+
+async def test_refresh_keeps_status_on_poll_failure(store):
+    """查询失败时保持原状态并累计失败计数（不把抖动判成失败）。"""
+    class FlakyConnector(FakeConnector):
+        async def poll(self, external_id, ctx):
+            raise JobPollFailed("网络不可达")
+
+    service, reg = _job_service(store)
+    reg.register(FlakyConnector("k", plugin_id="p1", script=["queued"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    before = await service.get(submitted.data["job_id"])
+    after = await service.refresh(before)
+    assert after["status"] == before["status"]
+    assert int(after.get("poll_failures") or 0) == 1
+
+
+async def test_refresh_ignores_unmapped_status(store):
+    """未映射的外部状态不改变任务状态（防状态倒退）。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["weird"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "pending"
+    assert doc["last_raw_status"] == "weird"
+
+
+async def test_terminal_job_is_not_refreshed(store):
+    """终态任务不再请求外部系统（避免无谓调用）。"""
+    calls: list[str] = []
+
+    class CountingConnector(FakeConnector):
+        async def poll(self, external_id, ctx):
+            calls.append(external_id)
+            return await super().poll(external_id, ctx)
+
+    service, reg = _job_service(store)
+    reg.register(CountingConnector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    doc = await service.refresh(await service.get(submitted.data["job_id"]))
+    assert doc["status"] == "completed"
+    assert doc.get("ended_at")  # 终态落结束时间
+    calls.clear()
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    assert calls == []
+
+
+async def test_cancel_marks_cancelled(store):
+    """取消：调连接器 cancel 并把状态置为 cancelled。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["queued"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    result = await service.handle({"action": "cancel",
+                                   "job_id": submitted.data["job_id"]},
+                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert result.ok is True
+    doc = await service.get(submitted.data["job_id"])
+    assert doc["status"] == "cancelled"
+
+
+async def test_cancel_terminal_job_is_rejected(store):
+    """已结束的任务不能再取消（给可读提示）。"""
+    service, reg = _job_service(store)
+    reg.register(make_fake_connector("k", plugin_id="p1", script=["done"]),
+                 status_map=FAKE_STATUS_MAP)
+    submitted = await service.handle({"action": "submit", "kind": "k", "params": {}},
+                                     user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    await service.refresh(await service.get(submitted.data["job_id"]))
+    result = await service.handle({"action": "cancel",
+                                   "job_id": submitted.data["job_id"]},
+                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+    assert result.ok is False
+    assert result.error == "already_finished"
