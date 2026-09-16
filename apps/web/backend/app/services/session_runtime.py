@@ -44,7 +44,7 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
 
     Args:
         provider_id: 模型服务 id（会话级覆盖或助手绑定，调用方已按优先级取好）。
-        owner_desc: 归属描述（助手/会话名，未指定 id 时的 422 提示用）。
+        owner_desc: 归属描述（助手/会话名，未指定 id 时的提示文案用）。
         repos: repo 集中访问对象。
 
     Returns:
