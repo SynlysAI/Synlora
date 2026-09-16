@@ -1,4 +1,4 @@
-"""「我的」端点：用户自建技能与用户自建专家。"""
+"""「我的」端点：用户自建技能与用户自建专家，以及已安装插件的个人视图。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -335,3 +335,50 @@ async def delete_my_expert(request: Request, expert_id: str,
     if not await _expert_service(request).delete(user["sub"], expert_id):
         raise HTTPException(404, "专家不存在")
     return {"ok": True}
+
+
+@router.get("/plugins")
+async def list_my_plugins(request: Request, user=Depends(get_current_user)) -> list[dict]:
+    """我的插件 = 用户已安装的非内置插件（插件无"自建"，恒只有 installed 行）。
+
+    存在的意义：管理员把某插件置为 hidden 后，市场行对该用户消失，但安装记录
+    还在（且启动装配仍按记录挂载该插件）。若没有本端点，这行就成了孤儿——
+    用户既看不见也卸不掉。故此处**不按可见性过滤**，hidden 行照常返回并标
+    revoked，对齐 list_my_skills / list_my_experts 的口径。
+
+    Args:
+        request: FastAPI 请求。
+        user: 当前用户。
+
+    Returns:
+        条目列表（source 恒为 installed，含 installed/enabled/builtin；
+        额外带 revoked：管理员已下架该条目）。
+
+    Raises:
+        HTTPException: 能力服务未就绪（503）。
+    """
+    caps = get_capability_service(request)
+    user_id = user["sub"]
+    rows: list[dict] = []
+    # 一次取回安装状态（{id: enabled}），同时得到"装没装"与"启没启用"
+    states = await caps.installs.install_states(user_id, "plugin")
+    # 遍历目录（而非遍历安装记录）：目录里已不存在的残留记录天然被跳过，
+    # 不会因取不到条目而 500（与 list_my_skills / list_my_experts 同构）
+    for item in caps.catalog.list_items("plugin"):
+        if item.id not in states:
+            continue
+        pol = await caps.policy.get("plugin", item.id)
+        # 内置插件（default_enabled=True）全员自动可用、用户侧只读，不进"我的"
+        # （历史安装记录被判定层忽略，这里同口径跳过；只读视图由市场行的
+        # default_enabled 标记另行给出）
+        if pol["default_enabled"]:
+            continue
+        rows.append({
+            "id": item.id, "name": item.name,
+            "description": item.description, "source": "installed",
+            "installed": True, "enabled": states[item.id], "builtin": True,
+            # 与 list_my_skills 同口径：hidden 即"管理员已下架"，前端据此标已下架、
+            # 收掉启停按钮，只留详情页的卸载入口把记录清掉
+            "revoked": pol["visibility"] == "hidden",
+        })
+    return rows

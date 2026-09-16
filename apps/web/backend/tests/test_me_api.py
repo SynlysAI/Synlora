@@ -190,3 +190,87 @@ def test_my_expert_accepts_registered_tool(client):
     """合法工具名仍可建（防"一律 422"的假修复）。"""
     ok = {**EXPERT, "tool_whitelist": ["python.run"]}
     assert client.post("/api/v1/me/experts", json=ok, headers=HEADERS).status_code == 201
+
+
+# 插件唯一内置条目：spec_agent（catalog/plugins/spec_agent）。用户安装它会把
+# spec.* 工具注册进进程级单例 REGISTRY，用例收尾必须回收，否则污染后续用例
+# （照抄 tests/test_plugins_api.py 的 clean_plugin_state 模式）。
+PLUGIN = "spec_agent"
+
+
+@pytest.fixture(autouse=True)
+def clean_plugin_tools():
+    """用例收尾注销本文件安装插件时注册的工具。
+
+    Yields:
+        None（仅提供收尾清理）。
+    """
+    from app.services.tool_registry import REGISTRY
+
+    yield
+    for name in list(REGISTRY.names):
+        if name.startswith("spec."):
+            REGISTRY.unregister(name)
+
+
+def test_my_plugins_lists_installed_plugin(client):
+    """用户安装的插件进「我的插件」，未安装时列表为空。"""
+    assert client.get("/api/v1/me/plugins", headers=HEADERS).json() == []
+    client.put(f"/api/v1/me/capabilities/plugin/{PLUGIN}",
+               json={"installed": True}, headers=HEADERS)
+    rows = client.get("/api/v1/me/plugins", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == PLUGIN)
+    assert row["source"] == "installed" and row["builtin"] is True
+    assert row["enabled"] is True and row["revoked"] is False
+    assert row["name"] and row["description"]     # 名称/描述取自目录条目
+
+
+def test_my_plugins_keeps_revoked_installed_row(client):
+    """管理员下架后，已安装插件仍列出并标 revoked，且卸载路径依然通。
+
+    这是本端点的存在理由：市场行被 hidden 过滤掉后，若「我的」也不再返回，
+    安装记录就成了用户够不着的孤儿（启动装配还会一直挂载该插件）。
+    """
+    client.put(f"/api/v1/me/capabilities/plugin/{PLUGIN}",
+               json={"installed": True}, headers=HEADERS)
+    client.put(f"/api/v1/admin/catalog/plugin/{PLUGIN}/policy",
+               json={"visibility": "hidden", "default_enabled": False}, headers=HEADERS)
+
+    # 下架后市场已不再返回该行（孤儿的成因），「我的」必须仍然返回
+    market = client.get("/api/v1/market/plugin", headers=HEADERS).json()
+    assert all(r["id"] != PLUGIN for r in market)
+    rows = client.get("/api/v1/me/plugins", headers=HEADERS).json()
+    row = next(r for r in rows if r["id"] == PLUGIN)
+    assert row["revoked"] is True and row["installed"] is True
+
+    # 下架行的唯一合法动作是卸载（前端详情页按钮走同一端点）
+    assert client.put(f"/api/v1/me/capabilities/plugin/{PLUGIN}",
+                      json={"installed": False}, headers=HEADERS).status_code == 200
+    assert all(r["id"] != PLUGIN for r in
+               client.get("/api/v1/me/plugins", headers=HEADERS).json())
+
+
+def test_builtin_plugin_not_in_my_plugins(client):
+    """内置插件（default_enabled=True）不进「我的插件」：先安装再切内置，记录被口径忽略。"""
+    client.put(f"/api/v1/me/capabilities/plugin/{PLUGIN}",
+               json={"installed": True}, headers=HEADERS)
+    client.put(f"/api/v1/admin/catalog/plugin/{PLUGIN}/policy",
+               json={"visibility": "public", "default_enabled": True}, headers=HEADERS)
+    rows = client.get("/api/v1/me/plugins", headers=HEADERS).json()
+    assert all(r["id"] != PLUGIN for r in rows)
+
+
+def test_my_plugins_skips_stale_record(client):
+    """安装记录指向目录里已不存在的插件 → 静默跳过，不 500（对齐技能/专家口径）。"""
+    client.put(f"/api/v1/me/capabilities/plugin/{PLUGIN}",
+               json={"installed": True}, headers=HEADERS)
+    store = client.app.state.store
+    installs = client.app.state.capability_service.installs
+    # 直接造一条"目录里没有的 id"的安装记录（等价于插件被下架并从仓库删除）
+    user_id = client.portal.call(store.list, "user_capabilities")[0]["user_id"]
+    client.portal.call(installs.install, user_id, "plugin", "ghost-plugin")
+
+    resp = client.get("/api/v1/me/plugins", headers=HEADERS)
+    assert resp.status_code == 200
+    ids = [r["id"] for r in resp.json()]
+    assert "ghost-plugin" not in ids and PLUGIN in ids

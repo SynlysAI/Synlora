@@ -4,8 +4,10 @@
  * 数据来源（后端各自负责归属与可见性）：
  * - `GET /api/v1/me/skills`  自建技能 + 已装内置技能（内置条目已由后端跳过）
  * - `GET /api/v1/me/experts` 自建专家 + 已装内置专家（同上）
- * - `GET /api/v1/market/{skill,expert,plugin}` 三类市场：
- *   过滤 installed（且非内置）→ 我的已装；过滤 default_enabled → 内置只读列表
+ * - `GET /api/v1/me/plugins` 已装插件（同上；管理员下架的行仍返回并标 revoked，
+ *   否则市场已过滤掉该行，安装记录会成为无路可退的孤儿）
+ * - `GET /api/v1/market/{skill,expert,plugin}` 三类市场：仅取 default_enabled
+ *   行作内置只读列表（我的已装列表一律走后端 /me/*，不按市场行过滤）
  * 写操作复用市场 store 的开关语义（`PUT /me/capabilities/...`）与 `/me/skills|experts` 的 CRUD。
  */
 import { create } from 'zustand'
@@ -30,6 +32,17 @@ interface MyExpertRow {
   enabled: boolean
   builtin: boolean
   /** 管理员已下架（仅 installed 行可能出现）：卡片标已下架、不给启停按钮。 */
+  revoked?: boolean
+}
+/** 后端 /me/plugins 的行形状（插件无「自建」，恒为已安装行）。 */
+interface MyPluginRow {
+  id: string
+  name: string
+  description: string
+  source: 'installed'
+  enabled: boolean
+  builtin: boolean
+  /** 管理员已下架（插件被隐藏）：卡片标已下架、不给启停按钮。 */
   revoked?: boolean
 }
 /** 自建技能/专家的提交体。 */
@@ -66,9 +79,10 @@ export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => 
   loaded: false,
 
   loadMine: async () => {
-    const [skills, experts, markets] = await Promise.all([
+    const [skills, experts, plugins, markets] = await Promise.all([
       api<MyRow[]>('/api/v1/me/skills'),
       api<MyExpertRow[]>('/api/v1/me/experts'),
+      api<MyPluginRow[]>('/api/v1/me/plugins'),
       Promise.all([
         api<CatalogItem[]>('/api/v1/market/skill'),
         api<CatalogItem[]>('/api/v1/market/expert'),
@@ -109,8 +123,17 @@ export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => 
         avatar: e.avatar || undefined,
         revoked: e.revoked,
       })),
-      // 已装插件（内置插件不进 items——用户对其无启停概念）
-      ...pluginRows.filter((p) => p.installed && !p.default_enabled).map((p) => toMine('plugin', p)),
+      // 已装插件（内置插件不进 items——用户对其无启停概念），含被管理员下架的行
+      ...plugins.map((p) => ({
+        kind: 'plugin' as const,
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        source: p.source,
+        enabled: p.enabled,
+        builtin: p.builtin,
+        revoked: p.revoked,
+      })),
     ]
     const builtinItems: MyCapability[] = [
       ...skillRows.filter((p) => p.default_enabled).map((p) => toMine('skill', p)),
