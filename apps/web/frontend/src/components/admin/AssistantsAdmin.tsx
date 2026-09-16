@@ -393,8 +393,8 @@ export default function AssistantsAdmin() {
       {/* 页头 */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-[16px] font-medium tracking-tight">助手</h2>
-          <p className="pt-0.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+          <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">助手</h2>
+          <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
             内置助手不可删除、可编辑；新建/修改后工作台左栏即时可选。
           </p>
         </div>

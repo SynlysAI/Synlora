@@ -5,8 +5,8 @@ export default function GeneralAdmin() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h2 className="text-[16px] font-medium tracking-tight">常规</h2>
-        <p className="pt-0.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+        <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">常规</h2>
+        <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
           外观与界面语言等平台级设置。
         </p>
       </div>

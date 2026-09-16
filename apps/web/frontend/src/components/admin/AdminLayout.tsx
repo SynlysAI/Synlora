@@ -105,7 +105,9 @@ export default function AdminLayout({ tab, children }: AdminLayoutProps) {
               ))}
             </nav>
             <main className="min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto w-full max-w-4xl px-6 py-6">{children}</div>
+              {/* 内容线照参考项目的 .page-shell（限宽 1400、两侧 48px）+ .page-content
+                  的上下留白，与用户侧能力中心保持一致，两个整页切换时骨架不割裂 */}
+              <div className="mx-auto w-full max-w-[1400px] px-12 pt-8 pb-10">{children}</div>
             </main>
           </>
         ) : (

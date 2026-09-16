@@ -231,8 +231,8 @@ export default function PluginsAdmin() {
       {/* 页头 */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-[16px] font-medium tracking-tight">插件</h2>
-          <p className="pt-0.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+          <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">插件</h2>
+          <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
             内置插件包的工具扩展；按插件声明的 schema 配置，敏感字段加密存储、永不明文回显。
           </p>
         </div>

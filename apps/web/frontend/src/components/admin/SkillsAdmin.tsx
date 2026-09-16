@@ -374,8 +374,8 @@ export default function SkillsAdmin() {
       {/* 页头 */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-[16px] font-medium tracking-tight">技能</h2>
-          <p className="pt-0.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+          <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">技能</h2>
+          <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
             全局技能目录（SKILL.md 落盘）；内置技能不可删除、可编辑，所有登录用户可用。
           </p>
         </div>

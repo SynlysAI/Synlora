@@ -268,8 +268,8 @@ export default function ModelsAdmin() {
       {/* 页头 */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-[16px] font-medium tracking-tight">模型服务</h2>
-          <p className="pt-0.5 text-[13px] text-[var(--sa-alias-label-tertiary)]">
+          <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">模型服务</h2>
+          <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
             OpenAI 兼容服务配置：API Key 加密存储、永不明文回显；停用的服务对普通用户不可见。
           </p>
         </div>
