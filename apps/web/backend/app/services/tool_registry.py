@@ -11,15 +11,22 @@ from __future__ import annotations
 
 from synlys_harness import ToolPipeline, ToolRegistry, register_builtin_tools
 
+from app.tools import knowledge_list, knowledge_search
+
 
 def build_registry() -> ToolRegistry:
     """构建含全部内置工具的注册表（插件工具由装配阶段另行注册）。
+
+    内置工具 = harness 通用机制工具 + 宿主业务工具（WeKnora 知识检索，
+    属平台基础设施而非插件能力，故不进 catalog/plugins）。
 
     Returns:
         新的 ToolRegistry。
     """
     registry = ToolRegistry()
     register_builtin_tools(registry)
+    registry.register(knowledge_list)
+    registry.register(knowledge_search)
     return registry
 
 
