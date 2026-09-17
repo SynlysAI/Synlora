@@ -203,6 +203,38 @@ function writeLastSeq(sessionId: string, seq: number): void {
   localStorage.setItem(LAST_SEQ_PREFIX + sessionId, String(seq))
 }
 
+/** 增量同步轮询间隔（ms）：与后端 JobPoller 的 5s 同档（比它更快没有意义）。 */
+const SYNC_INTERVAL_MS = 5000
+
+/** 增量轮询句柄与重入旗标（模块级：不进 state，避免每次 tick 触发渲染）。 */
+let syncTimer: number | null = null
+let syncInFlight = false
+
+/**
+ * 需要全量对账：上一轮流没等到 turn/end 就断了（网络中断/页签挂起）。
+ *
+ * 该路径下 finally 会把残留累积文本定稿成本地条目（防丢字），这段文本若也已
+ * 落盘，增量同步会把它再上屏一次。故下一次同步改走 after_seq=-1 全量重放
+ * （reducer 幂等，以落盘事件为准），把本地残留抹平——这也是文件头注释里
+ * "重连经 GET /sessions/{id}/events?after_seq=N 补齐" 的落地。
+ */
+let needsReconcile = false
+
+/** 启动会话事件增量轮询（绑定会话时调用；重复调用幂等）。 */
+function startSyncPolling(): void {
+  if (syncTimer != null) return
+  syncTimer = window.setInterval(() => {
+    void useChatStore.getState().syncEvents()
+  }, SYNC_INTERVAL_MS)
+}
+
+/** 停止增量轮询（解绑会话时调用）。 */
+function stopSyncPolling(): void {
+  if (syncTimer == null) return
+  window.clearInterval(syncTimer)
+  syncTimer = null
+}
+
 /**
  * 会话事件 → 视图模型的纯函数投影（SSE 流与历史回放共用）。
  *
@@ -419,6 +451,13 @@ interface ChatState {
   /** 绑定会话并全量回放历史事件。 */
   loadHistory: (sessionId: string) => Promise<void>
   /**
+   * 拉取本会话的增量事件并合并进消息流（后台唤醒轮可见性的唯一来源）。
+   *
+   * 唤醒轮由服务端 JobPoller 起，不经过浏览器发起的 SSE 请求——没有本方法时，
+   * 用户必须刷新或切换会话才能看到「任务已完成」提示条与模型的主动汇报。
+   */
+  syncEvents: () => Promise<void>
+  /**
    * 发送消息：optimistic 用户气泡 + SSE 流接收。
    *
    * @param text 消息文本。
@@ -473,6 +512,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       lastSeq: readLastSeq(sessionId),
       epoch,
     })
+    // 绑定期开始增量轮询：服务端起的唤醒轮没有 SSE 通道，只能靠它上屏
+    startSyncPolling()
     try {
       const events = await api<SessionEvent[]>(
         `/api/v1/sessions/${sessionId}/events?after_seq=-1`,
@@ -485,6 +526,52 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ messages: final.items, lastSeq, stats })
     } catch (err) {
       if (get().epoch === epoch) set({ error: (err as Error).message })
+    }
+  },
+
+  syncEvents: async () => {
+    const { sessionId, streaming, epoch } = get()
+    // 跳过条件：无绑定会话；本轮流式中（投影状态归 SSE 持有，并发 reduce 会把
+    // 同一条事件重复上屏）；页面不可见（后台标签页不做无谓轮询）；上一次未回包
+    if (!sessionId || streaming || syncInFlight) return
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+    const full = needsReconcile
+    syncInFlight = true
+    try {
+      const events = await api<SessionEvent[]>(
+        `/api/v1/sessions/${sessionId}/events?after_seq=${full ? -1 : get().lastSeq}`,
+      )
+      const cur = get()
+      // 回包期间可能已切会话或开了一轮新对话，状态不再是本方法的基线
+      if (cur.epoch !== epoch || cur.sessionId !== sessionId || cur.streaming) return
+      if (!events.length && !full) return
+      // 与 SSE 同一条 reducer（瞬态 delta 不落盘，故这里只回放定稿事件）：
+      // 增量在同一条流上续接，全量对账则从空投影重建（幂等，顺带抹掉本地残留）
+      const proj = events.reduce(reduceEvent, full
+        ? { items: [], streamingText: '', thinkingText: '', turnStartTs: null }
+        : {
+            items: cur.messages,
+            streamingText: cur.streamingText,
+            thinkingText: cur.thinkingText,
+            turnStartTs: cur.turnStartTs,
+          })
+      const lastSeq = events.length ? events[events.length - 1].seq : cur.lastSeq
+      set({
+        messages: proj.items,
+        streamingText: proj.streamingText,
+        thinkingText: proj.thinkingText,
+        turnStartTs: proj.turnStartTs,
+        stats: full
+          ? events.reduce(reduceStats, emptyStats())
+          : events.reduce(reduceStats, cur.stats),
+        lastSeq: Math.max(cur.lastSeq, lastSeq),
+      })
+      needsReconcile = false
+      writeLastSeq(sessionId, get().lastSeq)
+    } catch {
+      // 静默：增量同步失败不打扰用户（不设 error），下一轮自行重试
+    } finally {
+      syncInFlight = false
     }
   },
 
@@ -521,6 +608,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           lastSeq: -1,
           epoch: s.epoch + 1,
         }))
+        startSyncPolling()
       } catch (err) {
         set({ error: (err as Error).message || '新建会话失败' })
         return
@@ -545,6 +633,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       turnStartTs: null,
     }))
 
+    // 是否收到过终止事件（turn/end / turn/aborted）：没收到就说明是断连收场。
+    // 声明在 try 之外——finally 与 try 是两个块作用域，里面声明外面看不见
+    let turnEnded = false
     try {
       // 本流内首条非 steering 用户消息已被 optimistic 气泡渲染（跳过投影防
       // 重复）；后续同类消息 = 插话兜底续跑轮的输入，须投影上屏并开启新 turn
@@ -592,6 +683,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           })
           if (get().epoch !== epoch) return
+          if (ev.type === 'turn/end' || ev.type === 'turn/aborted') turnEnded = true
           if (ev.type === 'turn/start') {
             set({ activeRunId: String(ev.payload?.run_id ?? '') || null })
           } else if (ev.type === 'error') {
@@ -629,6 +721,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamingText: '',
           thinkingText: '',
         }))
+        // 没等到 terminate 事件就收场（网络中断等）：下一轮同步走全量对账，
+        // 用落盘事件覆盖上面的本地残留（见 needsReconcile 注释）
+        if (!turnEnded) needsReconcile = true
         if (sessionId) writeLastSeq(sessionId, get().lastSeq)
       }
       // 刷新会话列表（自动标题/计数/排序变化）
@@ -695,6 +790,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   reset: () => {
     activeController?.abort()
     activeController = null
+    stopSyncPolling()
     set((s) => ({
       sessionId: null,
       messages: [],

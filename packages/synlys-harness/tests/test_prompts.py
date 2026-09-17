@@ -53,3 +53,39 @@ def test_empty_skill_index_returns_empty_string():
     out = build_system_prompt(persona="", workspace=None, skills=[])
     assert "# 技能" not in out
     assert render_skill_index([]) == ""
+
+
+def test_env_section_reports_sandbox_capability():
+    """执行环境段按执行器标记写能力边界（docker 断网 / local 无隔离）。"""
+    docker = build_system_prompt(persona="", workspace=None, skills=[],
+                                 sandbox="docker", today="2026-09-16")
+    assert "2026-09-16" in docker
+    assert "无网络" in docker
+    # 容器模式下代码跑在 Linux 容器里，不能把宿主平台写进去误导
+    assert "本机平台" not in docker
+    local = build_system_prompt(persona="", workspace=None, skills=[],
+                                sandbox="local")
+    assert "本机平台" in local and "事故围栏" in local
+
+
+def test_env_section_omits_capability_when_marker_unknown():
+    """未提供/未知执行器标记时只给日期，不猜能力边界。"""
+    out = build_system_prompt(persona="", workspace=None, skills=[],
+                              sandbox="", today="2026-09-16")
+    assert "2026-09-16" in out
+    assert "代码执行" not in out
+
+
+def test_output_section_states_render_limits():
+    """输出规范段必须写明平台渲染边界（无公式/图表渲染）。"""
+    out = build_system_prompt(persona="", workspace=None, skills=[])
+    assert "# 输出规范" in out
+    assert "不渲染数学公式与图表" in out
+
+
+def test_section_order_output_env_workspace(tmp_path):
+    """段序：输出规范(50) < 执行环境(60) < 工作区(70)。"""
+    out = build_system_prompt(persona="", workspace=tmp_path, skills=[],
+                              sandbox="local")
+    assert out.index("# 输出规范") < out.index("# 执行环境")
+    assert out.index("# 执行环境") < out.index("# 工作区")

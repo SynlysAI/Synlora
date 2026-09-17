@@ -415,10 +415,15 @@ class AgentService:
                     assistant = None
             persona = str((assistant or {}).get("system_prompt") or "").strip()
             whitelist = list((assistant or {}).get("tool_whitelist") or [])
+            # 执行器就在这里解析（后面 ctx.extra 还要用同一个），拿它的 sandbox 标记
+            # 写进提示词：模型必须知道代码执行的能力边界（docker 断网、跑完即删；
+            # local 无强隔离），否则会去 pip install / 抓外网白烧几步
+            executor = await self._code_executor()
             system_prompt = build_system_prompt(
                 persona=persona,
                 workspace=workspace_root,
                 skills=index,
+                sandbox=executor.sandbox,
             )
             # 无专家（或专家没限定工具）时放开全部内置工具；技能工具无条件
             # 追加（技能是平台能力），set 去重防助手白名单已列
@@ -502,8 +507,8 @@ class AgentService:
                 # 工作区根：插件连接器读取用户文件（如谱图上传）时用
                 "workspace_root": str(workspace_root),
                 "http_allowed_hosts": self._settings.allowed_hosts,
-                # python.run 执行器（部署级注入，缺省工具回落本机执行）
-                "code_executor": await self._code_executor(),
+                # python.run 执行器（部署级注入，缺省工具回落本机执行；已在上文解析）
+                "code_executor": executor,
                 "skills": bodies,
                 "skill_meta": {s["name"]: s["description"] for s in active_skills},
                 # WeKnora 知识检索：连接配置 + 助手绑定的知识库范围（None/空 =

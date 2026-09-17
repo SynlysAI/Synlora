@@ -33,28 +33,48 @@ interface RawTurn {
   items: ChatItem[]
 }
 
+/** 轮内助手正文条目（最终回答或中间解说）。 */
+type AssistantItem = Extract<ChatItem, { kind: 'assistant' }>
+
 /**
  * turn 分组视图结构：
  * - `process`：本轮的思考/工具/**中间解说正文**，保持事件原始顺序，收进「任务用时」chip；
- * - `answer`：本轮**最后一条** assistant 正文（最终回答），文档流展示并带尾部操作行。
+ * - `answer`：本轮**轮末那一条** assistant 正文（最终回答），文档流展示并带尾部操作行；
+ * - `meta`：本轮用时/用量/时间戳所在的 assistant 条目（turn/end 写回的最后一条）。
  *
  * 中间解说与最终回答的区分照抄参考实现：jiuwen `buildTurnTimeline` 反向扫描把
  * 一轮里靠前的 assistant 消息标 `hideMeta`（折进「已完成」折叠条、不出复制按钮），
  * DSH 把它算作 turn-process（`Reply-bearing durable Assistant messages before the
  * final answer`），只有 turn-tail 带复制/用时/用量。
  *
- * process 保持原顺序是必须的：工具调用前的解说若被单独归到"正文"分区，会整段
- * 排到所有工具调用之后，与真实发生顺序相反。
+ * 两处顺序约束（都踩过坑）：
+ * - process 保持原顺序是必须的：工具调用前的解说若被单独归到"正文"分区，会整段
+ *   排到所有工具调用之后，与真实发生顺序相反；
+ * - 最终回答只认「轮末那一条」正文：模型在同一个 step 里既吐解说又调工具时，harness
+ *   把解说挂在 `tool/call.content` 上（该 step 不发 assistant/message），事件序是
+ *   [解说, 工具]；若按"最后一条 assistant"抽取，解说会被抬到工具行下方——流式里
+ *   就表现为工具信息插到刚显示出来的 content 前面。
  */
 interface Turn {
   user: Extract<ChatItem, { kind: 'user' }> | null
   process: ChatItem[]
   /** file.send 产物交付卡：摘出折叠区常驻回答下方（产物要下载，收进下拉看不见）。 */
   deliveries: Extract<ChatItem, { kind: 'file_send' }>[]
-  answer: Extract<ChatItem, { kind: 'assistant' }> | null
+  answer: AssistantItem | null
+  /**
+   * 轮内最后一条 assistant（承载 turn/end 写回的用时/用量）。轮末停在工具/问答上时
+   * 它是中间解说，此时 answer 为 null——「任务用时」chip 仍要按它展示，否则整轮过程
+   * 区永远展开、收拢不了。
+   */
+  meta: AssistantItem | null
 }
 
-/** 按 user 边界把平铺 items 切成 turn 组，并摘出每轮的最终回答。 */
+/**
+ * 按 user 边界把平铺 items 切成 turn 组，并摘出每轮的最终回答。
+ *
+ * @param items 投影后的聊天条目（平铺，含 user 边界）。
+ * @returns turn 组列表（process 保序、answer 只取轮末正文、meta 取轮内最后正文）。
+ */
 function groupTurns(items: ChatItem[]): Turn[] {
   const raw: RawTurn[] = []
   for (const item of items) {
@@ -68,14 +88,18 @@ function groupTurns(items: ChatItem[]): Turn[] {
       (it): it is Extract<ChatItem, { kind: 'file_send' }> => it.kind === 'file_send',
     )
     const rest = deliveries.length ? all.filter((it) => it.kind !== 'file_send') : all
-    const answerIdx = rest.findLastIndex((it) => it.kind === 'assistant')
-    if (answerIdx === -1) return { user, process: rest, deliveries, answer: null }
-    const answer = rest[answerIdx] as Extract<ChatItem, { kind: 'assistant' }>
+    const meta = rest.findLast((it): it is AssistantItem => it.kind === 'assistant') ?? null
+    // 最终回答 = 轮末那一条正文；轮末停在工具/问答上时该正文只是中间解说，留在过程区
+    const answerIdx =
+      rest.length > 0 && rest[rest.length - 1].kind === 'assistant' ? rest.length - 1 : -1
+    if (answerIdx === -1) return { user, process: rest, deliveries, answer: null, meta }
+    const answer = rest[answerIdx] as AssistantItem
     return {
       user,
       process: rest.filter((_, i) => i !== answerIdx),
       deliveries,
       answer,
+      meta,
     }
   })
 }
@@ -200,7 +224,8 @@ interface TurnBlockProps {
 function TurnBlock({ turn, active, assistantName, platformDefault, pendingAskId }: TurnBlockProps) {
   const [workOpen, setWorkOpen] = useState(false)
   const answer = turn.answer
-  const elapsedMs = answer?.elapsedMs
+  // 用时以 meta 为准（轮末停在工具上时 answer 为 null，chip 不能因此消失）
+  const elapsedMs = turn.meta?.elapsedMs
   const failed = turn.process.some((w) => w.kind === 'tool' && w.result && !w.result.ok)
   const done = !active && elapsedMs != null
   const hasHeader = turn.user != null
@@ -288,6 +313,7 @@ export default function MessageList({ assistantName, platformDefault }: MessageL
   const streamingText = useChatStore((s) => s.streamingText)
   const thinkingText = useChatStore((s) => s.thinkingText)
   const streaming = useChatStore((s) => s.streaming)
+  const turnStartTs = useChatStore((s) => s.turnStartTs)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [atBottom, setAtBottom] = useState(true)
 
@@ -313,6 +339,18 @@ export default function MessageList({ assistantName, platformDefault }: MessageL
 
   const turns = useMemo(() => groupTurns(messages), [messages])
   const pendingAsk = pickPendingAsk(messages, streaming)
+  /**
+   * 服务端仍在执行、本页却没有 delta 通道的轮次：`turn/start` 已投影到、配对的
+   * `turn/end` 还没到。`streaming` 只由本页 POST 出去的那条 SSE 流置位，后台任务
+   * 唤醒轮（服务端 JobPoller 起的 run）走不到那里——不单独推断的话，模型汇总结果
+   * 的那几秒界面看起来是空闲的。
+   *
+   * 该信号也覆盖"本轮流断了但 run 还在服务端跑"：run 不因浏览器断连而死，
+   * 落盘事件由 syncEvents 补齐，turn/end 一到标志自然消失（不会长期残留）。
+   */
+  const remoteRunning = !streaming && turnStartTs != null
+  /** 尾部轮次已有回答：整段回答已落地时不必再挂"执行中"提示（等 turn/end 的空窗）。 */
+  const tailSettling = remoteRunning && !turns[turns.length - 1]?.answer
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -322,7 +360,7 @@ export default function MessageList({ assistantName, platformDefault }: MessageL
             <TurnBlock
               key={i}
               turn={turn}
-              active={streaming && i === turns.length - 1}
+              active={(streaming || remoteRunning) && i === turns.length - 1}
               assistantName={assistantName}
               platformDefault={platformDefault}
               pendingAskId={pendingAsk?.callId ?? null}
@@ -338,6 +376,15 @@ export default function MessageList({ assistantName, platformDefault }: MessageL
               )}
               {streamingText && <AssistantMessage content={streamingText} streaming />}
             </section>
+          )}
+          {/* 唤醒轮/断连后仍在跑的轮次：只给过程反馈，不假装逐字流式——瞬态 delta
+              不落盘，增量同步拿不到 token，回答只能是定稿后整段出现 */}
+          {tailSettling && (
+            <div className="mt-1.5 pl-1">
+              <span className="sa-shimmer-text text-[12px] font-medium leading-[1.3]">
+                后台执行中…
+              </span>
+            </div>
           )}
         </div>
       </div>

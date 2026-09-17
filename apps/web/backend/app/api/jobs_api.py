@@ -20,6 +20,26 @@ def _job_service(request: Request):
     return request.app.state.job_service
 
 
+# 列表项保留的字段：前端的任务面板据此渲染状态点/名称/状态/时长与异常提示。
+# 刻意剔除 result（可达 4000 字）/params/user_identity/workspace_root——
+# 面板是轮询拉取的（秒级），带原文等于每次白搬几十 KB 且把内部字段送到浏览器；
+# 需要原文的场景走 GET /jobs/{job_id}。
+_LIST_FIELDS = ("_id", "kind", "label", "status", "session_id", "created_at",
+                "updated_at", "ended_at", "error", "poll_failures")
+
+
+def _brief(doc: dict) -> dict:
+    """任务文档 → 列表项（只留 `_LIST_FIELDS` 里存在的字段）。
+
+    Args:
+        doc: 任务文档。
+
+    Returns:
+        精简后的任务条目。
+    """
+    return {k: doc[k] for k in _LIST_FIELDS if k in doc}
+
+
 @router.get("/jobs")
 async def list_jobs(request: Request, session_id: str | None = None,
                     user=Depends(get_current_user)) -> list[dict]:
@@ -31,13 +51,13 @@ async def list_jobs(request: Request, session_id: str | None = None,
         user: 当前用户 payload。
 
     Returns:
-        任务文档列表。
+        任务条目列表（字段见 `_LIST_FIELDS`，不含 result 原文）。
     """
     service = _job_service(request)
     if session_id:
         docs = await service.list_for_session(session_id)
-        return [d for d in docs if str(d.get("user_id")) == user["sub"]]
-    return await service.list_for_user(user["sub"])
+        return [_brief(d) for d in docs if str(d.get("user_id")) == user["sub"]]
+    return [_brief(d) for d in await service.list_for_user(user["sub"])]
 
 
 @router.get("/jobs/{job_id}")

@@ -26,6 +26,25 @@ export function formatRelativeTime(ts: number): string {
   return d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()}-${md}`
 }
 
+/**
+ * 秒数 → 至多两个相邻单位的时长（"45s" / "3m05s" / "1h02m"）。
+ *
+ * 照抄 DSH JobListAction 的 formatDuration：后台任务超过 1 小时已属异常，
+ * 故小时就是最大单位（不再长出天/月这类没有产出方会到达的词汇）。
+ *
+ * @param seconds 时长（秒，负数按 0 处理）。
+ * @returns 时长文本。
+ */
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const s = total % 60
+  const m = Math.floor(total / 60) % 60
+  const h = Math.floor(total / 3600)
+  if (h > 0) return `${h}h${String(m).padStart(2, '0')}m`
+  if (m > 0) return `${m}m${String(s).padStart(2, '0')}s`
+  return `${s}s`
+}
+
 /** 各数量级对应的字节数与单位。 */
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'] as const
 

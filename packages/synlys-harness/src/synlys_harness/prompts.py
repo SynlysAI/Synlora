@@ -1,13 +1,17 @@
 """系统提示词分段组合：平台默认段（按 priority 升序）+ 技能索引 + 专家 persona 追加。"""
 from __future__ import annotations
 
+import platform as _platform
 import re
+from datetime import date
 from pathlib import Path
 
 # 平台默认段：(priority, 文本)。priority 参照 jiuwen PromptPriority。
 IDENTITY_PRIORITY = 10
 TASK_PRIORITY = 21
 SKILLS_PRIORITY = 40
+OUTPUT_PRIORITY = 50
+ENV_PRIORITY = 60
 WORKSPACE_PRIORITY = 70
 
 # 灵魂段：措辞取自 jiuwen `resources/agent/workspace/SOUL_ZH.md`（平台无关的智能体
@@ -53,6 +57,30 @@ WORKSPACE_SECTION = """# 工作区
 
 引用产物时用相对工作区根的路径。"""
 
+# 输出规范段：写清**平台能渲染什么**——这是工具 schema 表达不了的信息，写错格式
+# （例如给公式套 $…$）用户看到的是一堆源码。前端渲染面是 react-markdown + GFM。
+OUTPUT_SECTION = """# 输出规范
+
+- 正文用 Markdown：表格、任务列表、带语言标注的代码块都能正常渲染。
+- 平台**不渲染数学公式与图表**：公式写成行内代码或纯文本（如 ``R²``），
+  图表用 `python.run` 生成图片文件后交付，不要在正文里画 ASCII 图。
+- 引用数据或文件时写清来源文件名与关键数值。"""
+
+# 执行器能力边界（键与 tools/sandbox.py 的 sandbox 标记一一对应）。
+# 必须让模型知道断网/非 root/跑完即删这类硬约束：不知道就会去 pip install、
+# 抓外网，然后拿到一堆难懂的报错，白白烧掉几步。
+SANDBOX_NOTES = {
+    "docker": "- 代码执行：临时 Docker 容器（**无网络**、非 root、CPU/内存/进程数受限），"
+              "跑完即销毁——装不了新依赖包，也访问不了外网；"
+              "需要联网或额外依赖时改用平台已有工具，或先向用户说明。",
+    "local-weak": "- 代码执行：本机子进程（请求容器但不可用的降级模式，无强隔离与资源限额；"
+                  "有网络，但不要当默认手段）。",
+    "local": "- 代码执行：本机子进程（`-I` 隔离 + 环境白名单 + 超时/输出截断；"
+             "是事故围栏，不是安全边界）。",
+    "unavailable": "- 代码执行：当前不可用（沙箱未就绪）——不要调用 `python.run`，"
+                   "改用文件工具或直接向用户说明能力受限。",
+}
+
 SKILLS_HEADER = """# 技能
 
 选择与任务最相关的技能，使用技能前，调用 `skill.read` 获取该技能的完整 `SKILL.md`。
@@ -62,6 +90,35 @@ SKILLS_HEADER = """# 技能
 """
 
 _PLACEHOLDER = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
+
+
+def render_env_section(*, sandbox: str, today: str | None = None,
+                       platform_name: str | None = None) -> str:
+    """渲染执行环境段（日期 + 代码执行能力边界）。
+
+    Args:
+        sandbox: 执行器标记（tools/sandbox.py：local/docker/local-weak/unavailable）；
+            空串或未知取值时只给日期，不写执行能力（宁缺勿错）。
+        today: 当前日期（YYYY-MM-DD）；None 时取本机当天。
+        platform_name: 本机平台名；None 时取 `platform.system()`。
+
+    Returns:
+        执行环境段文本。
+    """
+    lines = [
+        "# 执行环境",
+        "",
+        f"- 当前日期：{today or date.today().isoformat()}"
+        "（用户说“今天/最近”时以此为准）。",
+    ]
+    note = SANDBOX_NOTES.get(sandbox)
+    if note:
+        # 本机模式才报平台：容器模式下代码跑在 Linux 容器里，报宿主机会误导
+        # （写出 Windows 专有路径/编码假设，进容器就错）
+        if sandbox != "docker":
+            lines.append(f"- 本机平台：{platform_name or _platform.system()}。")
+        lines.append(note)
+    return "\n".join(lines)
 
 
 def render_skill_index(skills: list[tuple[str, str]]) -> str:
@@ -84,6 +141,8 @@ def build_system_prompt(
     persona: str,
     workspace: Path | None,
     skills: list[tuple[str, str]],
+    sandbox: str = "",
+    today: str | None = None,
 ) -> str:
     """拼出最终 system prompt。
 
@@ -91,6 +150,8 @@ def build_system_prompt(
         persona: 专家自己的 system_prompt（追加在平台默认段之后）。
         workspace: 工作区根目录（None 时省略工作区段）。
         skills: 该会话启用的技能索引。
+        sandbox: 本部署的代码执行器标记（见 `render_env_section`）。
+        today: 当前日期覆写（仅测试用；缺省取本机当天）。
 
     Returns:
         各段按 priority 升序、以空行连接，末尾追加 persona。
@@ -99,6 +160,8 @@ def build_system_prompt(
     sections: list[tuple[int, str]] = [
         (IDENTITY_PRIORITY, SOUL),
         (TASK_PRIORITY, AGENT),
+        (OUTPUT_PRIORITY, OUTPUT_SECTION),
+        (ENV_PRIORITY, render_env_section(sandbox=sandbox, today=today)),
     ]
     if workspace is not None:
         sections.append((WORKSPACE_PRIORITY, WORKSPACE_SECTION))

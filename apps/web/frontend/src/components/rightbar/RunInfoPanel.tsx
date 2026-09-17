@@ -1,15 +1,17 @@
 /**
- * 运行信息面板（右栏"运行信息"页）：当前会话的事件流统计。
+ * 运行信息面板（右栏"运行信息"页）：当前会话的事件流统计 + 后台任务。
  *
  * 数据来自 chat store 的 RunStats 聚合（历史回放与 SSE 流共用同一
  * reducer，实时更新）：轮数 = turn/end + turn/aborted；token 用量
  * 后端 V1 未进事件流，展示步数/事件计数/运行状态。
+ * 后台任务区块（JobList）是唯一不由事件流投影的部分，见其组件注释。
  */
 import { useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
 import { useSessionsStore } from '@/stores/sessions'
 import { TOOL_LABELS } from '@/components/chat/toolLabels'
 import { formatRelativeTime } from '@/utils/format'
+import JobList from './JobList'
 
 /** 统计单元格：数值 + 说明。 */
 function StatCell({ value, label }: { value: number | string; label: string }) {
@@ -29,10 +31,14 @@ export default function RunInfoPanel() {
   const stats = useChatStore((s) => s.stats)
   const streaming = useChatStore((s) => s.streaming)
   const activeRunId = useChatStore((s) => s.activeRunId)
+  const turnStartTs = useChatStore((s) => s.turnStartTs)
   const sessions = useSessionsStore((s) => s.sessions)
   const assistants = useAssistantsStore((s) => s.assistants)
 
   const session = sessions.find((s) => s._id === sessionId)
+  /** 服务端在跑（含本页无流的唤醒轮）：turn/start 已到、turn/end 未到。 */
+  const remoteRunning = !streaming && turnStartTs != null
+  const busy = streaming || remoteRunning
   const assistantName = assistants.find((a) => a._id === session?.assistant_id)?.name
   const toolRows = Object.entries(stats.byTool)
   const toolTotal = toolRows.reduce((n, [, t]) => n + t.calls, 0)
@@ -78,21 +84,22 @@ export default function RunInfoPanel() {
         </div>
       </div>
 
-      {/* 流状态 */}
+      {/* 流状态：后台唤醒轮（服务端在跑、本页无流）不能报"空闲"，否则与对话区的
+          "后台执行中"提示自相矛盾（见 MessageList 的 remoteRunning） */}
       <div className="flex items-center justify-between rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l1)] px-2.5 py-2">
         <span className="text-[13px] text-[var(--sa-alias-label-secondary)]">当前流状态</span>
         <span
           className={`flex items-center gap-1.5 text-[13px] ${
-            streaming ? 'text-[var(--sa-alias-state-business-primary)]' : 'text-[var(--sa-alias-label-tertiary)]'
+            busy ? 'text-[var(--sa-alias-state-business-primary)]' : 'text-[var(--sa-alias-label-tertiary)]'
           }`}
         >
           <span
             className={`h-1.5 w-1.5 rounded-full ${
-              streaming ? 'animate-pulse bg-[var(--sa-alias-state-business-primary)]' : 'bg-[var(--sa-alias-label-caption)]'
+              busy ? 'animate-pulse bg-[var(--sa-alias-state-business-primary)]' : 'bg-[var(--sa-alias-label-caption)]'
             }`}
             aria-hidden="true"
           />
-          {streaming ? '接收中' : '空闲'}
+          {streaming ? '接收中' : remoteRunning ? '后台执行中' : '空闲'}
           {streaming && activeRunId && (
             <span className="text-xs text-[var(--sa-alias-label-caption)]" title={`run ${activeRunId}`}>
               run
@@ -107,6 +114,9 @@ export default function RunInfoPanel() {
         <StatCell value={stats.events} label="事件总数" />
         <StatCell value={session.message_count} label="消息数" />
       </div>
+
+      {/* 后台任务：异步 job 的状态与耗时（轮询自 /api/v1/jobs） */}
+      <JobList />
 
       {/* 工具调用明细 */}
       <div className="rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l1)]">

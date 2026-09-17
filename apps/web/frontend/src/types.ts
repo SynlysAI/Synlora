@@ -312,6 +312,33 @@ export interface UploadResponse {
   }>
 }
 
+/** 后台任务状态（synlys_harness.JobStatus 枚举值）。 */
+export type JobStatusValue = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+/**
+ * 后台任务条目（GET /api/v1/jobs 列表项）。
+ *
+ * 列表接口只回面板渲染所需字段（`jobs_api._LIST_FIELDS`），**不含 result 原文**
+ * ——任务结果由唤醒轮注入会话，详情走 GET /api/v1/jobs/{id}。
+ */
+export interface JobDoc {
+  _id: string
+  /** 任务类型（连接器 kind，如 spec.task.raman）。 */
+  kind: string
+  /** 任务简述（提交时模型给的 label）。 */
+  label: string
+  status: JobStatusValue
+  session_id?: string
+  created_at: number
+  updated_at?: number
+  /** 终态落库时间（Unix 秒；未结束时缺省）。 */
+  ended_at?: number
+  /** 失败原因等错误文本（上游原文，可能为空）。 */
+  error?: string
+  /** 轮询失败次数（>0 表示状态同步出了问题，需要让用户看见）。 */
+  poll_failures?: number
+}
+
 /** 随消息发送的附件（user/message 事件 payload.attachments 项）。 */
 export interface MessageAttachment {
   /** files 集合记录 id（下载端点用）。 */
