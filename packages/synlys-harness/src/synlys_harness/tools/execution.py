@@ -33,7 +33,7 @@ class ExecutionRequest:
 
     argv: tuple[str, ...]
     workspace_root: Path
-    cwd: str = "tmp"
+    cwd: str = "."
     resources: tuple[ReadOnlyResource, ...] = ()
     timeout_s: float = 30.0
     max_output_bytes: int = 65_536

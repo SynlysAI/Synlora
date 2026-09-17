@@ -23,7 +23,7 @@ def _resources(ctx: ToolContext) -> tuple[Any, ...]:
     name="python.run",
     description=(
         "在用户沙箱中执行 Python 代码（隔离模式，可读写沙箱文件，输出受限）。"
-        "默认工作目录为 tmp/，工作区根是其父目录。"
+        "默认工作目录为工作区根：files/ 是上传与交付文件，output/ 放产物，tmp/ 放临时文件。"
     ),
     parameters={"type": "object", "properties": {
         "code": {"type": "string", "description": "要执行的 Python 源码"},
@@ -31,7 +31,7 @@ def _resources(ctx: ToolContext) -> tuple[Any, ...]:
     timeout_s=70,
 )
 async def python_run(ctx: ToolContext, args: dict) -> ToolResult:
-    """在用户工作区的 tmp 目录执行 Python 源码。"""
+    """在用户工作区根执行 Python 源码。"""
     if ctx.workspace_root is None:
         return ToolResult(ok=False, content="当前会话没有工作区", error="no_workspace")
     executor = ctx.extra.get("code_executor") or DEFAULT_LOCAL_EXECUTOR
@@ -46,16 +46,16 @@ async def python_run(ctx: ToolContext, args: dict) -> ToolResult:
         result = await executor.execute(ExecutionRequest(
             argv=("python", "-I", "-X", "utf8", "-c", args["code"]),
             workspace_root=ctx.workspace_root,
-            cwd="tmp",
+            cwd=".",
             resources=resources,
             timeout_s=PYTHON_TIMEOUT_S,
             max_output_bytes=MAX_OUTPUT_BYTES,
         ))
     else:
-        cwd = ctx.workspace_root / "tmp"
-        cwd.mkdir(parents=True, exist_ok=True)
-        result = await executor.run(args["code"], cwd=cwd, timeout_s=PYTHON_TIMEOUT_S)
-    result.data["cwd"] = str(ctx.workspace_root / "tmp")
+        result = await executor.run(
+            args["code"], cwd=ctx.workspace_root, timeout_s=PYTHON_TIMEOUT_S,
+        )
+    result.data["cwd"] = str(ctx.workspace_root)
     return result
 
 
@@ -64,7 +64,8 @@ async def python_run(ctx: ToolContext, args: dict) -> ToolResult:
     description="在临时 Docker 沙箱内执行一次 Bash 命令；每次调用互相独立。",
     parameters={"type": "object", "properties": {
         "command": {"type": "string", "description": "非空 Bash 命令"},
-        "cwd": {"type": "string", "default": "tmp", "description": "相对工作区目录"},
+        "cwd": {"type": "string", "default": ".",
+                "description": "相对工作区目录，默认工作区根"},
     }, "required": ["command"]},
     timeout_s=70,
     concurrency_safe=False,
@@ -87,7 +88,7 @@ async def shell_run(ctx: ToolContext, args: dict) -> ToolResult:
     return await executor.execute(ExecutionRequest(
         argv=("/bin/bash", "--noprofile", "--norc", "-c", command),
         workspace_root=ctx.workspace_root,
-        cwd=str(args.get("cwd") or "tmp"),
+        cwd=str(args.get("cwd") or "."),
         resources=_resources(ctx),
         timeout_s=SHELL_TIMEOUT_S,
         max_output_bytes=MAX_OUTPUT_BYTES,

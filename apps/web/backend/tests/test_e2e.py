@@ -1,7 +1,7 @@
 """端到端链路测试（Plan 2 Task 8）。
 
 E2E-1 数据分析闭环（设计文档 §9 场景 2 后端侧）：上传 CSV → asst-data 会话
-→ mock 剧本触发 python.run 真实子进程（cwd=tmp/，经 ../files/ 读上传文件）
+→ mock 剧本触发 python.run 真实子进程（cwd=工作区根，经 files/ 读上传文件）
 → 均值写入 output/result.txt → SSE 事件完整 + 产物真实落盘 + 计数正确。
 
 E2E-2 断连恢复：消息不经 SSE 消费（等价客户端断连）→ _drive 后台独立完成
@@ -21,14 +21,14 @@ from tests.test_chat_api import (
     parse_sse,
 )
 
-# python.run 在 {workspace}/tmp 下执行（隔离模式子进程）：
-# 经 ../files/ 读上传的 CSV，算双列均值写入 ../output/result.txt 并打印。
+# python.run 在 {workspace} 根下执行（隔离模式子进程）：
+# 经 files/ 读上传的 CSV，算双列均值写入 output/result.txt 并打印。
 ANALYSIS_CODE = """import csv, pathlib
-rows = list(csv.DictReader(open("../files/data.csv", encoding="utf-8")))
+rows = list(csv.DictReader(open("files/data.csv", encoding="utf-8")))
 a = [float(r["a"]) for r in rows]
 b = [float(r["b"]) for r in rows]
 mean_a, mean_b = sum(a) / len(a), sum(b) / len(b)
-pathlib.Path("../output/result.txt").write_text(
+pathlib.Path("output/result.txt").write_text(
     f"mean_a={mean_a:g}\\nmean_b={mean_b:g}\\n", encoding="utf-8")
 print(f"mean_a={mean_a:g} mean_b={mean_b:g}")
 """
@@ -49,7 +49,7 @@ def _reset_scripts():
 
 async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     """数据分析闭环（无工作区会话）：上传进会话目录 → 对话 → python.run 真实执行
-    （cwd=会话 tmp/）→ 产物落会话 output/ → 事件/计数齐备。"""
+    （cwd=会话工作区根）→ 产物落会话 output/ → 事件/计数齐备。"""
     await _bind_provider_to_asst_data(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
 
@@ -87,7 +87,7 @@ async def test_e2e_data_analysis_loop(app, client, admin_headers, monkeypatch):
     assert "mean_b=3" in tool_result["content"]
 
     # 5. 会话目录产物真实存在且内容正确：agent 跑在 sessions/{sid}/workspace
-    #    （无绑定不回落任何项目），python.run 的 cwd=workspace tmp/，故 ../output
+    #    （无绑定不回落任何项目），python.run 的 cwd=workspace 根，故 output
     #    即 workspace output/；第 4 步能读出均值即证明上传的 CSV 真在会话 files/ 内
     sid_dir = (app.state.settings.data_root / "users" / "u-admin" / "sessions" / sid
                / "workspace")
