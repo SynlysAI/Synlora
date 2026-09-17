@@ -10,7 +10,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# 国内镜像源加速构建（基础层体积大，走官方源下载慢）
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple -r /tmp/requirements.txt
 
 # 非 root 运行（容器内写 / 根文件系统会被拒，逃逸用例的依赖项）
 RUN useradd --create-home --uid 10000 sandbox
