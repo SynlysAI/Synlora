@@ -307,19 +307,45 @@ async def delete_session(sid: str, request: Request,
     删"；workspace 里上传文件的记录（session_id 归属）同步删除，不留孤儿记录。
     """
     doc = await _own_session(sid, user, repos)
-    for ev in await repos.event.list(filters={"session_id": sid}):
-        await repos.event.delete(ev["_id"])
-    # 会话文件记录与目录一起走：只删 session_id 归属的（项目文件记录不动）
-    for f in await repos.file.list(filters={"user_id": user["sub"]}):
-        if str(f.get("session_id") or "") == sid:
-            await repos.file.delete(f["_id"])
-    # 事件/工作区目录口径由 workspace 提供（与写入侧 AgentService._jsonl_path、
-    # files_api 会话根同源）；uid 取会话记录自己的 owner（_own_session 已校验
-    # 其属当前用户），保证与写入侧口径同一个 id
-    jsonl_dir = (workspace.user_sessions_root(
-        request.app.state.settings.data_root, str(doc["user_id"])) / sid)
-    shutil.rmtree(jsonl_dir, ignore_errors=True)
-    await repos.session.delete(doc["_id"])
+    async def remove_session_data() -> None:
+        """删除当前会话的事件、文件记录、目录和主记录。"""
+        for ev in await repos.event.list(filters={"session_id": sid}):
+            await repos.event.delete(ev["_id"])
+        for file_doc in await repos.file.list(filters={"user_id": user["sub"]}):
+            if str(file_doc.get("session_id") or "") == sid:
+                await repos.file.delete(file_doc["_id"])
+        jsonl_dir = (workspace.user_sessions_root(
+            request.app.state.settings.data_root, str(doc["user_id"])) / sid)
+        shutil.rmtree(jsonl_dir, ignore_errors=True)
+        await repos.session.delete(doc["_id"])
+
+    guard = getattr(request.app.state, "workspace_job_guard", None)
+    if guard is None:
+        await remove_session_data()
+    else:
+        if doc.get("project_id"):
+            project = await request.app.state.project_service.get(
+                user["sub"], str(doc["project_id"])
+            )
+            root = request.app.state.project_service.root_for(project) if project else \
+                workspace.session_root(
+                    request.app.state.settings.data_root, user["sub"], sid
+                )
+            ownership = {
+                "session_id": sid,
+                "project_id": str(doc["project_id"]),
+            }
+        else:
+            root = workspace.session_root(
+                request.app.state.settings.data_root, user["sub"], sid
+            )
+            ownership = {"session_id": sid}
+        async with guard.hold(user["sub"], root, ownership):
+            if await guard.has_active(
+                user_id=user["sub"], workspace_root=root, ownership=ownership
+            ):
+                raise HTTPException(409, "会话仍有后台沙箱任务，请先取消任务")
+            await remove_session_data()
     return {"ok": True}
 
 
@@ -363,7 +389,7 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             并发超限（429）。
     """
     doc = await _own_session(sid, user, repos)
-    # 助手 / 模型 / 工作根 / 归属的解析口径与任务唤醒共用（session_runtime）；
+    # 助手 / 模型 / 工作根 / 归属统一由 session_runtime 解析；
     # 服务层抛领域异常，这里映射成对外 422
     try:
         runtime = await resolve_session_runtime(

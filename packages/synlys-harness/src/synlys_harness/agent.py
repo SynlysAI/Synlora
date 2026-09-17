@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from .compaction import Compactor
 from .events import EventLog
-from .jobs import job_wake_kind
 from .models.backend import LLMBackend, ReasoningDelta, TextDelta, ToolCallChunk, Usage
 from .session import derive_messages
 from .tools.pipeline import ToolPipeline
@@ -141,18 +141,33 @@ class RunSession:
             return "llm_error"
         return "consumer_closed"
 
-    async def run(self, user_text: str,
-                  attachments: list[dict] | None = None) -> AsyncIterator[SessionEvent]:
+    async def run(
+        self,
+        user_text: str,
+        attachments: list[dict] | None = None,
+        input_metadata: dict[str, Any] | None = None,
+    ) -> AsyncIterator[SessionEvent]:
         """执行一轮 turn：用户输入 → step 循环（steering/钩子/LLM 流/工具管线）→ 收尾事件。
 
         Args:
             user_text: 用户输入文本。
             attachments: 用户随消息发送的附件元数据（[{file_id, filename, path}]，
                 path 为工作区相对路径）；None/空 = 无附件，事件 payload 不带该字段。
+            input_metadata: 宿主为当前输入附加的元数据；不得覆盖 text/attachments，
+                且必须可 JSON 序列化。
 
         Yields:
             SessionEvent（本 turn 全部事件，同时写入 EventLog 供 sink 持久化）。
         """
+        metadata = dict(input_metadata or {})
+        protected = {"text", "attachments"} & metadata.keys()
+        if protected:
+            raise ValueError(f"输入元数据不得覆盖保留字段: {', '.join(sorted(protected))}")
+        try:
+            json.dumps(metadata, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("输入元数据必须可 JSON 序列化") from exc
+
         # 每轮 turn 重置运行态：同一 RunSession 取消/失败后可再次 run
         self._cancel.clear()
         self._llm_failed = False
@@ -165,15 +180,7 @@ class RunSession:
             "user_id": self._user_id,
             "run_id": self._run_id,
         })
-        user_payload: dict = {"text": user_text}
-        # 系统唤醒（后台任务完成触发的本轮）：标记来源，前端据此渲染成系统
-        # 提示条而非用户气泡；不标则与真人发言无法区分
-        wake_source = (self._context_extra or {}).get("wake_source") or {}
-        # 只取需要的键（不 spread wake_source：那会覆盖 text 等既有键，且其真值
-        # 判据与 job_wake_kind 的 job_id 判据不一致，{"job_id": ""} 会写出空 kind）
-        if wake_source.get("job_id"):
-            user_payload["kind"] = job_wake_kind(wake_source)
-            user_payload["job_id"] = str(wake_source["job_id"])
+        user_payload: dict = {"text": user_text, **metadata}
         if attachments:
             user_payload["attachments"] = attachments
         yield await self._emit(EventType.USER_MESSAGE, user_payload)

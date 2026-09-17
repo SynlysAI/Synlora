@@ -6,7 +6,7 @@ FROM python:3.12-slim
 
 # CJK 字体：matplotlib 中文标签不缺字（技能里字体链需含 Noto Sans CJK SC）
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk \
+    && apt-get install -y --no-install-recommends bash fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt

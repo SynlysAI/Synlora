@@ -8,7 +8,6 @@ from synlys_harness.jobs import (
     _ALLOWED_TRANSITIONS,
     can_transition,
     is_terminal,
-    job_wake_kind,
 )
 
 
@@ -78,10 +77,3 @@ def test_accepts_plain_strings_from_persistence():
 def test_transition_table_covers_all_states():
     """流转表必须覆盖全部状态（漏配会静默 fail-closed）。"""
     assert set(_ALLOWED_TRANSITIONS) == set(JobStatus)
-
-
-def test_job_wake_kind_marks_job_source():
-    """带 job_id 的唤醒来源标为 job_completed；空来源/空 job_id 返回空串。"""
-    assert job_wake_kind({"job_id": "j1"}) == "job_completed"
-    assert job_wake_kind({}) == ""
-    assert job_wake_kind({"job_id": ""}) == ""

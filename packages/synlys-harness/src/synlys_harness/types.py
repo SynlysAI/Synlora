@@ -80,6 +80,14 @@ class Permission(str, enum.Enum):
     ASK_USER = "ask_user"
 
 
+@dataclass(frozen=True)
+class ApprovalDecision:
+    """宿主返回的结构化工具审批决定。"""
+
+    approved: bool
+    reason: str = ""
+
+
 class ToolContext(BaseModel):
     """工具执行上下文（由宿主构造：web 层注入用户与工作区信息）。"""
 

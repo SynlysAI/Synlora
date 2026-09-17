@@ -96,26 +96,27 @@ conda run -n synlysagent python docker/spec-agent/mint_token.py --username <账�
 
 ## 后台任务（Job 注册表）
 
-长耗时作业（谱图解析等）走统一的异步任务机制，避免占满对话 step：
+长耗时作业走统一的异步任务机制。完整扩展契约见 [插件与技能开发指南](../../../docs/development/plugin-and-skill-guide.md)。
 
-- **提交**：模型调用 `job.submit(kind, params, label)`，宿主经连接器提交到子平台后**立即返回 job_id**，不阻塞本轮对话。
+- **提交**：`job.submit` 支持 `sandbox.python`、`sandbox.shell`、`sandbox.skill` 和当前会话已启用插件的外部 kind，立即返回 job ID。
 - **轮询**：进程内 `JobPoller` 每 5 秒把未完成任务的状态从子平台同步回来（`app/services/job_poller.py`）。agent 侧不轮询，避免浪费 step。
-- **唤醒**：任务进入终态（completed/failed/cancelled）时自动向所属会话注入一条系统消息并起新一轮对话，模型据此整合结果并向用户汇报；会话正忙则先排队，等本轮结束后补发。
+- **终态展示**：任务进入 completed/failed/cancelled 后只更新 Job 文档和右侧“运行信息”，不自动向聊天区注入消息或发起新一轮模型回复；需要时由用户主动查看，或让 Agent 调用 `job.status` / `job.list` 查询。
 - **状态机**：`pending → running → completed/failed/cancelled`（harness `jobs.py`）；子平台状态由连接器映射，**未映射或查询失败一律保持原状态**，不倒退、不误判失败。
 - **连接器**：新增一个子平台的异步任务 = 在插件内实现 `JobConnector`（`submit`/`poll`/`cancel` + 状态映射），插件挂载时由宿主注册进 `JobConnectorRegistry`（**扩展点见下**），宿主零改动（`FakeConnector` 供测试与本地演示）。
-- **查询**：`GET /api/v1/jobs`（当前用户，可按 `session_id` 过滤）、`GET /api/v1/jobs/{job_id}`；提交与取消不单独开 API，只经对话工具（单一入口）。
-- **`job.*` 是平台交互工具**：与 `ask_user`/`file.send` 一样无条件追加到助手白名单，因此配了工具白名单的专家（如「谱图解析专家」）同样可用。
+- **查询/取消**：`GET /api/v1/jobs`、`GET /api/v1/jobs/{job_id}`、`POST /api/v1/jobs/{job_id}/cancel`。停止聊天不会停止 Job。
+- **权限**：有白名单的专家必须显式声明 `job.*`、`python.run`、`shell.run` 和 `skill.*`；升级不会自动放大已落库专家权限。
+- **生命周期**：平台任务显式写 `backend=sandbox`，独立超时、确认停止后取消、活跃时阻止工作区删除；重启标为 `process_interrupted` 且不重跑。外部任务显式写 `backend=external`。
 
-**单实例前提**：轮询器与待唤醒队列都是进程内状态，与既有的 `workers=1` 约束一致；多副本会导致同一任务被重复轮询与重复唤醒。待唤醒队列为内存态，进程重启会丢失尚未补发的完成通知（已接受）。
+**单实例前提**：轮询器和 runner 句柄都是进程内状态，与既有 `workers=1` 约束一致。
 
 **连接器扩展点（插件接入异步任务）**：插件目录放 `connectors.py` 并在 `plugin.json`
 声明 `"connectors_module": "connectors.py"`，模块级导出 `CONNECTORS = [连接器实例, ...]`。
-宿主在挂载插件时把它们注册进 `JobConnectorRegistry`（幂等；kind 跨插件重名告警跳过；
+连接器从 `app.plugins.contracts` 导入。宿主在挂载插件时把它们注册进 `JobConnectorRegistry`（幂等；kind 跨插件重名告警跳过；
 形状不合法只告警、**绝不让启动失败**）。连接器需实现 `kind` / `plugin_id` /
 `status_map`（外部状态原文 → 统一状态，携带 `status_map` 属性即可，注册时自动取用）
 与 `submit` / `poll` / `cancel` 三个异步方法；可选实现
 `fetch_result(external_id, ctx) -> str`，宿主在任务成功终态调用它并把返回文本写入
-job 的 `result`（会出现在唤醒消息里）。
+job 的 `result`（供右侧详情和 `job.status` 主动查询）。
 
 连接器的调用上下文（`ctx`）由宿主填充：
 `{"config": 插件配置, "ai4ms_token": 用户代签凭证, "workspace_root": 用户工作区根}`。
@@ -218,7 +219,7 @@ tags: [文档, 报告]
 ```
 
 ```jsonc
-// plugins/<id>/plugin.json —— 插件 manifest（id/name/version/tools_module 必填）
+// plugins/<id>/plugin.json —— id/name/version 必填，贡献项至少一个
 {
   "id": "spec_agent",
   "name": "Spec_Agent 谱图解析",
@@ -233,7 +234,7 @@ tags: [文档, 报告]
 **扫描器**（`app/catalog/loader.py`）：`catalog_roots(settings)` 给出搜索根（随仓库的 `apps/web/backend/catalog/` + `{data_dir}/public/catalog/` 运行期安装预留），`scan_catalog(roots) -> CatalogIndex{.experts,.skills,.plugins}` 三类分开返回。三条规则：
 
 1. **位置即类型**：只认 `<root>/{experts,skills,plugins}/` 三个固定子目录，放错位置不收录。
-2. **非法包只告警跳过、不阻断启动**：manifest 解析失败 / 缺必填字段（专家 `id/name/system_prompt`，插件 `id/name/version/tools_module`）/ `config_schema` 缺 `key` 的包，记日志后跳过。
+2. **非法包只告警跳过、不阻断启动**：插件声明的模块或技能不存在、路径逃逸、没有任何贡献，都会使整个包不可用；不通过空模块降级兼容。
 3. **同名后者覆盖前者并告警**：同根内重复 id、或跨根重名时，遍历顺序靠后的覆盖靠前的（数据目录根在仓库根之后，故运行期安装预留位优先）。
 
 **只读根 vs 公共层**：`catalog/skills/` 作为**只读技能根**直接提供给 `SkillService`（不再播种拷贝到 `{data_dir}/public/skills`），其技能标记 `builtin=True`、不可删（删除返回 404）；`{data_dir}/public/skills/` 为**可写公共层**（管理员自建 / 导入技能，始终可见），两者同名时**公共层优先**。`builtin` 标记语义 = 「来自只读根」。用户自建技能另落 `{data_dir}/users/<uid>/skills/`，优先序为「用户根 → 公共层 → 只读根」。

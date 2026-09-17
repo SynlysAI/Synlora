@@ -6,7 +6,7 @@
 本循环仍作为兜底。
 
 单实例前提：本循环是进程内 asyncio task，依赖部署侧的 workers=1 约束
-（多副本会导致同一任务被重复轮询与重复唤醒）。
+（多副本会导致同一任务被重复轮询）。
 """
 from __future__ import annotations
 

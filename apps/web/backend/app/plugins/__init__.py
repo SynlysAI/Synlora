@@ -5,7 +5,20 @@
 的 manifest 目录扫描与 DSH 的插件即插即用）。
 插件包的扫描与工具加载统一在 `app.catalog.loader`（内容目录的一份发现逻辑）。
 """
-from app.plugins.config_store import PluginConfigStore
-from app.plugins.service import PluginService
+from app.plugins.contracts import (
+    JobConnector,
+    JobConnectorError,
+    JobConnectorRegistry,
+    JobPollFailed,
+    JobSubmitFailed,
+    RegisteredConnector,
+)
 
-__all__ = ["PluginConfigStore", "PluginService"]
+__all__ = [
+    "JobConnector",
+    "JobConnectorError",
+    "JobConnectorRegistry",
+    "JobPollFailed",
+    "JobSubmitFailed",
+    "RegisteredConnector",
+]

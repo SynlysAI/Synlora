@@ -328,6 +328,10 @@ export interface JobDoc {
   /** 任务简述（提交时模型给的 label）。 */
   label: string
   status: JobStatusValue
+  /** 执行来源：平台沙箱或外部插件。 */
+  backend: 'sandbox' | 'external'
+  /** 已请求停止但尚未确认执行资源清理。 */
+  cancel_requested?: boolean
   session_id?: string
   created_at: number
   updated_at?: number

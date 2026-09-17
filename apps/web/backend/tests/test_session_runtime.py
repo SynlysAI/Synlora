@@ -1,4 +1,4 @@
-"""会话运行装配解析单测（发消息与任务唤醒共用同一口径）。"""
+"""会话运行装配解析单测。"""
 import pytest
 
 from app.services import workspace
@@ -137,7 +137,7 @@ async def test_fallback_ignores_disabled_provider(store, settings, project_servi
 
 
 async def test_missing_provider_raises_domain_error(store, settings, project_service):
-    """无可用模型服务时抛领域异常（唤醒路径据此放弃本轮并告警）。"""
+    """无可用模型服务时抛领域异常。"""
     repos = _repos_for(store)
     doc = await repos.session.create({
         "user_id": "u1", "assistant_id": None, "title": "t",

@@ -38,18 +38,21 @@ from synlys_harness import (
     RunSession,
     SessionEvent,
     ToolResult,
-    build_system_prompt,
     resolve_executor,
 )
 
-from app.services import workspace
-# TooManyRuns / WakeTargetGone 定义在中立的 session_runtime（避免 JobService
-# 反向 import 本模块）；此处 import 后继续对外可用（重导出，调用点无需改动）
-from app.services.session_runtime import (
-    TooManyRuns,
-    WakeTargetGone,
-    resolve_session_runtime,
+from app.runtime.prompts import build_system_prompt
+from app.runtime.assembly import (
+    make_skill_resource_reader,
+    prepare_skills,
+    select_runtime_skills,
+    select_runtime_tools,
 )
+from app.runtime.event_bridge import make_event_sinks
+from app.runtime.interactions import make_approval_handler
+from app.services.job_access import JobSubmissionScope
+from app.services import workspace
+from app.services.session_runtime import TooManyRuns
 from app.services.skill_service import SkillService
 from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGISTRY
 
@@ -62,35 +65,6 @@ PREEMPT_TIMEOUT_S = 5.0
 # ask_user 等待回答的上限（秒）：没有上限时，一个停在 ask 上的 run 会永久
 # 占住会话（用户关掉页面就再也没人来回答它）
 ASK_TIMEOUT_S = 300.0
-
-# 唤醒轮（后台任务完成触发、前台无人值守）不提供的工具：唤醒轮再弹问答卡
-# 只会把会话锁死——它不属于用户当前的注意力，用户也不一定正在看这个页面
-WAKE_BLOCKED_TOOLS = frozenset({"ask_user"})
-
-
-def narrow_tools_for_wake(tool_names: list[str]) -> list[str]:
-    """收窄后台唤醒轮的工具集（去掉需要用户在场的交互工具）。
-
-    Args:
-        tool_names: 按专家白名单与可见性算出的工具名列表。
-
-    Returns:
-        去掉 `WAKE_BLOCKED_TOOLS` 后的列表；顺序与输入一致。
-
-    对齐 DSH 的"工具没有交互通道就 deny"：本平台对应"压根不给这个工具"，
-    比拿到工具再拒绝更省一次 LLM 往返。
-    """
-    return [t for t in tool_names if t not in WAKE_BLOCKED_TOOLS]
-
-
-# 技能与平台交互工具：无条件追加到助手白名单（平台能力，不依赖助手自行声明；
-# ask_user=问答回路、file.send=产物交付、job.*=后台任务通道，是宿主注入的
-# 交互通道，任何助手都可用）
-SKILL_TOOLS = ("skill.list", "skill.read", "ask_user", "file.send",
-               "job.submit", "job.status", "job.list", "job.cancel")
-
-# 瞬态事件：每 token 一条，仅 SSE 推送、不落 JSONL/DB（见模块头注释）
-TRANSIENT = {EventType.LLM_DELTA, EventType.REASONING_DELTA}
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -143,19 +117,11 @@ class AgentService:
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
-        # run 来源：run_id → "chat"（用户发起）| "wake"（后台任务唤醒）。
-        # 唤醒轮是可让位的自动轮，与用户消息不同权，见 _yieldable
-        self._run_kind: dict[str, str] = {}
         # 后台驱动 task 的强引用（事件循环仅持弱引用，防 task 被 GC 中断）
         self._bg: set[asyncio.Task] = set()
         # python.run 沙箱执行器（首次使用时解析一次：local 直返；docker 探测
         # daemon+镜像，失败按 strict 拒绝或弱回退 local-weak 并告警）
         self._executor: CodeExecutor | None = None
-        # 运行结束回调（任务唤醒靠它 drain 待唤醒队列）
-        self._on_run_finished: Any = None
-        # 唤醒路径所需的运行时依赖（装配阶段经 set_runtime_deps 注入）
-        self._repos: Any = None
-        self._project_service: Any = None
         # 后台任务服务（装配阶段经 set_job_service 注入；None 时 job.* 工具报不可用）
         self._job_service: Any = None
 
@@ -175,6 +141,7 @@ class AgentService:
                 cpus=self._settings.sandbox_cpus,
                 pids_limit=self._settings.sandbox_pids_limit,
                 container_user=self._settings.sandbox_docker_user,
+                deployment_id=self._settings.deployment_id,
             )
             if executor.sandbox != "docker":
                 _LOGGER.warning("python.run 沙箱: %s", note)
@@ -264,8 +231,7 @@ class AgentService:
                    requested_skills: list[str] | None = None,
                    attachments: list[dict] | None = None,
                    file_ownership: dict | None = None,
-                   enabled_plugins: list[str] | None = None,
-                   wake_source: dict | None = None) -> str:
+                   enabled_plugins: list[str] | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
@@ -293,10 +259,6 @@ class AgentService:
                 在本轮生效——工具、配置注入、技能索引按它收窄，未启用插件的
                 播种专家按未选处理。None 与空列表同为"未启用任何插件"；
                 内置工具不受影响。
-            wake_source: 系统唤醒来源（{"job_id": ...}）；非空时本轮首条
-                user/message 事件带 kind=job_completed 标记，供前端渲染成
-                系统提示条而非用户气泡。
-
         Returns:
             run_id。
 
@@ -309,9 +271,9 @@ class AgentService:
         user_sub = str(user["sub"])
         # 会话级互斥：同会话两个并发 run 会各自 seed 同一份历史快照、从相同
         # seq 起号，DB _id=f"{sid}:{seq}" 碰撞写入被 db_sink 静默吞掉 → 事件
-        # 拼接错乱/丢失，必须前置拒绝。但"可让位的占位者"（后台唤醒轮、停在
-        # ask 上的轮）先让位给用户消息再放行——让用户被它们挡住是最糟的选择。
-        await self._admit_run(session_id, wake=bool(wake_source))
+        # 拼接错乱/丢失，必须前置拒绝。但停在 ask 上的轮可先让位给新的用户
+        # 消息——用户改用文本表达意愿时，不应被旧问答卡挡住。
+        await self._admit_run(session_id)
         run_id = uuid.uuid4().hex[:12]
         session_runs = self._active_by_session.setdefault(session_id, set())
         session_runs.add(run_id)
@@ -322,32 +284,14 @@ class AgentService:
                 raise TooManyRuns(f"该用户已有 {MAX_RUNS_PER_USER} 个运行中的对话")
             active = ActiveRun()
             self._runs[run_id] = active
-            self._run_kind[run_id] = "wake" if wake_source else "chat"
 
-            async def jsonl_sink(event: SessionEvent) -> None:
-                """事件追加 JSONL（审计副本；瞬态不落盘；契约：不得抛异常）。"""
-                if event.type in TRANSIENT:
-                    return
-                try:
-                    with self._jsonl_path(session_id, user_sub).open(
-                            "a", encoding="utf-8") as f:
-                        f.write(event.model_dump_json() + "\n")
-                except OSError:
-                    pass
-
-            async def db_sink(event: SessionEvent) -> None:
-                """事件写 DB 副本（瞬态不写）+ SSE 队列只 put 不过滤（契约：不得抛异常、不等待消费者）。"""
-                if event.type not in TRANSIENT:
-                    try:
-                        await self._event_repo.append(session_id, event)
-                    except Exception:
-                        pass
-                try:
-                    active.queue.put_nowait(event)
-                except Exception:
-                    pass
-
-            log = EventLog(sinks=[jsonl_sink, db_sink])
+            log = EventLog(sinks=make_event_sinks(
+                session_id=session_id,
+                user_id=user_sub,
+                event_repo=self._event_repo,
+                jsonl_path=self._jsonl_path(session_id, user_sub),
+                queue=active.queue,
+            ))
 
             # 扩展钩子挂载（可观测性：turn 生命周期 + 工具事件审计日志）
             async def _on_session_start(_session: RunSession) -> None:
@@ -382,29 +326,31 @@ class AgentService:
             # 会话级插件开关（默认关）：未启用的插件其技能也不进索引——技能描述
             # 是提示词的一部分，"工具被挡但技能还暴露"等于半开状态
             active_plugins = set(enabled_plugins or [])
-            all_skills = self._skill_service.list_skills(user_id=user_sub)
+            all_skills = self._skill_service.resolve_skills(user_id=user_sub)
+            effective_plugins = set(active_plugins)
+            hidden_skills: set[str] = set()
             if self._capability_service is not None:
                 # 技能可见性（黑名单口径）：内置技能按策略、插件技能跟随其插件
                 # 可见性；公共目录里管理员自建/导入的技能不在黑名单里（始终可见）
                 hidden_skills = await self._capability_service.hidden_skill_names(
                     user["sub"])
                 caps = self._capability_service
-                for pid in await caps.visible_ids(user["sub"], "plugin"):
+                visible_plugins = await caps.visible_ids(user["sub"], "plugin")
+                effective_plugins &= visible_plugins
+                for pid in visible_plugins:
                     if pid in active_plugins:
                         continue
                     pkg = caps.catalog.plugins.get(pid)
                     if pkg is not None:
                         hidden_skills |= set(pkg.skills)
-                all_skills = [s for s in all_skills if s["name"] not in hidden_skills]
-            if requested_skills:
-                active_skills = [s for s in all_skills
-                                 if s["name"] in set(requested_skills)]
-            else:
-                active_skills = all_skills
-            index = [(s["name"], s["description"]) for s in active_skills]
-            bodies = {s["name"]: self._skill_service.read_body(
-                s["name"], user_id=user_sub) or ""
-                for s in active_skills}
+            active_skills = select_runtime_skills(
+                all_skills,
+                hidden_names=hidden_skills,
+                active_plugin_ids=effective_plugins,
+                requested_names=requested_skills,
+            )
+            index = [(skill.name, skill.description) for skill in active_skills]
+            bodies = {skill.name: skill.body for skill in active_skills}
             # 会话级插件开关对专家的影响：绑定的专家若来自未启用插件（默认全关），
             # 按"未选专家"处理——persona 不注入（插件的人设也是提示词，半暴露与
             # 技能同理不可接受），工具放开全部内置工具；会话文档不动，重新开启
@@ -419,24 +365,19 @@ class AgentService:
             # 写进提示词：模型必须知道代码执行的能力边界（docker 断网、跑完即删；
             # local 无强隔离），否则会去 pip install / 抓外网白烧几步
             executor = await self._code_executor()
+            prepared_skills = prepare_skills(active_skills, sandbox=executor.sandbox)
             system_prompt = build_system_prompt(
                 persona=persona,
-                workspace=workspace_root,
+                workspace=(Path("/workspace")
+                           if executor.sandbox == "docker" else workspace_root),
                 skills=index,
                 sandbox=executor.sandbox,
+                shell_available=executor.sandbox == "docker",
             )
-            # 无专家（或专家没限定工具）时放开全部内置工具；技能工具无条件
-            # 追加（技能是平台能力），set 去重防助手白名单已列
-            tool_names = (
-                list(dict.fromkeys([*whitelist, *SKILL_TOOLS]))
-                if whitelist
-                else list(_REGISTRY.names)
-            )
-            # 图片阅读双重门控：模型多模态 +（助手未限白名单或白名单显式包含）
-            if provider_cfg.multimodal and (not whitelist or "file.read_image" in whitelist):
-                tool_names = list(dict.fromkeys([*tool_names, "file.read_image"]))
-            else:
-                tool_names = [t for t in tool_names if t != "file.read_image"]
+            # 有白名单时严格使用显式授权；无专家或未限制时放开注册表工具。
+            # 技能和任务工具不再自动追加，避免升级代码静默扩大旧专家权限。
+            all_plugin_tools: set[str] = set()
+            visible_plugin_tools: set[str] = set()
             # 能力目录可见性：插件贡献的工具必须对该用户可见才保留（内置工具不受影响）
             if self._capability_service is not None:
                 caps = self._capability_service
@@ -452,15 +393,19 @@ class AgentService:
                         t for pid in active_plugins
                         for t in caps.tool_names_by_plugin.get(pid, ())
                     }
-                    visible_tools = visible_tools & keep
-                    tool_names = [
-                        t for t in tool_names
-                        if t not in all_plugin_tools or t in visible_tools
-                    ]
-
-            if wake_source:
-                # 后台唤醒轮无人值守：不给交互工具（详见 narrow_tools_for_wake）
-                tool_names = narrow_tools_for_wake(tool_names)
+                    visible_plugin_tools = visible_tools & keep
+            tool_names = select_runtime_tools(
+                list(_REGISTRY.names),
+                whitelist=whitelist,
+                sandbox=executor.sandbox,
+                all_plugin_tools=all_plugin_tools,
+                visible_plugin_tools=visible_plugin_tools,
+            )
+            # 图片阅读双重门控：模型多模态 +（助手未限白名单或白名单显式包含）
+            if provider_cfg.multimodal and (not whitelist or "file.read_image" in whitelist):
+                tool_names = list(dict.fromkeys([*tool_names, "file.read_image"]))
+            else:
+                tool_names = [t for t in tool_names if t != "file.read_image"]
 
             # ask_user：发 ask/user 事件（落盘+SSE）并等待前端回答 future
             async def ask_handler(payload: dict) -> str:
@@ -475,11 +420,7 @@ class AgentService:
             # 管线强制审批（Permission.ASK_USER）：复用 ask_user 的 future 回路，
             # payload 加 kind=approval 供前端渲染审批卡（允许/拒绝按钮）；用户
             # 答复仍走同一 answer API（固定文案"允许"/"拒绝"，管线按文本判定）
-            async def approval_handler(payload: dict) -> str:
-                if wake_source:
-                    # 唤醒轮无人值守，不能停下来等审批（同 ask_user 的理由）；
-                    # fail-closed 拒绝，让模型换条不需要审批的路径或直接说明
-                    return "拒绝"
+            async def ask_approval(payload: dict) -> str:
                 tool = str(payload.get("tool", ""))
                 preview = json.dumps(payload.get("args", {}), ensure_ascii=False)
                 if len(preview) > 600:
@@ -492,6 +433,8 @@ class AgentService:
                     "args_preview": preview,
                 })
 
+            approval_handler = make_approval_handler(ask_approval)
+
             # file.send：复制产物进工作根 files/ 沙箱 → 登记 files 集合 → 发事件
             async def send_file_handler(payload: dict) -> ToolResult:
                 return await self._deliver_file(active, log, workspace_root,
@@ -501,16 +444,20 @@ class AgentService:
             # 工具上下文快照：先落成局部变量，job_handler 需要引用它（把本轮
             # 的插件配置与代签凭证原样交给任务链路，避免二次解析配置）
             ctx_extra_snapshot: dict = {
-                # 系统唤醒来源（任务完成唤醒本轮时非空；harness 据此把
-                # user/message 事件标成 job_completed 提示条）
-                "wake_source": wake_source or {},
                 # 工作区根：插件连接器读取用户文件（如谱图上传）时用
                 "workspace_root": str(workspace_root),
                 "http_allowed_hosts": self._settings.allowed_hosts,
                 # python.run 执行器（部署级注入，缺省工具回落本机执行；已在上文解析）
                 "code_executor": executor,
+                "execution_resources": prepared_skills.resources,
                 "skills": bodies,
-                "skill_meta": {s["name"]: s["description"] for s in active_skills},
+                "skill_meta": {
+                    skill.name: skill.description for skill in active_skills
+                },
+                "skill_resource_roots": prepared_skills.resource_roots,
+                "skill_resource_reader": make_skill_resource_reader(
+                    prepared_skills.items
+                ),
                 # WeKnora 知识检索：连接配置 + 助手绑定的知识库范围（None/空 =
                 # 未绑定，knowledge.search 工具会给出明确报错）
                 "weknora_base_url": self._settings.weknora_base_url,
@@ -532,6 +479,18 @@ class AgentService:
                 # 按登录用户代签的 AI⁴MS 身份凭证（插件优先用它，取不到则用插件配置里的服务 token）
                 **await self._ai4ms_token_extra(user),
             }
+            ctx_extra_snapshot["job_submission_scope"] = JobSubmissionScope(
+                allowed_tools=frozenset(tool_names),
+                allowed_plugins=frozenset(effective_plugins),
+                skills=prepared_skills.items,
+                resources=prepared_skills.resources,
+                workspace_root=workspace_root.resolve(),
+                ownership={
+                    str(key): str(value)
+                    for key, value in (file_ownership or {}).items()
+                    if value is not None
+                },
+            )
 
             async def job_handler(payload: dict) -> ToolResult:
                 """job.* 工具的宿主实现（提交/查询/取消后台任务）。
@@ -574,14 +533,13 @@ class AgentService:
             # 防止 _runs/_active_by_session 残留失败 run（泄漏句柄 + 会话被
             # 永久卡 429 + SSE 哨兵永不投递）
             self._runs.pop(run_id, None)
-            self._run_kind.pop(run_id, None)
             session_runs.discard(run_id)
             raise
         return run_id
 
     async def _drive(self, run_id: str, session: RunSession, text: str,
-                     user_id: str, session_id: str,
-                     attachments: list[dict] | None = None) -> None:
+                      user_id: str, session_id: str,
+                      attachments: list[dict] | None = None) -> None:
         """后台驱动 run 至完成并落盘终态（独立于 SSE 消费者，断连不中断）。
 
         Args:
@@ -603,7 +561,10 @@ class AgentService:
         try:
             pending_text, pending_attachments = text, attachments
             while True:
-                stream = session.run(pending_text, attachments=pending_attachments)
+                stream = session.run(
+                    pending_text,
+                    attachments=pending_attachments,
+                )
                 async with contextlib.aclosing(stream):
                     async for _event in stream:
                         pass  # 事件已由 sinks 持久化并入队
@@ -629,34 +590,12 @@ class AgentService:
                             run_id, final_status, exc_info=True)
         finally:
             active = self._runs.pop(run_id, None)
-            self._run_kind.pop(run_id, None)
             if active:
                 active.queue.put_nowait(None)  # SSE 结束哨兵（任何路径都必须放，防 SSE 挂死）
                 active.done.set()
             session_runs = self._active_by_session.get(session_id)
             if session_runs is not None:
                 session_runs.discard(run_id)  # 释放会话占位（空集合保留，量级=会话数）
-            # 运行结束通知：占位已释放后才回调，避免回调内 is_busy 误判为忙
-            # （唤醒队列据此决定立即唤醒还是继续排队）
-            await self._notify_run_finished(session_id)
-
-    def set_runtime_deps(self, repos: Any, project_service: Any) -> None:
-        """注入唤醒路径所需依赖（repo 组合与项目服务）。
-
-        Args:
-            repos: repo 集中访问对象（解析会话装配用）。
-            project_service: 项目服务（解析会话工作根用）。
-
-        说明：repos / project_service 在 AgentService 构造前即已就绪，本可进构造
-        签名；做成 setter 是为了与 set_run_finished_hook 对称、让装配阶段的接线
-        集中在一处。代价是漏接线时失败点推迟到 wake() 运行期（会抛 RuntimeError）。
-        """
-        self._repos = repos
-        self._project_service = project_service
-
-    def set_run_finished_hook(self, hook: Any) -> None:
-        """注入运行结束回调（签名 async (session_id) -> None）。"""
-        self._on_run_finished = hook
 
     def set_job_service(self, service: Any) -> None:
         """注入后台任务服务（job.* 工具的宿主实现）。
@@ -666,35 +605,14 @@ class AgentService:
         """
         self._job_service = service
 
-    def is_busy(self, session_id: str) -> bool:
-        """该会话当前是否有进行中的 run。
-
-        Args:
-            session_id: 会话 id。
-
-        Returns:
-            有活跃 run 为 True。
-        """
-        return bool(self._active_by_session.get(session_id))
-
-    def _yieldable(self, run_id: str, *, for_user: bool) -> bool:
-        """该 run 是否该让位给新来的这一轮。
+    def _yieldable(self, run_id: str) -> bool:
+        """该 run 是否可让位给新的用户消息。
 
         Args:
             run_id: 运行 id。
-            for_user: 新来的是否为用户消息（False = 后台唤醒轮）。
-
         Returns:
-            True = 可让位。后台唤醒轮一律让位（它不属于用户当前注意力）；
-            停在 ask 上等回答的轮**只在用户消息来时才让位**——它本就在等
-            用户输入，用户改用打字表达意愿应当让路，但后台轮不得抢走用户的
-            问题（否则任务一完成就把用户正等着回答的卡干掉）。用户自己的
-            前台轮正在干活时不让位。
+            停在 ask 上等回答的轮可让位；正在执行的前台轮不可让位。
         """
-        if self._run_kind.get(run_id) == "wake":
-            return True
-        if not for_user:
-            return False
         active = self._runs.get(run_id)
         return bool(active is not None
                     and active.ask_future is not None
@@ -738,13 +656,11 @@ class AgentService:
                 _LOGGER.warning("抢占 run 收尾超时（超过 %.1fs 预算）",
                                 PREEMPT_TIMEOUT_S)
 
-    async def _admit_run(self, session_id: str, *, wake: bool) -> None:
+    async def _admit_run(self, session_id: str) -> None:
         """会话准入：有占位时先尝试让位，让不掉才拒绝。
 
         Args:
             session_id: 会话 id。
-            wake: 本次是否为后台唤醒轮。
-
         Raises:
             TooManyRuns: 会话已有不可让位的进行中 run，或可让位者未能在
                 预算内收尾。
@@ -758,70 +674,14 @@ class AgentService:
             网络调用里，要等下一个检查点才注意到旗标），循环重试会把用户消息
             变成一段一段 5s 的无限阻塞。超预算就直接拒绝，让用户稍候重试。
         """
-        for_user = not wake
         session_runs = self._active_by_session.setdefault(session_id, set())
         if not session_runs:
             return
-        if not all(self._yieldable(rid, for_user=for_user)
-                   for rid in session_runs):
+        if not all(self._yieldable(rid) for rid in session_runs):
             raise TooManyRuns("该会话已有进行中的消息")
         await self._preempt_runs(list(session_runs))
         if self._active_by_session.get(session_id):
             raise TooManyRuns("会话正忙，请稍候重试")
-
-    async def wake(self, session_id: str, text: str, job_id: str = "") -> str:
-        """以系统通知文本启动一轮新 run（后台任务完成后唤醒 agent）。
-
-        Args:
-            session_id: 会话 id。
-            text: 注入的用户消息文本（系统生成的通知）。
-            job_id: 关联任务 id（写入事件 payload 供前端渲染提示条）。
-
-        Returns:
-            新 run 的 run_id。
-
-        Raises:
-            RuntimeError: 未注入运行时依赖（装配漏接线，属编程错误）。
-            WakeTargetGone: 会话已被删除（任务挂起期间用户删了会话）——通知
-                已无接收方，调用方应静默跳过而非按故障告警。
-            NoUsableProvider: 会话无可用模型服务（调用方应放弃本轮并告警）。
-            TooManyRuns: 会话已有进行中的 run（调用方应改为排队）。
-
-        Note:
-            NoUsableProvider 继承自 RuntimeError，因此调用方若需区分两类失败，
-            必须**先捕获 NoUsableProvider、再捕获 RuntimeError**。
-
-        与 send_message 的差异：不传 requested_skills / attachments（二者是请求级
-        参数、不落库），因此唤醒轮使用全部可用技能，且不带附件。
-        """
-        if self._repos is None or self._project_service is None:
-            raise RuntimeError("唤醒不可用：未注入运行时依赖 set_runtime_deps")
-        doc = await self._repos.session.get(session_id)
-        if doc is None:
-            raise WakeTargetGone(f"唤醒目标已不存在: {session_id}")
-        user = {"sub": str(doc["user_id"])}
-        runtime = await resolve_session_runtime(
-            self._settings, self._project_service, self._repos, doc, user)
-        return await self.chat(
-            session_id, user, runtime.assistant, runtime.provider_cfg, text,
-            workspace_root=runtime.workspace_root,
-            file_ownership=runtime.ownership,
-            enabled_plugins=doc.get("enabled_plugins"),
-            wake_source={"job_id": job_id} if job_id else None)
-
-    async def _notify_run_finished(self, session_id: str) -> None:
-        """运行收尾通知（内部；失败不上抛，避免影响 run 清理）。
-
-        Args:
-            session_id: 会话 id。
-        """
-        hook = self._on_run_finished
-        if hook is None:
-            return
-        try:
-            await hook(session_id)
-        except Exception:  # noqa: BLE001 回调失败不得影响 run 终态清理
-            _LOGGER.warning("运行结束回调失败 session=%s", session_id, exc_info=True)
 
     async def cancel(self, run_id: str) -> bool:
         """取消运行（仅用户显式停止；SSE 断连不走此路径）。

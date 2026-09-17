@@ -28,7 +28,7 @@ SKILLS_DIR = "skills"
 PLUGINS_DIR = "plugins"
 
 MANIFEST_NAME = "plugin.json"          # 插件 manifest（内容不变）
-REQUIRED_FIELDS = ("id", "name", "version", "tools_module")
+REQUIRED_FIELDS = ("id", "name", "version")
 EXPERT_MANIFEST = "expert.json"
 EXPERT_REQUIRED = ("id", "name", "system_prompt")
 SKILL_FILE = "SKILL.md"
@@ -291,6 +291,39 @@ def _scan_plugins(root: Path) -> dict[str, PluginPackage]:
         if missing:
             logger.warning("插件 manifest 缺字段 %s，已跳过 %s", missing, entry.name)
             continue
+        tools_module = str(data.get("tools_module") or "").strip()
+        connectors_module = str(data.get("connectors_module") or "").strip()
+        skills = [str(item) for item in (data.get("skills") or [])]
+        expert = data.get("expert") or None
+        if not any((tools_module, connectors_module, skills, expert)):
+            logger.warning("插件未声明任何有效贡献，已跳过 %s", entry.name)
+            continue
+        modules_valid = True
+        for label, module_name in (
+            ("tools_module", tools_module),
+            ("connectors_module", connectors_module),
+        ):
+            if not module_name:
+                continue
+            module_path = Path(module_name)
+            resolved = (entry / module_path).resolve()
+            if (module_path.is_absolute() or module_path.suffix != ".py"
+                    or entry.resolve() not in resolved.parents
+                    or not resolved.is_file()):
+                logger.warning("插件 %s 的 %s 非法，已跳过: %s",
+                               plugin_id, label, module_name)
+                modules_valid = False
+                break
+        if not modules_valid:
+            continue
+        missing_skills = [
+            name for name in skills
+            if not (entry / "skills" / name / SKILL_FILE).is_file()
+        ]
+        if missing_skills:
+            logger.warning("插件 %s 声明的技能不存在，已跳过: %s",
+                           plugin_id, missing_skills)
+            continue
         schema = data.get("config_schema") or []
         if not isinstance(schema, list) or any(
                 not isinstance(f, dict) or not str(f.get("key") or "").strip()
@@ -305,11 +338,11 @@ def _scan_plugins(root: Path) -> dict[str, PluginPackage]:
             version=str(data["version"]),
             description=str(data.get("description") or ""),
             directory=entry,
-            tools_module=str(data["tools_module"]),
-            connectors_module=str(data.get("connectors_module") or ""),
+            tools_module=tools_module,
+            connectors_module=connectors_module,
             config_schema=list(data.get("config_schema") or []),
-            skills=[str(s) for s in (data.get("skills") or [])],
-            expert=data.get("expert") or None,
+            skills=skills,
+            expert=expert,
         )
     return packages
 
@@ -323,6 +356,8 @@ def load_plugin_tools(package: PluginPackage) -> list[Any]:
     Returns:
         工具函数列表（模块缺失或导入失败时返回空列表并告警）。
     """
+    if not package.tools_module:
+        return []
     module_path = package.directory / package.tools_module
     if not module_path.is_file():
         logger.warning("插件 %s 的工具模块不存在: %s", package.id, module_path)

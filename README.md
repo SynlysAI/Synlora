@@ -4,9 +4,9 @@
 
 类 Claude/DeepSeek Harness 的科研智能体 Web 平台：三栏对话工作台，通过对话形式使用各助手（谱图解析、高分子研发、数据分析、文件处理等），每个用户拥有独立沙箱（文件工作区 + 受限 Python 执行），管理员可在页面上配置模型与助手。作为 AI⁴MS 生态的独立子平台部署，现有 AI⁴MS 能力后续通过 Tool Registry 接入。
 
-平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回、完成自动唤醒 agent）。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪与汇总结果。
+平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回，终态在右侧运行信息展示，不自动创建聊天回复）。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
 
-- 版本：0.12.0-beta.1（内测版）
+- 版本：0.13.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -64,7 +64,7 @@ Python 环境为 conda 环境 `synlysagent`（Python 3.12）。
 ```bash
 conda activate synlysagent
 cd apps/web/backend
-pip install -e ../../packages/synlys-harness   # 核心运行时
+pip install -e ../../../packages/synlys-harness   # 核心运行时
 pip install -e ".[dev]"                        # 后端本体 + 测试依赖
 
 python run_uvicorn.py        # 默认 0.0.0.0:8005，健康检查 curl http://127.0.0.1:8005/api/health
@@ -113,6 +113,8 @@ pm2 logs synlys-agent
 | `SANDBOX_MODE` | `local` | `python.run` 执行形态：`local`（本机 `-I` 子进程，事故围栏）或 `docker`（临时容器强隔离，多用户部署用） |
 | `SANDBOX_STRICT` | `false` | `docker` 模式不可用时：`false` 回退本机执行（事件标 `sandbox=local-weak`）；`true` 拒绝执行（fail-closed，公网部署建议开启） |
 | `SANDBOX_MEM_LIMIT` / `SANDBOX_CPUS` / `SANDBOX_PIDS_LIMIT` | `512m` / `1.0` / `256` | docker 模式单容器资源限额 |
+| `SANDBOX_JOB_DEFAULT_TIMEOUT_S` / `SANDBOX_JOB_MAX_TIMEOUT_S` | `1800` / `7200` | 后台沙箱任务独立默认/最大超时；不复用前台工具预算 |
+| `SANDBOX_DEPLOYMENT_ID` | 空（按 `DATA_DIR` 派生） | 精确标记本部署容器，供取消和重启清理 |
 
 其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
@@ -138,7 +140,7 @@ pm2 logs synlys-agent
 
 ### Docker 沙箱（多用户/云部署）
 
-`SANDBOX_MODE=docker` 时，`python.run` 在临时容器中执行：workspace 单目录挂载（容器内 `/workspace`，目录约定不变）、断网、内存/CPU/进程数限额、非 root 用户、跑完即删；镜像需预构建（分析全家桶，与内置技能依赖对齐）：
+`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器断网、非 root、资源受限、每次调用后删除。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
 
 ```bash
 docker build -t synlora-sandbox:latest docker/sandbox/
@@ -156,11 +158,11 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 ## 测试
 
 ```bash
-# harness 核心运行时（145 项；另有 docker 沙箱逃逸集成用例，无 daemon/镜像自动 skip）
+# harness 核心运行时（含 Docker 沙箱集成用例；无 daemon/镜像时按条件跳过）
 cd packages/synlys-harness
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
-# web 后端（411 项，默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
+# web 后端（默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
 cd apps/web/backend
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
@@ -174,7 +176,7 @@ npm run lint
 
 当前判断：**Agent 能力面已足够完整**（事件内核 / 工具管线 / steering / 强制审批 / 上下文压缩 / docker 沙箱 / 插件机制 / 能力市场），**薄弱的是产品化运维面**（用量看不清、成本无闸门、用户管不了、数据没备份、部署迁移脆弱）。因此路线按「先补齐多人使用不出事，再纵深能力」排序；其中统一 Job 注册表因近期要推 Spec_Agent 异步任务而单独提前。
 
-**近期起点：统一 Job 注册表**（Spec_Agent 异步任务的地基，提交即返回 job_id + 完成自动唤醒 agent）。
+**近期起点：统一 Job 注册表**（Spec_Agent 异步任务的地基，提交即返回 job_id，终态写入任务面板并支持主动查询）。
 
 | 阶段 | 内容 | 说明 |
 |---|---|---|
@@ -182,7 +184,7 @@ npm run lint
 | **B 多人用之前必须** | 管理员用户管理页 · LLM 用量配额 · run 崩溃恢复 · 应用容器化 · 备份与数据迁移 | 不做则开放多人有实质风险 |
 | **C 能力纵深** | 统一 Job 注册表（最高优先）→ Spec_Agent 异步任务 → SpecLabOS 设备工作流 → 跨会话长期记忆 → MCP adapter → 多 Agent / SwarmFlow | AI⁴MS 生态接入主线 |
 
-**进展**：统一 Job 注册表（C1）✅ 已实现——后台任务提交即返回、轮询器同步状态、终态自动唤醒 agent；Spec_Agent 异步谱图任务（C2）✅ 已实现——插件连接器接入 5 类谱图解析（NMR/IR/GPC/Raman/LC-MS），走通「上传 → 提交 → 轮询 → 结果回填 → 唤醒」全链路；下一步 SpecLabOS 设备工作流（C3）建在其上。
+**进展**：统一 Job 注册表（C1）✅ 已实现——后台任务提交即返回、轮询器同步状态、终态更新右侧运行信息并支持主动查询；Spec_Agent 异步谱图任务（C2）✅ 已实现——插件连接器接入 5 类谱图解析（NMR/IR/GPC/Raman/LC-MS），走通「上传 → 提交 → 轮询 → 结果回填」全链路；下一步 SpecLabOS 设备工作流（C3）建在其上。
 
 完整计划（含每项的做法与验收标准）见 [docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md](docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md)；06 号 backlog 保留为历史记录。
 

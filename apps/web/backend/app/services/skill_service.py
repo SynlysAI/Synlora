@@ -16,19 +16,38 @@ frontmatter 刻意不声明 `tools`：权限由系统分配（jiuwen 明确禁�
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
+import stat
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
 from app.services.workspace import public_skills_root
 from app.services.workspace import user_skills_root as workspace_skills_root
 
+if TYPE_CHECKING:
+    from app.catalog.loader import SkillPackage
+
 logger = logging.getLogger(__name__)
 
 NAME_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class ResolvedSkill:
+    """正文、元数据和资源目录绑定到同一来源的技能。"""
+
+    name: str
+    description: str
+    body: str
+    directory: Path
+    source: str
+    plugin_id: str | None = None
 
 
 def parse_skill_md(text: str) -> dict:
@@ -146,6 +165,8 @@ class SkillService:
         # source='plugin' 且带 plugin=<id>——管理页据此过滤到插件页统一查看，
         # 会话级插件开关据此过滤技能选择列表
         self._plugin_roots: dict[Path, str] = {}
+        self._root_names: dict[Path, frozenset[str]] = {}
+        self._catalog_skills: dict[str, Path] = {}
 
     @property
     def skills_dir(self) -> Path:
@@ -192,6 +213,8 @@ class SkillService:
         # 用纯路径函数探测（skills_dir 属性会 mkdir，查询动作不该有建目录副作用）
         if (public_skills_root(self._data_root) / name / "SKILL.md").is_file():
             return "public"
+        if name in self._catalog_skills:
+            return "builtin"
         for root in self._extra_roots:
             if (root / name / "SKILL.md").is_file():
                 return "builtin"
@@ -291,19 +314,39 @@ class SkillService:
         shutil.rmtree(target)
         return True
 
-    def add_root(self, root: Path, *, plugin: str | None = None) -> None:
+    def set_catalog_skills(self, packages: dict[str, "SkillPackage"]) -> None:
+        """设置 catalog 合并后胜出的具体技能目录。
+
+        Args:
+            packages: scan_catalog 产出的技能包映射。
+        """
+        self._catalog_skills = {
+            name: Path(os.path.abspath(package.directory))
+            for name, package in packages.items()
+        }
+
+    def add_root(
+        self,
+        root: Path,
+        *,
+        plugin: str | None = None,
+        names: frozenset[str] | None = None,
+    ) -> None:
         """追加一个只读技能根（插件安装时调用；重复追加幂等）。
 
         Args:
             root: 技能根目录（其下每个子目录是一个技能）。
             plugin: 贡献该根的插件 id（None = 内置 catalog 根）；插件根扫描出的
                 技能带 source='plugin' 与 plugin=<id>，供管理页/会话开关过滤。
+            names: 该插件 manifest 明确声明的技能名；None 表示扫描全部。
         """
-        normalized = Path(root).resolve()
+        normalized = Path(os.path.abspath(root))
         if normalized not in self._extra_roots:
             self._extra_roots.append(normalized)
         if plugin:
             self._plugin_roots[normalized] = plugin
+        if names is not None:
+            self._root_names[normalized] = names
 
     def skills_under(self, root: Path) -> list[dict]:
         """扫描指定只读根下的技能（插件页展示附属技能清单用）。
@@ -334,7 +377,10 @@ class SkillService:
         out: list[dict] = []
         if not root.is_dir():
             return out
+        allowed_names = self._root_names.get(root.resolve())
         for entry in sorted(root.iterdir()):
+            if allowed_names is not None and entry.name not in allowed_names:
+                continue
             md = entry / "SKILL.md"
             if not md.is_file():
                 continue
@@ -379,6 +425,18 @@ class SkillService:
                 if skill["name"] not in seen:
                     seen.add(skill["name"])
                     out.append(skill)
+        for name, directory in sorted(self._catalog_skills.items()):
+            if name in seen:
+                continue
+            rows = self._scan_root(
+                directory.parent,
+                builtin=True,
+                source="catalog",
+            )
+            for skill in rows:
+                if skill["name"] == name and name not in seen:
+                    seen.add(name)
+                    out.append(skill)
         return out
 
     def read_body(self, name: str, user_id: str | None = None) -> str | None:
@@ -398,6 +456,9 @@ class SkillService:
             return None
         roots = ([self.user_skills_dir(user_id)] if user_id else []) + \
             [self.skills_dir, *self._extra_roots]
+        catalog_directory = self._catalog_skills.get(name)
+        if catalog_directory is not None:
+            roots.append(catalog_directory.parent)
         for root in roots:
             md = root / name / "SKILL.md"
             if not md.is_file():
@@ -407,6 +468,101 @@ class SkillService:
             except (ValueError, yaml.YAMLError):
                 continue  # 该根的技能损坏：跳过，继续找后续根（与 _scan_root 的"跳过"语义一致）
         return None
+
+    @staticmethod
+    def _directory_is_safe(directory: Path) -> bool:
+        """拒绝技能包内符号链接及 Windows reparse 资源。"""
+        try:
+            for path in (directory, *directory.rglob("*")):
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    return False
+                reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                if getattr(info, "st_file_attributes", 0) & reparse:
+                    return False
+        except OSError:
+            return False
+        return True
+
+    def _resolve_directory(
+        self,
+        directory: Path,
+        *,
+        source: str,
+        plugin_id: str | None = None,
+    ) -> ResolvedSkill | None:
+        """从确定目录解析一个技能，不跨根回退。"""
+        if not self._directory_is_safe(directory):
+            logger.warning("技能资源包含链接或不可读取，已排除: %s (%s)",
+                           directory.name, source)
+            return None
+        resolved = directory.resolve()
+        try:
+            skill = parse_skill_md((resolved / "SKILL.md").read_text(encoding="utf-8"))
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            logger.warning("技能解析失败，已排除且不回退同名来源: %s (%s): %s",
+                           directory.name, source, exc)
+            return None
+        return ResolvedSkill(
+            name=skill["name"],
+            description=skill["description"],
+            body=skill["content"],
+            directory=resolved,
+            source=source,
+            plugin_id=plugin_id,
+        )
+
+    def resolve_skills(self, user_id: str | None = None) -> list[ResolvedSkill]:
+        """按覆盖优先级一次解析并绑定全部有效技能来源。
+
+        Args:
+            user_id: 当前用户；None 时不包含用户自建层。
+
+        Returns:
+            确定来源的技能列表。
+        """
+        candidates: dict[str, tuple[Path, str, str | None]] = {}
+
+        def add_root(
+            root: Path,
+            source: str,
+            plugin_id: str | None = None,
+            names: frozenset[str] | None = None,
+        ) -> None:
+            if not root.is_dir():
+                return
+            for entry in sorted(root.iterdir()):
+                if not entry.is_dir() or (names is not None and entry.name not in names):
+                    continue
+                candidates.setdefault(entry.name, (entry, source, plugin_id))
+
+        if user_id:
+            add_root(self.user_skills_dir(user_id), "user")
+        add_root(self.skills_dir, "public")
+        for name, directory in sorted(self._catalog_skills.items()):
+            candidates.setdefault(name, (directory, "catalog", None))
+        for root in self._extra_roots:
+            plugin_id = self._plugin_roots.get(root)
+            add_root(
+                root,
+                "plugin" if plugin_id else "catalog",
+                plugin_id,
+                self._root_names.get(root),
+            )
+
+        resolved: list[ResolvedSkill] = []
+        for name, (directory, source, plugin_id) in candidates.items():
+            item = self._resolve_directory(
+                directory,
+                source=source,
+                plugin_id=plugin_id,
+            )
+            if item is not None and item.name == name:
+                resolved.append(item)
+            elif item is not None:
+                logger.warning("技能目录名与 frontmatter 名称不一致，已排除: %s != %s",
+                               name, item.name)
+        return resolved
 
     def write_skill(self, *, name: str, description: str, content: str,
                     version: str = "1.0", author: str = "",

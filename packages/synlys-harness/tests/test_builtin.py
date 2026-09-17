@@ -5,8 +5,8 @@ from synlys_harness.tools.registry import ToolRegistry
 from synlys_harness.types import ToolContext, ToolResult
 
 EXPECTED = [
-    "file.read", "file.write", "file.list", "python.run", "file.read_image",
-    "web.search", "web.fetch", "http.request",
+    "file.read", "file.write", "file.list", "python.run", "shell.run", "file.read_image",
+    "web.fetch", "http.request",
     "ask_user", "file.send", "skill.list", "skill.read",
     "job.submit", "job.status", "job.list", "job.cancel",
 ]
@@ -196,59 +196,32 @@ async def test_skill_read_blank_or_missing_name(tmp_path):
     assert numeric.ok is False
 
 
-# ---------- web.search（SearXNG 联网搜索） ----------
+async def test_skill_read_uses_bound_resource_reader(tmp_path):
+    """额外资源通过本轮绑定回调读取并返回资源根。"""
+    seen: list[tuple[str, str]] = []
 
+    async def reader(name: str, path: str) -> ToolResult:
+        seen.append((name, path))
+        return ToolResult(ok=True, content="参考内容", data={"truncated": False})
 
-async def test_web_search_unconfigured(tmp_path):
-    """未配置 SearXNG 地址：明确报错。"""
-    pipe = _setup()
-    r = await pipe.run("web.search", _ctx(tmp_path), {"query": "q"})
-    assert not r.ok and r.error == "search_unconfigured"
-
-
-async def test_web_search_formats_results(tmp_path, monkeypatch):
-    """调 /search?format=json 并格式化即时答案 + 结果列表。"""
-    import synlys_harness.tools.builtin as builtin
-
-    class _Resp:
-        status_code = 200
-        text = ""
-        def json(self):
-            return {
-                "answers": ["PVDF 是聚偏氟乙烯"],
-                "results": [
-                    {"title": "PVDF binder", "url": "https://a.com/1", "content": "常用粘结剂"},
-                    {"title": "PAA binder", "url": "https://a.com/2", "content": ""},
-                ],
-                "unresponsive_engines": [],
-            }
-
-    class _Client:
-        last = None
-        def __init__(self, **kw):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *exc):
-            return False
-        async def get(self, url, headers=None, params=None):
-            _Client.last = {"url": url, "headers": headers, "params": params}
-            return _Resp()
-
-    monkeypatch.setattr(builtin.httpx, "AsyncClient", _Client)
-    pipe = _setup()
-    # 配了 API Key 时应携带 X-API-Key 头
     ctx = _ctx(tmp_path, extra={
-        "web_search_endpoint": "http://sx.test", "web_search_api_key": "sk-sx",
+        "skills": {"demo": "正文"},
+        "skill_resource_roots": {"demo": "/skills/demo"},
+        "skill_resource_reader": reader,
     })
-    r = await pipe.run("web.search", ctx, {"query": "PVDF", "max_results": 5})
-    assert r.ok and r.data["results"] == 2
-    assert "即时答案：PVDF 是聚偏氟乙烯" in r.content
-    assert "https://a.com/1" in r.content and "常用粘结剂" in r.content
-    assert _Client.last["url"] == "http://sx.test/search"
-    assert _Client.last["params"]["format"] == "json"
-    assert _Client.last["params"]["q"] == "PVDF"
-    assert _Client.last["headers"]["X-API-Key"] == "sk-sx"
+
+    result = await skill_read(ctx, {"name": "demo", "path": "references/guide.md"})
+
+    assert result.ok and result.content == "参考内容"
+    assert result.data["resource_root"] == "/skills/demo"
+    assert seen == [("demo", "references/guide.md")]
+
+
+async def test_skill_read_rejects_extra_resource_without_reader(tmp_path):
+    """没有宿主资源回调时额外路径明确拒绝。"""
+    ctx = _ctx(tmp_path, extra={"skills": {"demo": "正文"}})
+    result = await skill_read(ctx, {"name": "demo", "path": "references/a.md"})
+    assert not result.ok and result.error == "skill_resources_unavailable"
 
 
 # ---------- web.fetch（网页正文抓取 + SSRF 防护） ----------

@@ -330,7 +330,7 @@ def test_plugin_declares_connectors_and_skill():
 def test_real_plugin_registers_all_five_kinds():
     """真实插件包经 loader + 注册表能挂出 5 个 kind（防声明漏配的静默失效）。"""
     from app.catalog.loader import load_plugin_connectors
-    from app.services.job_connectors import JobConnectorRegistry
+    from app.plugins.contracts import JobConnectorRegistry
 
     package = scan_catalog([REPO_CATALOG]).plugins["spec_agent"]
     assert package.connectors_module == "connectors.py"

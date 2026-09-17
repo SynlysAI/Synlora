@@ -3,6 +3,8 @@
 认证夹具沿用 conftest 的 user_headers（普通用户，sub=u-user）。
 """
 
+from app.db.repos import JobRepo
+
 
 async def test_list_projects_returns_empty(client, user_headers):
     """全新用户列表为空（只读列表不落盘、不建目录）。"""
@@ -43,6 +45,31 @@ async def test_delete_project_removes_it(client, user_headers):
     assert (await client.delete(f"/api/v1/projects/{pid}",
                                 headers=user_headers)).status_code == 200
     assert (await client.get("/api/v1/projects", headers=user_headers)).json() == []
+
+
+async def test_delete_project_blocked_by_active_sandbox_job(
+        app, client, user_headers):
+    """关联项目有活跃平台任务时删除返回 409。"""
+    project = (await client.post(
+        "/api/v1/projects", json={"name": "运行中"}, headers=user_headers
+    )).json()
+    root = app.state.project_service.root_for(project)
+    await JobRepo(app.state.store).create({
+        "backend": "sandbox",
+        "kind": "sandbox.python",
+        "status": "running",
+        "session_id": "s1",
+        "user_id": "u-user",
+        "workspace_root": str(root.resolve()),
+        "workspace_owner": {"project_id": project["_id"]},
+    })
+
+    response = await client.delete(
+        f"/api/v1/projects/{project['_id']}", headers=user_headers
+    )
+
+    assert response.status_code == 409
+    assert "先取消" in response.json()["detail"]
 
 
 async def test_delete_project_twice_second_is_404(client, user_headers):

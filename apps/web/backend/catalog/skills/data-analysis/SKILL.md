@@ -19,6 +19,13 @@ tags:
 3. 按需求做统计或作图，图存 `output/`
 4. 回复给出结论 + 产物的工作区相对路径
 
+## 包内脚本
+
+- 快速生成 CSV 摘要：运行资源根下的 `scripts/summarize_csv.py`。
+- 前台 Docker Shell 示例：`python /skills/data-analysis/scripts/summarize_csv.py --input /workspace/files/data.csv --output /workspace/output/summary.json`。
+- 长时间处理可通过 `job.submit` 提交 `sandbox.skill`，参数中的 `skill` 为 `data-analysis`、`script` 为 `scripts/summarize_csv.py`，`args` 使用独立字符串数组。
+- 技能目录只读；脚本输入来自 `/workspace/files/`，输出必须写入 `/workspace/output/`。
+
 ## 决策规则
 - 找不到数据文件时先问用户，不要凭空生成数据
 - 画图中文标签要显式指定字体，否则乱码

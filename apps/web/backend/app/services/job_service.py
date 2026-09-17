@@ -1,27 +1,19 @@
-"""后台任务服务：提交、查询、取消、状态流转与完成唤醒。
+"""后台任务服务：提交、查询、取消、状态流转与结果持久化。
 
 职责边界：本服务只认 JobConnector 协议（怎么跟外部系统说话）与 JobRepo
-（任务文档在哪），不认识任何具体子平台。任务完成后的"唤醒 agent 继续处理"
-经装配阶段注入的 wake 回调完成（`set_wake_callback` / `set_busy_check`）。
+（任务文档在哪），不认识任何具体子平台。任务终态只写入 Job 文档，供右侧
+运行信息和 ``job.status`` / ``job.list`` 主动查询，不自动发起新的 Agent run。
 
 状态流转与取消（Task 6）已实现：`refresh` 把外部状态原文映射为统一状态并校验
 合法流转（查询失败/未映射一律保持原状态、只累计 poll_failures），`cancel` 调
 连接器请求取消后本地收敛为 cancelled（终态任务拒绝取消）。
 
-完成唤醒（Task 9）：`refresh` 落到终态后调 `_notify_wake`——会话空闲立即唤醒
-agent 整合结果，会话忙则进 `_pending_wake` 排队，等该会话的 run 结束后由
-`drain_pending`（AgentService 的 run 结束回调驱动）补发。
-
 并发安全（`refresh` 与 `cancel` 共用同一把任务级锁）：poller 的 tick、模型调
 `job.status`、用户/模型调 `job.cancel` 可能拿到同一份非终态快照，靠任务级锁
-串行化并在锁内重读文档——后到者看到已落库的终态即早返回，同一任务只唤醒一次
-（也不会对同一任务并发调外部 poll）。`cancel` 同样取锁：连接器取消耗时较长
+串行化并在锁内重读文档——后到者看到已落库的终态即早返回，也不会对同一任务
+并发调外部 poll。`cancel` 同样取锁：连接器取消耗时较长
 （网络 await），不取锁时轮询在窗口内落地的状态会整字段覆盖取消结果（任务从
-cancelled 回退为 running，还会对已取消的任务触发唤醒白起一轮 run）。
-
-Note:
-    待唤醒队列为进程内存态（与 ActiveRun/SSE 队列一致）：进程重启会丢失尚未
-    补发的完成通知——已在 workers=1 单实例约束下接受。
+cancelled 回退为 running）。
 """
 from __future__ import annotations
 
@@ -30,7 +22,8 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Awaitable, Callable
+from dataclasses import replace
+from typing import Any
 
 from synlys_harness import (
     ACTIVE_STATUSES,
@@ -40,22 +33,21 @@ from synlys_harness import (
     is_terminal,
 )
 
-# 领域异常来自中立的 session_runtime（不是 agent_service）：本模块不该依赖编排器
-from app.services.job_connectors import (
+from app.plugins.contracts import (
     JobConnectorRegistry,
     JobPollFailed,
     JobSubmitFailed,
 )
-from app.services.session_runtime import TooManyRuns, WakeTargetGone
+from app.services.job_access import (
+    JobSubmissionScope,
+    WorkspaceJobGuard,
+    prepare_sandbox_job,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 # 摘要文本里注入给 LLM 的结果上限（超出截断，完整结果可由外部系统/后续工具取）
 RESULT_PREVIEW_CHARS = 4000
-
-WakeCallback = Callable[[str, str, str], Awaitable[None]]
-"""唤醒回调签名：(session_id, text, job_id) -> None。"""
-
 
 def _new_job_id() -> str:
     """生成任务 id。"""
@@ -92,7 +84,10 @@ class JobService:
 
     def __init__(self, repo: Any, connectors: JobConnectorRegistry,
                  plugin_config_store: Any = None,
-                 ai4ms_identity: Any = None) -> None:
+                 ai4ms_identity: Any = None,
+                 settings: Any = None,
+                 sandbox_runner: Any = None,
+                 workspace_guard: WorkspaceJobGuard | None = None) -> None:
         """保存依赖。
 
         Args:
@@ -108,14 +103,16 @@ class JobService:
         self._connectors = connectors
         self._plugin_config_store = plugin_config_store
         self._ai4ms_identity = ai4ms_identity
-        self._wake: WakeCallback | None = None
-        # 待唤醒会话队列：会话忙时任务先在这里排队，run 结束后 drain
-        self._pending_wake: dict[str, list[str]] = {}
-        # 每任务的串行锁（防并发 refresh 重复推进状态与重复唤醒）；按任务数增长，
+        self._settings = settings
+        self._sandbox_runner = sandbox_runner
+        self._workspace_guard = workspace_guard
+        # 每任务的串行锁（防并发 refresh 重复推进状态）；按任务数增长，
         # 进程内小对象，任务总量可控故不回收（回收会引出"旧锁 vs 新锁"的并发窗口）
         self._job_locks: dict[str, asyncio.Lock] = {}
-        # 会话忙判定（装配阶段注入 AgentService.is_busy；缺省视为空闲）
-        self._busy_check: Callable[[str], bool] = lambda _sid: False
+
+    def set_sandbox_runner(self, runner: Any) -> None:
+        """注入平台沙箱后台运行器。"""
+        self._sandbox_runner = runner
 
     # ---------- 查询 ----------
 
@@ -141,135 +138,14 @@ class JobService:
         return sorted(docs, key=lambda d: float(d.get("created_at") or 0))
 
     async def list_active(self) -> list[dict]:
-        """列出全部未完成任务（轮询入口；终态任务不再纳入）。"""
+        """列出需要外部轮询的未完成任务。"""
         active_values = {s.value for s in ACTIVE_STATUSES}
         docs = await self._repo.list()
-        return [d for d in docs if d.get("status") in active_values]
-
-    # ---------- 完成唤醒 ----------
-
-    def set_wake_callback(self, callback: WakeCallback) -> None:
-        """注入唤醒回调（装配阶段传 AgentService 的唤醒包装函数）。
-
-        Args:
-            callback: (session_id, text, job_id) -> None。
-        """
-        self._wake = callback
-
-    def set_busy_check(self, check: Callable[[str], bool]) -> None:
-        """注入会话忙判定（装配阶段传 AgentService.is_busy）。
-
-        Args:
-            check: (session_id) -> bool。
-        """
-        self._busy_check = check
-
-    def pending_wake_count(self, session_id: str) -> int:
-        """该会话待唤醒的任务数（可观测/测试用）。"""
-        return len(self._pending_wake.get(session_id, []))
-
-    async def _notify_wake(self, doc: dict) -> None:
-        """任务终态后通知会话（空闲立即唤醒，忙则排队）。
-
-        Args:
-            doc: 已进入终态的任务文档。
-        """
-        job_id = str(doc.get("_id", ""))
-        session_id = str(doc.get("session_id", ""))
-        if not job_id or not session_id:
-            return
-        if self._busy_check(session_id):
-            self._pending_wake.setdefault(session_id, []).append(job_id)
-            return
-        await self._wake_now(doc)
-
-    async def _wake_now(self, doc: dict) -> None:
-        """立即唤醒（回调缺失记日志跳过；失败不抛出，避免打挂轮询循环）。
-
-        Args:
-            doc: 任务文档。
-        """
-        if self._wake is None:
-            _LOGGER.warning("未注入唤醒回调，任务完成通知被丢弃 job=%s", doc.get("_id"))
-            return
-        session_id = str(doc.get("session_id", ""))
-        job_id = str(doc.get("_id", ""))
-        try:
-            await self._wake(session_id, self.compose_wake_text(doc), job_id)
-        except TooManyRuns:
-            # "判定空闲"到"chat 取会话锁"之间有窗口（解析装配含多个 await），
-            # 用户此刻发消息就会撞上：重新入队等本轮结束补发，不丢通知
-            self._pending_wake.setdefault(session_id, []).append(job_id)
-        except WakeTargetGone:
-            # 会话已删（delete_session 不清理 jobs）：通知无接收方，静默跳过
-            _LOGGER.info("唤醒目标已不存在，跳过 job=%s", job_id)
-        except Exception:  # noqa: BLE001 唤醒失败不得影响轮询循环
-            _LOGGER.warning("任务完成唤醒失败 session=%s job=%s",
-                            session_id, job_id, exc_info=True)
-
-    async def drain_pending(self, session_id: str) -> None:
-        """会话空闲后补发待唤醒任务（由 AgentService 的 run 结束回调驱动）。
-
-        逐条出队处理：单条失败或被重新入队，都不牵连同会话其余的待唤醒通知；
-        处理中途被取消时，未处理的通知仍在队列里。
-
-        本轮不重试"已经尝试过又被重新入队"的任务（`_wake_now` 撞会话忙会把
-        任务塞回队列）——否则同一条记录会被 while 立刻取到而死循环；它留待
-        下一次 drain 补发。
-
-        Args:
-            session_id: 会话 id。
-        """
-        attempted: set[str] = set()
-        while True:
-            queue = self._pending_wake.get(session_id) or []
-            job_id = next((j for j in queue if j not in attempted), None)
-            if job_id is None:
-                break
-            queue.remove(job_id)
-            attempted.add(job_id)
-            try:
-                doc = await self._repo.get(job_id)
-            except Exception:  # noqa: BLE001 单条读取失败不牵连同会话其余通知
-                _LOGGER.warning("读取待唤醒任务失败 job=%s", job_id, exc_info=True)
-                continue
-            if doc is None:
-                continue
-            await self._wake_now(doc)
-        # 只有队列真的空了才摘键：被重新入队的任务必须留到下一次 drain（不丢通知）
-        if not self._pending_wake.get(session_id):
-            self._pending_wake.pop(session_id, None)
-
-    @staticmethod
-    def compose_wake_text(doc: dict) -> str:
-        """组装唤醒文本（模型据此继续处理任务结果）。
-
-        Args:
-            doc: 任务文档。
-
-        Returns:
-            系统通知文本。
-        """
-        lines = [
-            "【系统通知】你之前提交的后台任务已结束，请据此继续完成任务。",
-            f"任务 ID：{doc.get('_id')}",
-            f"任务类型：{doc.get('kind')}",
-            f"任务说明：{doc.get('label') or '（无）'}",
-            f"最终状态：{doc.get('status')}",
+        return [
+            doc for doc in docs
+            if doc.get("backend") == "external"
+            and doc.get("status") in active_values
         ]
-        if doc.get("error"):
-            lines.append(f"错误信息：{_clip(str(doc['error']), 1000)}")
-        if doc.get("result"):
-            # 由连接器的可选 fetch_result 在成功终态回填（见 _fetch_result）
-            lines.append(f"任务结果：\n{_clip(str(doc['result']))}")
-        # 按终态分流：失败/取消时不能给"可继续调用工具"的开放邀请（模型会原样
-        # 重提同一任务 → submit → fail → wake，每轮都是真金白银的 LLM 调用）
-        if doc.get("status") == JobStatus.COMPLETED.value:
-            lines.append("请基于以上结果直接回应用户，不要重复提交同一任务。")
-        else:
-            lines.append("请向用户说明失败/取消原因；如需重试，先调整参数或排查原因，"
-                         "不要原样重新提交同一任务。")
-        return "\n".join(lines)
 
     # ---------- 配置解析（提交/轮询共用） ----------
 
@@ -386,6 +262,22 @@ class JobService:
             ok=True 且 data["job_id"]；失败时错误码为 unknown_job_kind /
             submit_failed。
         """
+        scope = (ctx_extra or {}).get("job_submission_scope")
+        if not isinstance(scope, JobSubmissionScope):
+            return ToolResult(
+                ok=False,
+                content="当前运行缺少可信的后台任务授权范围",
+                error="job_scope_missing",
+            )
+        if kind.startswith("sandbox."):
+            return await self._submit_sandbox(
+                session_id=session_id,
+                user_id=user_id,
+                kind=kind,
+                params=params,
+                label=label,
+                scope=scope,
+            )
         registered = self._connectors.get(kind)
         if registered is None:
             # 不回显 self._connectors.kinds：注册表是进程全局的，清单里可能含该
@@ -398,6 +290,12 @@ class JobService:
                          "从中确认任务类型与参数格式"),
                 error="unknown_job_kind")
         connector = registered.connector
+        if connector.plugin_id not in scope.allowed_plugins:
+            return ToolResult(
+                ok=False,
+                content=f"当前会话未启用任务类型所属插件: {kind}",
+                error="plugin_not_enabled",
+            )
         ctx = await self._ctx_for(user_id, connector.plugin_id, ctx_extra)
         try:
             external_id = await connector.submit(params, ctx)
@@ -411,6 +309,7 @@ class JobService:
         doc = await self._repo.create({
             "_id": _new_job_id(),
             "kind": kind,
+            "backend": "external",
             "plugin_id": connector.plugin_id,
             "status": JobStatus.PENDING.value,
             "session_id": session_id,
@@ -428,10 +327,167 @@ class JobService:
         return ToolResult(
             ok=True,
             content=(f"已提交后台任务「{label or kind}」，任务 ID: {doc['_id']}。"
-                     "任务在后台执行，完成时系统会自动通知你继续处理；"
-                     "现在不要重复提交，也不必轮询状态。"),
+                     "任务在后台独立执行，状态会显示在右侧运行信息；"
+                     "用户需要时可用 job.status 或 job.list 查询。"),
             data={"job_id": doc["_id"], "status": doc["status"]})
 
+    async def _submit_sandbox(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        kind: str,
+        params: dict,
+        label: str,
+        scope: JobSubmissionScope,
+    ) -> ToolResult:
+        """登记并交接平台沙箱后台任务。"""
+        if self._sandbox_runner is None or self._settings is None:
+            return ToolResult(
+                ok=False,
+                content="平台沙箱后台任务当前不可用",
+                error="sandbox_jobs_unavailable",
+            )
+        try:
+            request = prepare_sandbox_job(kind, params, scope, self._settings)
+        except ValueError as exc:
+            return ToolResult(
+                ok=False,
+                content=f"后台任务参数或权限非法: {exc}",
+                error="invalid_arguments",
+            )
+        job_id = _new_job_id()
+        owner = dict(scope.ownership)
+        async def register_and_start() -> dict:
+            doc = await self._repo.create({
+                "_id": job_id,
+                "backend": "sandbox",
+                "kind": kind,
+                "plugin_id": None,
+                "external_id": None,
+                "status": JobStatus.PENDING.value,
+                "session_id": session_id,
+                "user_id": user_id,
+                "label": label,
+                "params": params,
+                "workspace_root": str(scope.workspace_root.resolve()),
+                "workspace_owner": owner,
+                "result": "",
+                "error": "",
+                "cancel_requested": False,
+            })
+            try:
+                self._sandbox_runner.start(
+                    job_id,
+                    replace(request, execution_id=job_id),
+                )
+            except Exception:
+                await self._repo.update(job_id, {
+                    "status": JobStatus.FAILED.value,
+                    "error": "后台任务启动失败",
+                    "error_code": "start_failed",
+                    "ended_at": time.time(),
+                })
+                raise
+            return doc
+
+        try:
+            if self._workspace_guard is None:
+                doc = await register_and_start()
+            else:
+                async with self._workspace_guard.hold(
+                    user_id, scope.workspace_root, owner
+                ):
+                    if not scope.workspace_root.exists():
+                        raise RuntimeError("任务工作区已不存在")
+                    doc = await register_and_start()
+        except Exception as exc:  # noqa: BLE001 存储失败不得启动容器
+            _LOGGER.warning("沙箱任务登记或交接失败 kind=%s", kind, exc_info=True)
+            return ToolResult(
+                ok=False,
+                content=f"后台任务登记或启动失败: {exc}",
+                error="job_registration_failed",
+            )
+        return ToolResult(
+            ok=True,
+            content=(f"已提交后台任务「{label or kind}」，任务 ID: {job_id}。"
+                     "任务已独立交接，停止当前回答不会停止该任务。"),
+            data={"job_id": job_id, "status": doc["status"]},
+        )
+
+    async def mark_sandbox_running(self, job_id: str) -> None:
+        """将已交接平台任务推进为 running。"""
+        async with self._lock_for(job_id):
+            doc = await self._repo.get(job_id)
+            if doc is not None and doc.get("status") == JobStatus.PENDING.value:
+                await self._repo.update(job_id, {
+                    "status": JobStatus.RUNNING.value,
+                    "started_at": time.time(),
+                })
+
+    async def recover_sandbox_jobs(self, executor: Any) -> None:
+        """清理本部署重启前遗留的平台任务并标记中断。
+
+        Args:
+            executor: 提供 cleanup_execution 的当前部署执行器。
+        """
+        active = {JobStatus.PENDING.value, JobStatus.RUNNING.value}
+        for doc in await self._repo.list():
+            if doc.get("backend") != "sandbox" or doc.get("status") not in active:
+                continue
+            job_id = str(doc.get("_id") or "")
+            if not job_id:
+                continue
+            stopped = await executor.cleanup_execution(job_id)
+            if stopped:
+                await self._repo.update(job_id, {
+                    "status": JobStatus.FAILED.value,
+                    "error": "服务进程重启，后台任务已中断且不会自动重跑",
+                    "error_code": "process_interrupted",
+                    "ended_at": time.time(),
+                    "cancel_requested": False,
+                })
+            else:
+                await self._repo.update(job_id, {
+                    "cancel_requested": True,
+                    "error": "服务进程重启，尚未确认遗留容器已停止",
+                    "error_code": "cleanup_unconfirmed",
+                })
+
+    async def finish_sandbox(
+        self,
+        job_id: str,
+        result: ToolResult,
+        *,
+        cancelled: bool = False,
+    ) -> None:
+        """在任务锁内收敛平台任务终态。"""
+        async with self._lock_for(job_id):
+            doc = await self._repo.get(job_id)
+            if doc is None or is_terminal(doc.get("status")):
+                return
+            exit_code = result.data.get("exit_code")
+            timed_out = bool(result.data.get("timed_out")) or result.error == "timeout"
+            if cancelled:
+                status = JobStatus.CANCELLED
+                error_code = "cancelled"
+            elif result.ok and exit_code in (None, 0):
+                status = JobStatus.COMPLETED
+                error_code = ""
+            else:
+                status = JobStatus.FAILED
+                error_code = "timeout" if timed_out else (result.error or "nonzero_exit")
+            await self._repo.update(job_id, {
+                "status": status.value,
+                "result": result.content[-65_536:],
+                "exit_code": exit_code,
+                "timed_out": timed_out,
+                "truncated": result.truncated or len(result.content) > 65_536,
+                "error": "" if status is JobStatus.COMPLETED else result.content[-4000:],
+                "error_code": error_code,
+                "ended_at": time.time(),
+                "cancel_requested": False,
+            })
     async def describe(self, job_id: str, *, user_id: str,
                        refresh: bool = False) -> ToolResult:
         """查单个任务（可选先同步刷新一次状态，让用户看到最新进度）。
@@ -448,16 +504,23 @@ class JobService:
         if doc is None or str(doc.get("user_id")) != user_id:
             return ToolResult(ok=False, content=f"任务不存在: {job_id}",
                               error="not_found")
-        if refresh and not is_terminal(doc.get("status")):
+        if (refresh and doc.get("backend") == "external"
+                and not is_terminal(doc.get("status"))):
             refreshed = await self.refresh(doc)
             if refreshed is not None:
                 doc = refreshed
         return ToolResult(ok=True, content=self._render(doc),
-                          data={"job_id": doc.get("_id", ""),
-                                "status": doc.get("status", "")})
+                          data={
+                              "job_id": doc.get("_id", ""),
+                              "status": doc.get("status", ""),
+                              "exit_code": doc.get("exit_code"),
+                              "timed_out": bool(doc.get("timed_out")),
+                              "truncated": bool(doc.get("truncated")),
+                              "error_code": doc.get("error_code", ""),
+                          })
 
     def _lock_for(self, job_id: str) -> asyncio.Lock:
-        """取该任务的串行锁（任务级，防并发刷新重复推进与重复唤醒）。
+        """取该任务的串行锁（任务级，防并发刷新重复推进）。
 
         Args:
             job_id: 任务 id。
@@ -476,7 +539,7 @@ class JobService:
 
         并发安全：任务级锁内**重读**文档——两个调用方（poller 的 tick 与模型
         调 job.status）可能拿到同一份非终态快照，串行化后后到者在锁内会看到
-        已落库的终态从而早返回，同一任务只唤醒一次、也只调一次外部 poll。
+        已落库的终态从而早返回，同一任务只调一次外部 poll。
 
         Args:
             doc: 任务文档（仅用于取 id；真实依据是锁内重读的文档）。
@@ -511,7 +574,7 @@ class JobService:
 
         Returns:
             文本；连接器未实现该方法、或调用失败时返回空串（只告警，不影响
-            状态落地与唤醒）。
+            状态落地）。
         """
         fetch = getattr(connector, hook, None)
         if not callable(fetch):
@@ -532,6 +595,8 @@ class JobService:
         Returns:
             更新后的文档；任务不存在返回 None。
         """
+        if doc.get("backend") != "external":
+            return doc
         try:
             status = JobStatus(doc["status"])
         except (KeyError, ValueError):
@@ -546,7 +611,6 @@ class JobService:
                 "error": f"任务类型已不可用: {doc.get('kind')}",
                 "ended_at": time.time(),
             })
-            await self._notify_wake(failed or doc)
             return failed
         ctx = await self._ctx_for(str(doc.get("user_id", "")),
                                   registered.connector.plugin_id,
@@ -578,7 +642,7 @@ class JobService:
             fields["ended_at"] = time.time()
         updated = await self._repo.update(doc["_id"], fields)
         if mapped is JobStatus.COMPLETED:
-            # 成功终态回填结果：唤醒文本带上它，模型才不用反问用户
+            # 成功终态回填结果，供任务详情和后续主动查询读取。
             result = await self._fetch_optional(
                 registered.connector, "fetch_result",
                 str(doc.get("external_id", "")), ctx)
@@ -587,16 +651,13 @@ class JobService:
         elif mapped is JobStatus.FAILED:
             # 失败终态回填上游给出的失败原因：上游状态接口的 message 往往只是
             # "failed"，真正的原因（如"暂不支持Raman的greedy_decode模式"）在结果
-            # 接口的 error 字段里。不回填的话，job.status 与唤醒文本都只有一个
-            # "failed"，模型只能凭空猜原因（实测它会拿工作区旧文档瞎归因）
+            # 接口的 error 字段里。不回填的话，job.status 只有一个 "failed"，
+            # 后续查询无法解释失败原因。
             reason = await self._fetch_optional(
                 registered.connector, "fetch_error",
                 str(doc.get("external_id", "")), ctx)
             if reason:
                 updated = await self._repo.update(doc["_id"], {"error": reason})
-        if is_terminal(mapped):
-            # 终态：唤醒会话，让 agent 继续整合结果
-            await self._notify_wake(updated or doc)
         return updated
 
     async def render_list(self, session_id: str, *, user_id: str) -> ToolResult:
@@ -628,6 +689,12 @@ class JobService:
             # 工具层已校验非空，此处防御：空串不该造出一把空键锁
             return ToolResult(ok=False, content=f"任务不存在: {job_id}",
                               error="not_found")
+        doc = await self._repo.get(job_id)
+        if doc is None or str(doc.get("user_id")) != user_id:
+            return ToolResult(ok=False, content=f"任务不存在: {job_id}",
+                              error="not_found")
+        if doc.get("backend") == "sandbox":
+            return await self._cancel_sandbox(doc)
         async with self._lock_for(job_id):
             # 锁内重读：并发的 refresh 可能刚把任务推进到终态，以最新状态为准
             doc = await self._repo.get(job_id)
@@ -666,6 +733,43 @@ class JobService:
         return ToolResult(ok=True, content=f"任务 {job_id} {note}。",
                           data={"job_id": job_id, "status": "cancelled"})
 
+    async def _cancel_sandbox(self, doc: dict) -> ToolResult:
+        """取消平台沙箱任务并等待停止确认。"""
+        job_id = str(doc["_id"])
+        async with self._lock_for(job_id):
+            fresh = await self._repo.get(job_id)
+            if fresh is None:
+                return ToolResult(ok=False, content=f"任务不存在: {job_id}",
+                                  error="not_found")
+            if is_terminal(fresh.get("status")):
+                return ToolResult(
+                    ok=False,
+                    content=f"任务已结束（{fresh.get('status')}），无需取消。",
+                    error="already_finished",
+                )
+            await self._repo.update(job_id, {"cancel_requested": True})
+        if self._sandbox_runner is None:
+            return ToolResult(
+                ok=False,
+                content=f"任务 {job_id} 已请求停止，但运行器不可用，尚未确认容器停止。",
+                error="cancel_unconfirmed",
+            )
+        stopped = await self._sandbox_runner.cancel(job_id)
+        if not stopped:
+            return ToolResult(
+                ok=False,
+                content=f"任务 {job_id} 已请求停止，但尚未确认容器停止。",
+                error="cancel_unconfirmed",
+                data={"job_id": job_id, "cancel_requested": True},
+            )
+        fresh = await self._repo.get(job_id)
+        return ToolResult(
+            ok=True,
+            content=f"任务 {job_id} 已停止。",
+            data={"job_id": job_id,
+                  "status": (fresh or {}).get("status", "cancelled")},
+        )
+
     @staticmethod
     def _render(doc: dict) -> str:
         """任务文档 → 一行摘要（给 LLM 与用户看）。"""
@@ -674,6 +778,16 @@ class JobService:
             params = json.dumps(doc["params"], ensure_ascii=False, default=str)
             parts.append(f"参数: {_clip(params, 200)}")
         parts.append(f"状态: {doc.get('status')}")
+        if doc.get("backend") == "sandbox":
+            if doc.get("exit_code") is not None:
+                parts.append(f"退出码: {doc.get('exit_code')}")
+            if doc.get("timed_out"):
+                parts.append("执行超时: 是")
+            owner = doc.get("workspace_owner") or {}
+            if owner.get("project_id"):
+                parts.append(f"工作区归属: 项目 {owner['project_id']}")
+            elif owner.get("session_id"):
+                parts.append(f"工作区归属: 会话 {owner['session_id']}")
         failures = int(doc.get("poll_failures") or 0)
         if failures:
             # 轮询失败刻意不改状态（防网络抖动误判失败），但必须让模型/用户看见：

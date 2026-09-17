@@ -1,7 +1,7 @@
 """后台任务（Job）状态机：异步长任务的统一生命周期定义。
 
 机制归 harness、存储归宿主：本模块只定义状态集合与合法流转；任务文档的
-持久化、外部系统对接与完成唤醒由宿主实现。
+持久化、外部系统对接与终态展示由宿主实现。
 """
 from __future__ import annotations
 
@@ -57,17 +57,3 @@ def can_transition(src: JobStatus, dst: JobStatus) -> bool:
 def is_terminal(status: JobStatus) -> bool:
     """是否为终态状态（终态在流转表中无出边，即不再变化）。"""
     return status in TERMINAL_STATUSES
-
-
-def job_wake_kind(wake_source: dict) -> str:
-    """系统唤醒消息的 kind 标记（前端据此渲染提示条）。
-
-    Args:
-        wake_source: 宿主注入的唤醒来源（{"job_id": ...}）。
-
-    Returns:
-        "job_completed"；来源非任务唤醒时返回空串。
-
-    返回的字面量与前端的渲染判定绑定，改名需同步改前端。
-    """
-    return "job_completed" if wake_source.get("job_id") else ""

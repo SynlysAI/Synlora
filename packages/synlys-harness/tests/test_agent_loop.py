@@ -53,6 +53,39 @@ async def _collect(session: RunSession, text: str):
     return [ev async for ev in session.run(text)]
 
 
+async def test_input_metadata_is_copied_to_user_message():
+    """宿主元数据只进入当前首条用户消息。"""
+    backend = FakeBackend([[TextDelta(text="完成")]])
+    session = _session(backend)
+
+    events = [event async for event in session.run(
+        "任务通知",
+        input_metadata={"kind": "job_completed", "job_id": "job-1"},
+    )]
+
+    user_event = next(event for event in events if event.type is EventType.USER_MESSAGE)
+    assert user_event.payload == {
+        "text": "任务通知",
+        "kind": "job_completed",
+        "job_id": "job-1",
+    }
+
+
+@pytest.mark.parametrize("metadata", [
+    {"text": "覆盖"},
+    {"attachments": []},
+    {"bad": object()},
+])
+async def test_invalid_input_metadata_fails_before_events(metadata):
+    """保护字段和不可序列化元数据在产生 turn/start 前拒绝。"""
+    session = _session(FakeBackend([[TextDelta(text="不应执行")]]))
+
+    with pytest.raises(ValueError):
+        await anext(session.run("原文", input_metadata=metadata))
+
+    assert session._log.events == []  # noqa: SLF001
+
+
 async def test_plain_text_turn():
     """纯文本回复：llm/delta 流出 + assistant_message + turn_end。"""
     backend = FakeBackend([[TextDelta(text="你"), TextDelta(text="好"), Usage(prompt_tokens=3, completion_tokens=2)]])
@@ -329,11 +362,14 @@ async def test_context_extra_reaches_tools(tmp_path):
     assert seen.get("http_allowed_hosts") == ["api.example.com"]
 
 
-async def test_wake_source_marks_user_message_as_job_completed():
-    """任务完成唤醒：首条 user/message 带 kind=job_completed 与 job_id，供前端渲染提示条。"""
+async def test_input_metadata_marks_user_message_without_core_product_logic():
+    """宿主可用中立输入元数据保留历史任务通知字段。"""
     backend = FakeBackend([[TextDelta(text="收到")]])
-    session = _session(backend, context_extra={"wake_source": {"job_id": "j1"}})
-    events = await _collect(session, "任务完成通知")
+    session = _session(backend)
+    events = [event async for event in session.run(
+        "任务完成通知",
+        input_metadata={"kind": "job_completed", "job_id": "j1"},
+    )]
     user_events = [e for e in events if e.type is EventType.USER_MESSAGE]
     assert user_events[0].payload["kind"] == "job_completed"
     assert user_events[0].payload["job_id"] == "j1"
@@ -342,8 +378,8 @@ async def test_wake_source_marks_user_message_as_job_completed():
     assert [m.content for m in msgs if m.role.value == "user"] == ["任务完成通知"]
 
 
-async def test_no_wake_source_keeps_plain_user_message():
-    """普通用户发言（无 wake_source）：user/message 不带 kind 字段。"""
+async def test_no_input_metadata_keeps_plain_user_message():
+    """普通用户发言没有宿主元数据时不带 kind 字段。"""
     backend = FakeBackend([[TextDelta(text="收到")]])
     session = _session(backend)
     events = await _collect(session, "你好")

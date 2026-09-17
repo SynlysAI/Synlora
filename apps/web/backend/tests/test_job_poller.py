@@ -1,18 +1,27 @@
 """任务轮询器单测。"""
 import asyncio
+from pathlib import Path
 
 from app.db.repos import JobRepo
-from app.services.job_connectors import (
-    FakeConnector,
-    JobConnectorRegistry,
-    make_fake_connector,
-)
+from app.plugins.contracts import JobConnectorRegistry
+from app.services.job_connectors import FakeConnector, make_fake_connector
+from app.services.job_access import JobSubmissionScope
 from app.services.job_poller import JobPoller
 from app.services.job_service import JobService
 from synlys_harness import JobStatus
 
 FAKE_MAP = {"queued": JobStatus.PENDING, "doing": JobStatus.RUNNING,
             "done": JobStatus.COMPLETED}
+
+
+def _extra(session_id: str = "s1") -> dict:
+    """构造显式外部插件任务授权快照。"""
+    return {"job_submission_scope": JobSubmissionScope(
+        allowed_tools=frozenset({"job.submit"}),
+        allowed_plugins=frozenset({"p1"}),
+        skills=(), resources=(), workspace_root=Path.cwd(),
+        ownership={"session_id": session_id},
+    )}
 
 
 async def test_tick_refreshes_active_jobs_only(store, monkeypatch):
@@ -36,11 +45,11 @@ async def test_tick_refreshes_active_jobs_only(store, monkeypatch):
     reg.register(CountingConnector("k", plugin_id="p1", script=["done"]),
                  status_map=FAKE_MAP)
     done = await service.handle({"action": "submit", "kind": "k", "params": {}},
-                                user={"sub": "u1"}, session_id="s1", ctx_extra={})
+                                user={"sub": "u1"}, session_id="s1", ctx_extra=_extra())
     reg.register(CountingConnector("slow", plugin_id="p1", script=["queued", "queued"]),
                  status_map=FAKE_MAP)
     pending = await service.handle({"action": "submit", "kind": "slow", "params": {}},
-                                   user={"sub": "u1"}, session_id="s1", ctx_extra={})
+                                   user={"sub": "u1"}, session_id="s1", ctx_extra=_extra())
     poller = JobPoller(service)
     await poller.tick()
     assert (await service.get(done.data["job_id"]))["status"] == "completed"
@@ -76,9 +85,9 @@ async def test_tick_survives_single_job_failure(store, monkeypatch):
     reg.register(make_fake_connector("ok", plugin_id="p1", script=["done"]),
                  status_map=FAKE_MAP)
     await service.handle({"action": "submit", "kind": "boom", "params": {}},
-                         user={"sub": "u1"}, session_id="s1", ctx_extra={})
+                             user={"sub": "u1"}, session_id="s1", ctx_extra=_extra())
     ok_job = await service.handle({"action": "submit", "kind": "ok", "params": {}},
-                                  user={"sub": "u1"}, session_id="s1", ctx_extra={})
+                                      user={"sub": "u1"}, session_id="s1", ctx_extra=_extra())
 
     real_get = service._repo.get  # noqa: SLF001
 

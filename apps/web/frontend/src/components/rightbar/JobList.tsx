@@ -98,6 +98,7 @@ export default function JobList() {
   // 不必在 effect 里同步清状态（那会多触发一次渲染）
   const [cache, setCache] = useState<{ sid: string; docs: JobDoc[] }>({ sid: '', docs: [] })
   const [now, setNow] = useState(() => Date.now())
+  const [cancelling, setCancelling] = useState<Set<string>>(() => new Set())
   const jobs = cache.sid === sessionId ? cache.docs : NO_JOBS
 
   // 轮询任务列表：跟随会话切换重建（旧请求回包按 alive 丢弃）
@@ -123,6 +124,26 @@ export default function JobList() {
 
   const rows = useMemo(() => ordered(jobs), [jobs])
   const liveCount = jobs.filter(isLive).length
+
+  /** 通过任务 API 取消本人任务；下一轮列表轮询同步最终状态。 */
+  const cancelJob = async (jobId: string) => {
+    setCancelling((current) => new Set(current).add(jobId))
+    try {
+      await api(`/api/v1/jobs/${jobId}/cancel`, { method: 'POST' })
+      setCache((current) => ({
+        ...current,
+        docs: current.docs.map((job) => (
+          job._id === jobId ? { ...job, cancel_requested: true } : job
+        )),
+      }))
+    } finally {
+      setCancelling((current) => {
+        const next = new Set(current)
+        next.delete(jobId)
+        return next
+      })
+    }
+  }
 
   // 时钟只在有进行中任务时走：不动的行不需要每秒重渲染
   useEffect(() => {
@@ -187,6 +208,16 @@ export default function JobList() {
                 <span className="shrink-0 text-[11px] tabular-nums text-[var(--sa-alias-label-tertiary)]">
                   {formatDuration(seconds)}
                 </span>
+                {live && (
+                  <button
+                    type="button"
+                    disabled={cancelling.has(job._id) || job.cancel_requested}
+                    onClick={() => void cancelJob(job._id)}
+                    className="shrink-0 rounded-[6px] px-1.5 py-0.5 text-[11px] text-[var(--sa-alias-state-error-primary)] hover:bg-[var(--sa-alias-interactive-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {cancelling.has(job._id) || job.cancel_requested ? '停止中' : '取消'}
+                  </button>
+                )}
               </div>
             )
           })}

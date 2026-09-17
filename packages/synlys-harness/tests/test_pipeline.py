@@ -3,7 +3,7 @@ import asyncio
 
 from synlys_harness.tools.pipeline import ToolPipeline
 from synlys_harness.tools.registry import ToolRegistry, tool
-from synlys_harness.types import Permission, ToolContext, ToolResult
+from synlys_harness.types import ApprovalDecision, Permission, ToolContext, ToolResult
 
 
 def _ctx(tmp_path) -> ToolContext:
@@ -143,13 +143,13 @@ async def test_ask_user_without_handler_denied(tmp_path):
 
 
 async def test_ask_user_allowed(tmp_path):
-    """审批回复"允许"：放行并正常执行工具。"""
+    """结构化审批明确批准时放行。"""
     pipe, _ = _pipeline()
     seen: list[dict] = []
 
-    async def allow_handler(payload: dict) -> str:
+    async def allow_handler(payload: dict) -> ApprovalDecision:
         seen.append(payload)
-        return "允许"
+        return ApprovalDecision(approved=True)
 
     ctx = _ctx(tmp_path)
     ctx.extra["approval_handler"] = allow_handler
@@ -160,13 +160,45 @@ async def test_ask_user_allowed(tmp_path):
 
 
 async def test_ask_user_denied_by_reply(tmp_path):
-    """审批回复非"允许"（拒绝/其他文本）：拒绝执行。"""
+    """明确拒绝时不执行工具。"""
     pipe, _ = _pipeline()
 
-    async def deny_handler(payload: dict) -> str:
-        return "拒绝"
+    async def deny_handler(payload: dict) -> ApprovalDecision:
+        return ApprovalDecision(approved=False, reason="用户拒绝")
 
     ctx = _ctx(tmp_path)
     ctx.extra["approval_handler"] = deny_handler
     r = await pipe.run("risky", ctx, {})
     assert not r.ok and r.error == "denied" and "拒绝执行" in r.content
+
+
+async def test_ask_user_rejects_invalid_decision_types(tmp_path):
+    """字符串、None 等旧式 truthy 返回值不能被视为批准。"""
+    pipe, _ = _pipeline()
+
+    for reply in ("允许", None, True):
+        async def invalid_handler(_payload: dict, value=reply):
+            return value
+
+        ctx = _ctx(tmp_path)
+        ctx.extra["approval_handler"] = invalid_handler
+        result = await pipe.run("risky", ctx, {})
+        assert not result.ok and result.error == "denied"
+
+
+async def test_invalid_arguments_do_not_request_approval(tmp_path):
+    """参数对象和必填项校验发生在审批请求之前。"""
+    pipe, _ = _pipeline()
+    calls = 0
+
+    async def handler(_payload: dict) -> ApprovalDecision:
+        nonlocal calls
+        calls += 1
+        return ApprovalDecision(approved=True)
+
+    ctx = _ctx(tmp_path)
+    ctx.extra["approval_handler"] = handler
+    result = await pipe.run("risky", ctx, "bad")  # type: ignore[arg-type]
+
+    assert not result.ok and result.error == "invalid_arguments"
+    assert calls == 0

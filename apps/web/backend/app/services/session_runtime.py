@@ -1,12 +1,4 @@
-"""会话运行装配解析：把会话文档解析成"跑一轮对话"所需的全部参数。
-
-发消息（sessions_api.send_message）与任务完成唤醒（AgentService.wake）必须
-用同一份解析口径——否则两条路径会跑在不同的工作根、或挑到不同的模型。
-
-同时承载"运行/唤醒"语境下的领域异常（NoUsableProvider / TooManyRuns /
-WakeTargetGone）：它们被多条路径共享（编排器、JobService、API 层），放在
-中立模块可避免领域服务之间互相 import 造成的反向依赖。
-"""
+"""会话运行装配解析：把会话文档解析成一轮对话所需的全部参数。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,20 +18,7 @@ class NoUsableProvider(RuntimeError):
 
 
 class TooManyRuns(Exception):
-    """并发运行数超限（会话级互斥：同会话已有进行中消息；或用户级上限）。
-
-    运行/唤醒语境下的领域异常，与 NoUsableProvider 同族放本模块：由编排器
-    （AgentService）抛出、由 JobService（任务唤醒）与 API 层消费，避免
-    job_service → agent_service 的反向依赖。
-    """
-
-
-class WakeTargetGone(RuntimeError):
-    """唤醒目标已消失（会话被删除）——通知无接收方，调用方应静默跳过。
-
-    继承 RuntimeError 以兼容既有的宽捕获，但语义上属正常的业务情形
-    （任务挂起期间用户删了会话），不是编程错误。
-    """
+    """并发运行数超限（会话级互斥或用户级上限）。"""
 
 
 @dataclass(frozen=True)

@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
 from typing import Protocol
 
 from ..types import ToolResult
+from .execution import ExecutionRequest, validate_execution_request
 
 ENV_WHITELIST = ("PATH", "LANG", "LC_ALL", "SYSTEMROOT", "TEMP", "TMP", "HOME", "USERPROFILE")
 
@@ -74,9 +76,17 @@ def _format_output(
 
 
 class CodeExecutor(Protocol):
-    """代码执行器接口：run_python 工具的唯一执行 seam。"""
+    """统一进程执行器接口。"""
 
     sandbox: str
+
+    async def execute(self, request: ExecutionRequest) -> ToolResult:
+        """执行已校验请求。"""
+        ...  # pragma: no cover
+
+    async def cleanup_execution(self, execution_id: str) -> bool:
+        """清理精确 execution_id 对应的执行资源。"""
+        ...  # pragma: no cover
 
     async def run(
         self,
@@ -113,6 +123,82 @@ class LocalCodeExecutor:
         """
         self.sandbox = label
 
+    async def execute(self, request: ExecutionRequest) -> ToolResult:
+        """使用无 shell 的本机子进程执行请求。
+
+        Args:
+            request: 通用执行请求；本机执行器拒绝只读资源挂载。
+
+        Returns:
+            统一工具结果。
+        """
+        try:
+            normalized = validate_execution_request(request)
+        except ValueError as exc:
+            return ToolResult(
+                ok=False,
+                content=f"执行请求非法: {exc}",
+                error="invalid_execution_request",
+                data={"sandbox": self.sandbox},
+            )
+        if normalized.resources:
+            return ToolResult(
+                ok=False,
+                content="本机执行器不支持只读资源挂载",
+                error="resources_unsupported",
+                data={"sandbox": self.sandbox},
+            )
+        cwd = normalized.workspace_root / normalized.cwd
+        cwd.mkdir(parents=True, exist_ok=True)
+        argv = list(normalized.argv)
+        if argv[0] == "python":
+            argv[0] = sys.executable
+        env = {key: os.environ[key] for key in ENV_WHITELIST if key in os.environ}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+        except OSError as exc:
+            return ToolResult(
+                ok=False,
+                content=f"无法启动沙箱进程: {exc}",
+                error="spawn_failed",
+                data={"sandbox": self.sandbox},
+            )
+
+        timed_out = False
+        try:
+            try:
+                async with asyncio.timeout(normalized.timeout_s):
+                    raw, _ = await proc.communicate()
+            except TimeoutError:
+                timed_out = True
+                proc.kill()
+                raw, _ = await proc.communicate()
+        except asyncio.CancelledError:
+            proc.kill()
+            try:
+                await asyncio.shield(proc.communicate())
+            except asyncio.CancelledError:
+                pass
+            raise
+        return _format_output(
+            raw,
+            timed_out=timed_out,
+            timeout_s=normalized.timeout_s,
+            exit_code=proc.returncode,
+            max_output_bytes=normalized.max_output_bytes,
+            sandbox=self.sandbox,
+        )
+
+    async def cleanup_execution(self, execution_id: str) -> bool:
+        """本机前台执行不保留可按 ID 清理的资源。"""
+        return True
+
     async def run(
         self,
         code: str,
@@ -136,45 +222,14 @@ class LocalCodeExecutor:
         Returns:
             ToolResult：content 为合并输出；data 含 exit_code/timed_out/sandbox。
         """
-        env = {k: os.environ[k] for k in ENV_WHITELIST if k in os.environ}
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, "-I", "-X", "utf8", "-c", code,
-                cwd=str(cwd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env,
-            )
-        except OSError as exc:
-            return ToolResult(
-                ok=False, content=f"无法启动沙箱进程: {exc}", error="spawn_failed",
-                data={"sandbox": self.sandbox},
-            )
-
-        timed_out = False
-        try:
-            try:
-                async with asyncio.timeout(timeout_s):
-                    raw, _ = await proc.communicate()
-            except TimeoutError:
-                timed_out = True
-                proc.kill()
-                raw, _ = await proc.communicate()
-        except asyncio.CancelledError:
-            # 管线超时/外部取消路径：TimeoutError 分支管不到这里，
-            # 不主动 kill 会泄漏一个 100% CPU 的孤儿进程。
-            proc.kill()
-            try:
-                await asyncio.shield(proc.communicate())
-            except asyncio.CancelledError:
-                pass
-            raise
-
-        return _format_output(
-            raw, timed_out=timed_out, timeout_s=timeout_s,
-            exit_code=proc.returncode, max_output_bytes=max_output_bytes,
-            sandbox=self.sandbox,
-        )
+        cwd_path = Path(cwd).resolve()
+        return await self.execute(ExecutionRequest(
+            argv=("python", "-I", "-X", "utf8", "-c", code),
+            workspace_root=cwd_path.parent,
+            cwd=cwd_path.name,
+            timeout_s=timeout_s,
+            max_output_bytes=max_output_bytes,
+        ))
 
 
 class DockerCodeExecutor:
@@ -195,6 +250,7 @@ class DockerCodeExecutor:
         cpus: float = 1.0,
         pids_limit: int = 256,
         container_user: str = "",
+        deployment_id: str = "default",
     ) -> None:
         """初始化容器执行器。
 
@@ -204,6 +260,7 @@ class DockerCodeExecutor:
             cpus: 单容器 CPU 上限（核数）。
             pids_limit: 单容器进程数上限（fork 炸弹围栏）。
             container_user: 容器内运行用户（空 = 镜像默认，镜像内置非 root）。
+            deployment_id: 宿主提供的部署命名空间标识。
         """
         self.sandbox = "docker"
         self.image = image
@@ -211,6 +268,9 @@ class DockerCodeExecutor:
         self._nano_cpus = int(cpus * 1e9)
         self._pids_limit = pids_limit
         self._user = container_user or None
+        self._deployment_id = re.sub(
+            r"[^a-zA-Z0-9_.-]", "-", deployment_id
+        )[:63] or "default"
         self._client = None
 
     def _docker_client(self):
@@ -241,45 +301,73 @@ class DockerCodeExecutor:
             return False, f"镜像不存在: {self.image}（先构建：docker build -t {self.image} docker/sandbox/）"
         return True, ""
 
-    def _create_container(self, name: str, script_path: str, working_dir: str, host_workspace: Path):
+    @staticmethod
+    def _bind_source(path: Path) -> str:
+        """转换 Docker Desktop 可识别的宿主绑定路径。"""
+        value = str(path)
+        return value.replace("\\", "/") if sys.platform == "win32" else value
+
+    def _create_container(
+        self,
+        name: str,
+        request: ExecutionRequest,
+        working_dir: str,
+    ):
         """同步创建并启动执行容器（经 asyncio.to_thread 调用）。
 
         Args:
             name: 容器名（synlora-exec-<uuid>，运维可按前缀清理）。
-            script_path: 容器内脚本绝对路径（/workspace/... 下）。
+            request: 已校验的执行请求。
             working_dir: 容器内工作目录（与本地 tmp/ 布局对齐）。
-            host_workspace: 宿主工作区绝对路径（单目录挂载源）。
 
         Returns:
             已启动的 container 对象。
         """
-        bind_source = str(host_workspace)
-        if sys.platform == "win32":
-            # Docker Desktop 接受正斜杠形式的盘符路径（C:/a/b），
-            # 反斜杠在部分版本会被当作转义
-            bind_source = bind_source.replace("\\", "/")
+        volumes = {
+            self._bind_source(request.workspace_root): {
+                "bind": "/workspace", "mode": "rw",
+            },
+        }
+        for resource in request.resources:
+            volumes[self._bind_source(resource.source)] = {
+                "bind": resource.target.as_posix(), "mode": "ro",
+            }
+        labels = {
+            "synlora.sandbox": "execution",
+            "synlora.deployment_id": self._deployment_id,
+        }
+        if request.execution_id is not None:
+            labels["synlora.execution_id"] = request.execution_id
+        log_config = None
+        if request.execution_id is not None:
+            from docker.types import LogConfig
+
+            log_config = LogConfig(
+                type=LogConfig.types.JSON,
+                config={"max-size": "10m", "max-file": "1"},
+            )
         container = self._docker_client().containers.create(
             image=self.image,
-            command=["python", "-I", "-X", "utf8", script_path],
+            command=list(request.argv),
             name=name,
             working_dir=working_dir,
-            volumes={bind_source: {"bind": "/workspace", "mode": "rw"}},
+            volumes=volumes,
             network_disabled=True,
             mem_limit=self._mem_limit,
             nano_cpus=self._nano_cpus,
             pids_limit=self._pids_limit,
             user=self._user,
-            labels={"synlora.sandbox": "python-run"},
+            labels=labels,
+            log_config=log_config,
         )
         container.start()
         return container
 
-    async def _cleanup(self, container, script: Path) -> None:
-        """容器与脚本的终态清理（kill 收尸 + 强制删除）。
+    async def _cleanup(self, container) -> None:
+        """容器终态清理（kill 收尸 + 强制删除）。
 
         Args:
             container: 容器对象（可能已退出）。
-            script: 宿主侧临时脚本路径。
         """
         def _sync() -> None:
             try:
@@ -292,7 +380,146 @@ class DockerCodeExecutor:
         except asyncio.CancelledError:
             # 取消路径的清理本身不可再取消，尽最大努力后放行
             pass
-        script.unlink(missing_ok=True)
+    async def execute(self, request: ExecutionRequest) -> ToolResult:
+        """在独立临时容器中执行通用请求。
+
+        Args:
+            request: 含 argv、工作区和本次只读资源的执行请求。
+
+        Returns:
+            统一工具结果。
+        """
+        try:
+            normalized = validate_execution_request(request)
+        except ValueError as exc:
+            return ToolResult(
+                ok=False,
+                content=f"执行请求非法: {exc}",
+                error="invalid_execution_request",
+                data={"sandbox": self.sandbox},
+            )
+        cwd = normalized.workspace_root / normalized.cwd
+        cwd.mkdir(parents=True, exist_ok=True)
+        working_dir = "/workspace"
+        if normalized.cwd != ".":
+            working_dir += f"/{normalized.cwd}"
+        suffix = normalized.execution_id or uuid.uuid4().hex[:12]
+        safe_suffix = re.sub(r"[^a-zA-Z0-9_.-]", "-", suffix)[:63]
+        name = f"synlora-exec-{safe_suffix}"
+
+        create_task = asyncio.create_task(asyncio.to_thread(
+            self._create_container,
+            name,
+            normalized,
+            working_dir,
+        ))
+        try:
+            container = await asyncio.shield(create_task)
+        except asyncio.CancelledError:
+            try:
+                container = await create_task
+            except Exception:
+                container = None
+            if container is not None:
+                await self._cleanup(container)
+            raise
+        except Exception as exc:
+            return ToolResult(
+                ok=False,
+                content=f"沙箱容器启动失败: {exc}",
+                error="spawn_failed",
+                data={"sandbox": self.sandbox, "container": name},
+            )
+
+        timed_out = False
+        exit_code: int | None = None
+        raw = b""
+        try:
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(container.wait), normalized.timeout_s
+                )
+                exit_code = int((result or {}).get("StatusCode", -1))
+            except TimeoutError:
+                timed_out = True
+                await asyncio.to_thread(container.kill)
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(container.wait), timeout=15
+                    )
+                    exit_code = int((result or {}).get("StatusCode", -1))
+                except Exception:
+                    exit_code = -1
+                raw = await self._safe_logs(
+                    container, normalized.max_output_bytes,
+                    tail=normalized.execution_id is not None,
+                )
+        except asyncio.CancelledError:
+            await self._cleanup(container)
+            raise
+
+        try:
+            if not timed_out:
+                raw = await self._safe_logs(
+                    container, normalized.max_output_bytes,
+                    tail=normalized.execution_id is not None,
+                )
+        except Exception as exc:
+            return ToolResult(
+                ok=False,
+                content=f"读取沙箱输出失败: {exc}",
+                error="logs_failed",
+                data={
+                    "sandbox": self.sandbox,
+                    "container": name,
+                    "exit_code": exit_code,
+                    "timed_out": timed_out,
+                },
+            )
+        finally:
+            await self._cleanup(container)
+
+        return _format_output(
+            raw,
+            timed_out=timed_out,
+            timeout_s=normalized.timeout_s,
+            exit_code=exit_code,
+            max_output_bytes=normalized.max_output_bytes,
+            sandbox=self.sandbox,
+            extra_data={"container": name},
+        )
+
+    async def cleanup_execution(self, execution_id: str) -> bool:
+        """清理当前部署下精确 execution_id 对应的容器。
+
+        Args:
+            execution_id: 宿主生成的可信执行 ID。
+
+        Returns:
+            所有匹配容器均成功删除时为 True。
+        """
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", execution_id):
+            return False
+
+        def cleanup() -> bool:
+            filters = {
+                "label": [
+                    "synlora.sandbox=execution",
+                    f"synlora.deployment_id={self._deployment_id}",
+                    f"synlora.execution_id={execution_id}",
+                ],
+            }
+            success = True
+            for container in self._docker_client().containers.list(
+                all=True, filters=filters
+            ):
+                try:
+                    container.remove(force=True)
+                except Exception:
+                    success = False
+            return success
+
+        return await asyncio.to_thread(cleanup)
 
     async def run(
         self,
@@ -317,65 +544,42 @@ class DockerCodeExecutor:
             ToolResult：data 额外携带 container 名便于排查。
         """
         cwd_path = Path(cwd).resolve()
-        workspace = cwd_path.parent
-        cwd_path.mkdir(parents=True, exist_ok=True)
-        rel = cwd_path.relative_to(workspace)
-        working_dir = "/workspace" if str(rel) == "." else f"/workspace/{rel.as_posix()}"
-        script_rel = f".exec-{uuid.uuid4().hex[:12]}.py"
-        script = cwd_path / script_rel
-        script.write_text(code, encoding="utf-8")
-        name = f"synlora-exec-{uuid.uuid4().hex[:12]}"
+        return await self.execute(ExecutionRequest(
+            argv=("python", "-I", "-X", "utf8", "-c", code),
+            workspace_root=cwd_path.parent,
+            cwd=cwd_path.name,
+            timeout_s=timeout_s,
+            max_output_bytes=max_output_bytes,
+        ))
+
+    async def _safe_logs(
+        self,
+        container,
+        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+        *,
+        tail: bool = False,
+    ) -> bytes:
+        """分块读取容器日志，后台任务仅保留有界尾部。"""
+        def read() -> bytes:
+            if not tail:
+                return container.logs(stdout=True, stderr=True)
+            kept = bytearray()
+            total = 0
+            for chunk in container.logs(
+                stdout=True, stderr=True, stream=True, follow=False
+            ):
+                data = bytes(chunk)
+                total += len(data)
+                kept.extend(data)
+                if len(kept) > max_output_bytes:
+                    del kept[:-max_output_bytes]
+            if total > max_output_bytes:
+                # 额外尾字节让统一格式化器设置 truncated；截断后保留完整尾部。
+                return bytes(kept) + b"\n"
+            return bytes(kept)
 
         try:
-            container = await asyncio.to_thread(
-                self._create_container, name, f"{working_dir}/{script_rel}",
-                working_dir, workspace,
-            )
-        except Exception as exc:
-            script.unlink(missing_ok=True)
-            return ToolResult(
-                ok=False, content=f"沙箱容器启动失败: {exc}", error="spawn_failed",
-                data={"sandbox": self.sandbox, "container": name},
-            )
-
-        timed_out = False
-        exit_code: int | None = None
-        raw = b""
-        try:
-            try:
-                # wait 返回 {"StatusCode": n}；超时由 asyncio 侧控制
-                result = await asyncio.wait_for(asyncio.to_thread(container.wait), timeout_s)
-                exit_code = int((result or {}).get("StatusCode", -1))
-            except TimeoutError:
-                timed_out = True
-                await asyncio.to_thread(container.kill)
-                try:
-                    result = await asyncio.wait_for(asyncio.to_thread(container.wait), timeout=15)
-                    exit_code = int((result or {}).get("StatusCode", -1))
-                except Exception:  # 收尸失败不掩盖超时事实
-                    exit_code = -1
-                raw = await self._safe_logs(container)
-        except asyncio.CancelledError:
-            await self._cleanup(container, script)
-            raise
-
-        try:
-            if not timed_out:
-                raw = await asyncio.to_thread(
-                    container.logs, stdout=True, stderr=True)
-        finally:
-            await self._cleanup(container, script)
-
-        return _format_output(
-            raw, timed_out=timed_out, timeout_s=timeout_s, exit_code=exit_code,
-            max_output_bytes=max_output_bytes, sandbox=self.sandbox,
-            extra_data={"container": name},
-        )
-
-    async def _safe_logs(self, container) -> bytes:
-        """尽力读取容器日志（超时被杀路径的输出可能不完整，失败返回空）。"""
-        try:
-            return await asyncio.to_thread(container.logs, stdout=True, stderr=True)
+            return await asyncio.to_thread(read)
         except Exception:
             return b""
 
@@ -417,6 +621,19 @@ class FailingExecutor:
             data={"sandbox": self.sandbox, "reason": self.reason},
         )
 
+    async def execute(self, request: ExecutionRequest) -> ToolResult:
+        """拒绝通用执行请求。"""
+        return ToolResult(
+            ok=False,
+            content=f"沙箱不可用，strict 模式已拒绝执行: {self.reason}",
+            error="sandbox_unavailable",
+            data={"sandbox": self.sandbox, "reason": self.reason},
+        )
+
+    async def cleanup_execution(self, execution_id: str) -> bool:
+        """不可用执行器无法确认外部执行已停止。"""
+        return False
+
 
 DEFAULT_LOCAL_EXECUTOR = LocalCodeExecutor()
 
@@ -452,6 +669,7 @@ def resolve_executor(
     cpus: float = 1.0,
     pids_limit: int = 256,
     container_user: str = "",
+    deployment_id: str = "default",
 ) -> tuple[CodeExecutor, str]:
     """按部署配置解析执行器（含探测，阻塞调用：宿主启动时经 to_thread 调一次）。
 
@@ -469,6 +687,7 @@ def resolve_executor(
         cpus: 单容器 CPU 上限。
         pids_limit: 单容器进程数上限。
         container_user: 容器内运行用户（空 = 镜像默认）。
+        deployment_id: Docker 容器标签使用的部署命名空间。
 
     Returns:
         (executor, note)：note 为人读状态行（含降级原因），宿主用于日志。
@@ -478,6 +697,7 @@ def resolve_executor(
     docker_exec = DockerCodeExecutor(
         image=image, mem_limit=mem_limit, cpus=cpus,
         pids_limit=pids_limit, container_user=container_user,
+        deployment_id=deployment_id,
     )
     ok, reason = docker_exec.probe()
     if ok:

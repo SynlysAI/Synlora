@@ -1,7 +1,8 @@
 """技能文件服务单测（扫描/解析/写入 SKILL.md）。"""
 import pytest
 
-from app.services.skill_service import SkillNameTaken, SkillService
+from app.catalog.loader import SkillPackage
+from app.services.skill_service import ResolvedSkill, SkillNameTaken, SkillService
 
 
 def _seed_one(root, name="data-analysis", desc="数据分析"):
@@ -245,6 +246,67 @@ def test_broken_public_skill_falls_back_to_plugin(tmp_path):
     assert [s["name"] for s in svc.list_skills()] == ["spec-nmr"]
     assert svc.read_body("spec-nmr") == "插件正文"
     assert svc.read_body("spec-nmr") != ""  # 不得出现"有索引无正文"
+
+
+def test_resolve_skills_excludes_broken_shadow_without_fallback(tmp_path):
+    """用户层同名技能损坏时整项排除，不能执行低优先级脚本。"""
+    data_root = tmp_path / "data"
+    user_dir = data_root / "users" / "u1" / "skills" / "shared"
+    user_dir.mkdir(parents=True)
+    (user_dir / "SKILL.md").write_text("损坏", encoding="utf-8")
+    catalog_dir = tmp_path / "catalog-shared"
+    catalog_dir.mkdir()
+    (catalog_dir / "SKILL.md").write_text(
+        "---\nname: shared\ndescription: 内置\n---\n内置正文\n",
+        encoding="utf-8",
+    )
+    svc = SkillService(data_root)
+    svc.set_catalog_skills({"shared": SkillPackage("shared", catalog_dir)})
+
+    assert svc.resolve_skills(user_id="u1") == []
+
+
+def test_resolve_skills_binds_catalog_winner_directory(tmp_path):
+    """说明、正文和目录来自 scan_catalog 的同一个胜出包。"""
+    data_root = tmp_path / "data"
+    winner = tmp_path / "winner"
+    winner.mkdir()
+    (winner / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: 部署版本\n---\n部署正文\n",
+        encoding="utf-8",
+    )
+    svc = SkillService(data_root)
+    svc.set_catalog_skills({"demo": SkillPackage("demo", winner)})
+
+    resolved = svc.resolve_skills()
+
+    assert resolved == [ResolvedSkill(
+        name="demo",
+        description="部署版本",
+        body="部署正文",
+        directory=winner.resolve(),
+        source="catalog",
+    )]
+
+
+def test_resolve_skills_rejects_symlink_resources(tmp_path):
+    """技能包内链接资源会让该技能退出本轮装配。"""
+    skill = tmp_path / "skills" / "linked"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: linked\ndescription: 链接\n---\n正文\n",
+        encoding="utf-8",
+    )
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    try:
+        (skill / "reference.txt").symlink_to(outside)
+    except OSError:
+        pytest.skip("当前平台未开放符号链接权限")
+    svc = SkillService(tmp_path / "data")
+    svc.set_catalog_skills({"linked": SkillPackage("linked", skill)})
+
+    assert svc.resolve_skills() == []
 
 
 def test_add_root_normalizes_path(tmp_path):

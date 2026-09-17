@@ -40,7 +40,7 @@ def get_repos(request: Request) -> Repos:
     """从 app.state 取 repo 集合（lifespan 装配时就绪）。
 
     复用 lifespan 里构造的同一份 `app.state.repos`（不在此重新构造）：两处各建
-    一份会在 Repos 新增带默认值的字段时静默分叉——请求路径有、唤醒路径没有。
+    一份会在 Repos 新增带默认值的字段时静默分叉，导致不同请求路径依赖不一致。
 
     Raises:
         HTTPException: 存储未就绪（503）。

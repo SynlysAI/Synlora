@@ -4,5 +4,5 @@
   "avatar": "📊",
   "description": "优先用 python.run 做统计分析与可视化",
   "system_prompt": "你是数据分析助手。优先使用 python.run 工具对用户上传的数据做统计分析与可视化，结果图表保存到 output/ 目录并在回复中说明结论。",
-  "tool_whitelist": ["python.run", "file.read", "file.write", "file.list"]
+  "tool_whitelist": ["python.run", "shell.run", "file.read", "file.write", "file.list", "skill.list", "skill.read", "ask_user", "file.send", "job.submit", "job.status", "job.list", "job.cancel"]
 }

@@ -1,4 +1,4 @@
-"""后台任务查询 API（只读：提交/取消经由对话工具，不单独开口子）。"""
+"""后台任务查询与本人取消 API。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,7 +25,11 @@ def _job_service(request: Request):
 # 面板是轮询拉取的（秒级），带原文等于每次白搬几十 KB 且把内部字段送到浏览器；
 # 需要原文的场景走 GET /jobs/{job_id}。
 _LIST_FIELDS = ("_id", "kind", "label", "status", "session_id", "created_at",
-                "updated_at", "ended_at", "error", "poll_failures")
+                "updated_at", "ended_at", "error", "poll_failures", "backend",
+                "cancel_requested")
+
+_DETAIL_FIELDS = (*_LIST_FIELDS, "result", "exit_code", "timed_out", "truncated",
+                  "error_code", "workspace_owner")
 
 
 def _brief(doc: dict) -> dict:
@@ -79,4 +83,16 @@ async def get_job(job_id: str, request: Request,
     doc = await _job_service(request).get(job_id)
     if doc is None or str(doc.get("user_id")) != user["sub"]:
         raise HTTPException(404, "任务不存在")
-    return doc
+    return {key: doc[key] for key in _DETAIL_FIELDS if key in doc}
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str, request: Request,
+                     user=Depends(get_current_user)) -> dict:
+    """取消本人后台任务，非本人按不存在处理。"""
+    result = await _job_service(request).cancel(job_id, user_id=user["sub"])
+    if result.error == "not_found":
+        raise HTTPException(404, "任务不存在")
+    if not result.ok:
+        raise HTTPException(409, result.content)
+    return {"ok": True, **result.data}

@@ -17,7 +17,7 @@ import httpx
 
 from ..types import ToolContext, ToolResult
 from .registry import ToolRegistry, tool
-from .sandbox import DEFAULT_LOCAL_EXECUTOR
+from .execution_tools import python_run, shell_run
 
 
 def _safe_path(root: Path, rel: str) -> Path | None:
@@ -150,31 +150,6 @@ async def file_list(ctx: ToolContext, args: dict) -> ToolResult:
         content += f"\n（共 {total} 个文件，仅列出前 {max_entries} 个；缩小 path 范围或调大 max_entries）"
     return ToolResult(ok=True, content=content,
                       data={"files": shown, "total": total, "truncated": total > max_entries})
-
-
-@tool(
-    name="python.run",
-    description=(
-        "在用户沙箱中执行 Python 代码（隔离模式，可读写沙箱文件，输出受限）。"
-        "工作目录为 tmp/ 子目录，工作区根是其父目录（file.write 写入的文件在根目录，"
-        "需用相对路径 ../文件名 访问）；隔离模式下当前目录不在模块搜索路径，"
-        "import 本地模块需先 sys.path.insert(0, os.getcwd())。适合数据分析与绘图。"
-    ),
-    parameters={"type": "object", "properties": {
-        "code": {"type": "string", "description": "要执行的 Python 源码"},
-    }, "required": ["code"]},
-    timeout_s=70,  # 外层管线兜底须晚于沙箱内部 60s，保证内部先走到 kill+收尸路径
-)
-async def python_run(ctx: ToolContext, args: dict) -> ToolResult:
-    """在用户沙箱 tmp/ 下执行代码（执行器经 ctx.extra 注入，缺省本机）。"""
-    if ctx.workspace_root is None:
-        return _no_workspace()
-    cwd = ctx.workspace_root / "tmp"
-    cwd.mkdir(parents=True, exist_ok=True)
-    executor = ctx.extra.get("code_executor") or DEFAULT_LOCAL_EXECUTOR
-    result = await executor.run(args["code"], cwd=cwd, timeout_s=60)
-    result.data["cwd"] = str(cwd)
-    return result
 
 
 # read_image 允许的图片类型（后缀 → MIME；模型侧通常支持这四种）
@@ -335,60 +310,6 @@ async def file_send(ctx: ToolContext, args: dict) -> ToolResult:
         "path": args["path"],
         "note": str(args.get("note", ""))[:200],
     })
-
-
-@tool(
-    name="web.search",
-    description=(
-        "联网搜索（SearXNG 元搜索，返回标题/链接/摘要，含即时答案）。"
-        "需要查最新资料、文献线索、事实核查或工作区/知识库之外的公开信息时使用。"
-    ),
-    parameters={"type": "object", "properties": {
-        "query": {"type": "string", "description": "搜索关键词（英文关键词对英文资料效果更好）"},
-        "max_results": {"type": "integer", "default": 5, "description": "返回结果数上限（≤10）"},
-        "language": {"type": "string", "default": "auto", "description": "结果语言（如 zh-CN/en/auto）"},
-    }, "required": ["query"]},
-    timeout_s=20,
-)
-async def web_search(ctx: ToolContext, args: dict) -> ToolResult:
-    """SearXNG 联网搜索：GET /search?format=json，取即时答案 + 前N条结果。
-
-    服务地址（与可选 API Key）由宿主经 ctx.extra 注入，未配置时明确报错。
-    """
-    endpoint = str(ctx.extra.get("web_search_endpoint") or "").rstrip("/")
-    api_key = str(ctx.extra.get("web_search_api_key") or "")
-    if not endpoint:
-        return ToolResult(ok=False, content="联网搜索未配置（缺 SearXNG 服务地址）", error="search_unconfigured")
-    max_results = max(1, min(int(args.get("max_results", 5)), 10))
-    headers = {"X-API-Key": api_key} if api_key else {}
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{endpoint}/search",
-                headers=headers,
-                params={
-                    "q": args["query"],
-                    "format": "json",
-                    "language": args.get("language") or "auto",
-                },
-            )
-    except httpx.HTTPError as exc:
-        return ToolResult(ok=False, content=f"搜索请求失败: {exc}", error="http_error")
-    if resp.status_code != 200:
-        return ToolResult(ok=False, content=f"搜索服务返回 {resp.status_code}: {resp.text[:200]}", error="http_error")
-    payload = resp.json() or {}
-    results = (payload.get("results") or [])[:max_results]
-    answers = [str(a) for a in (payload.get("answers") or []) if a]
-    if not results and not answers:
-        return ToolResult(ok=True, content="（无搜索结果，可换个说法再试）", data={"results": 0})
-    lines = []
-    if answers:
-        lines.append("即时答案：" + " / ".join(answers))
-    for i, r in enumerate(results, 1):
-        snippet = (r.get("content") or "").strip()
-        lines.append(f"【{i}】{r.get('title') or '无标题'}\nURL: {r.get('url', '')}"
-                     + (f"\n摘要: {snippet}" if snippet else ""))
-    return ToolResult(ok=True, content="\n\n".join(lines), data={"results": len(results)})
 
 
 def _is_private_ip(ip: str) -> bool:
@@ -621,7 +542,11 @@ async def skill_list(ctx: ToolContext, args: dict) -> ToolResult:
     description="读取某个技能的完整 SKILL.md 正文（含工作流与输出要求）。",
     parameters={
         "type": "object",
-        "properties": {"name": {"type": "string", "description": "技能名"}},
+        "properties": {
+            "name": {"type": "string", "description": "技能名"},
+            "path": {"type": "string", "default": "SKILL.md",
+                     "description": "包内 UTF-8 文本资源相对路径"},
+        },
         "required": ["name"],
     },
 )
@@ -640,7 +565,31 @@ async def skill_read(ctx: ToolContext, args: dict) -> ToolResult:
     content = skills.get(name)
     if content is None:
         return ToolResult(ok=False, error=f"技能不存在：{name}")
-    return ToolResult(ok=True, content=content, data={"name": name, "content": content})
+    path = str(args.get("path") or "SKILL.md")
+    resource_root = (ctx.extra.get("skill_resource_roots") or {}).get(name, "")
+    if path != "SKILL.md":
+        reader = ctx.extra.get("skill_resource_reader")
+        if not callable(reader):
+            return ToolResult(
+                ok=False,
+                content="当前运行环境不支持读取技能附属资源",
+                error="skill_resources_unavailable",
+            )
+        result = await reader(name, path)
+        result.data.setdefault("name", name)
+        result.data.setdefault("resource_root", resource_root)
+        return result
+    note = ""
+    if resource_root:
+        note = (
+            f"\n\n资源根：`{resource_root}`（只读）。"
+            "运行脚本时从该目录读取资源，产物写入 `/workspace/output` 或工作区 output/。"
+        )
+    return ToolResult(
+        ok=True,
+        content=content + note,
+        data={"name": name, "content": content, "resource_root": resource_root},
+    )
 
 
 def _job_handler(ctx: ToolContext) -> Callable | None:
@@ -664,14 +613,16 @@ def _no_job_handler() -> ToolResult:
 @tool(
     name="job.submit",
     description=(
-        "提交一个后台长任务（谱图解析、批量计算等耗时数分钟以上的作业）。\n"
-        "注意：提交后立即返回任务 ID，任务完成时系统会自动通知你继续处理。"
-        "不要重复提交同一请求，也不要在提交后反复调用 job.status 轮询——那样只会浪费步骤。\n"
+        "提交一个受管理的后台任务。平台内置类型包括 sandbox.python、"
+        "sandbox.shell、sandbox.skill，也支持当前会话已启用插件声明的外部任务类型。\n"
+        "注意：提交后立即返回任务 ID，状态会显示在右侧运行信息。"
+        "不要重复提交同一请求；用户需要时可用 job.status 或 job.list 查询。\n"
         "任务类型与参数格式先用 skill.list / skill.read 查对应技能说明。"
     ),
     parameters={"type": "object", "properties": {
         "kind": {"type": "string",
-                 "description": "任务类型，如 spec.nmr.forward。不确定时先用 skill.list 找相关技能、"
+                 "description": "任务类型，如 sandbox.python、sandbox.shell、sandbox.skill 或 spec.task.nmr。"
+                                "不确定时先用 skill.list 找相关技能、"
                                 "再用 skill.read 读其说明，拿到准确的 kind 与参数格式"},
         "params": {"type": "object",
                    "description": "任务参数对象，字段随 kind 而定（格式见对应技能的说明）"},
@@ -702,8 +653,8 @@ async def job_submit(ctx: ToolContext, args: dict) -> ToolResult:
 @tool(
     name="job.status",
     description=(
-        "查询一个后台任务的当前状态与结果。仅在用户主动询问进度、"
-        "或任务完成通知里缺少必要信息时使用——不要在提交后反复轮询。"
+        "查询一个后台任务的当前状态与结果。仅在用户主动询问、需要在当前"
+        "对话继续处理结果，或短任务需要同轮确认时使用；不要无意义地反复轮询。"
     ),
     parameters={"type": "object", "properties": {
         "job_id": {"type": "string", "description": "任务 ID（job.submit 返回的）"},
@@ -772,8 +723,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         registry: 目标注册表。
     """
     for fn in (
-        file_read, file_write, file_list, python_run, file_read_image,
-        web_search, web_fetch, http_request,
+        file_read, file_write, file_list, python_run, shell_run, file_read_image,
+        web_fetch, http_request,
         ask_user, file_send, skill_list, skill_read,
         job_submit, job_status, job_list, job_cancel,
     ):

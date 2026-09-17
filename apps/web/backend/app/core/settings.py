@@ -1,6 +1,9 @@
 """应用配置（pydantic-settings，env 与 .env 加载）。"""
 from pathlib import Path
+import hashlib
+import math
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,6 +34,9 @@ class Settings(BaseSettings):
             （回退时事件带 sandbox=local-weak 标记）。多用户/公网部署建议开启。
         sandbox_mem_limit / sandbox_cpus / sandbox_pids_limit: 单容器资源限额。
         sandbox_docker_user: 容器内运行用户（空 = 镜像默认非 root 用户）。
+        sandbox_job_default_timeout_s: 后台沙箱任务默认超时秒数。
+        sandbox_job_max_timeout_s: 后台沙箱任务最大超时秒数。
+        sandbox_deployment_id: Docker 执行资源所属部署标识；空时按 data_root 派生。
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -59,6 +65,21 @@ class Settings(BaseSettings):
     sandbox_cpus: float = 1.0
     sandbox_pids_limit: int = 256
     sandbox_docker_user: str = ""
+    sandbox_job_default_timeout_s: float = 1800.0
+    sandbox_job_max_timeout_s: float = 7200.0
+    sandbox_deployment_id: str = ""
+
+    @model_validator(mode="after")
+    def validate_sandbox_job_timeouts(self) -> "Settings":
+        """校验后台任务默认与最大超时。"""
+        default = self.sandbox_job_default_timeout_s
+        maximum = self.sandbox_job_max_timeout_s
+        if (not math.isfinite(default) or default <= 0
+                or not math.isfinite(maximum) or maximum <= 0):
+            raise ValueError("后台沙箱任务超时必须是有限正数")
+        if default > maximum:
+            raise ValueError("SANDBOX_JOB_DEFAULT_TIMEOUT_S 不得大于最大值")
+        return self
 
     @property
     def data_root(self) -> Path:
@@ -71,3 +92,11 @@ class Settings(BaseSettings):
     def allowed_hosts(self) -> list[str]:
         """http 白名单列表。"""
         return [h.strip() for h in self.http_allowed_hosts.split(",") if h.strip()]
+
+    @property
+    def deployment_id(self) -> str:
+        """返回显式部署标识或按绝对数据根稳定派生的标识。"""
+        if self.sandbox_deployment_id.strip():
+            return self.sandbox_deployment_id.strip()
+        normalized = str(self.data_root.resolve()).replace("\\", "/").lower()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]

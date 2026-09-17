@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from ..types import Permission, ToolContext, ToolResult
+from ..types import ApprovalDecision, Permission, ToolContext, ToolResult
 from .registry import ToolRegistry
 
 
@@ -51,6 +51,11 @@ class ToolPipeline:
             return err("denied", f"工具不在白名单: {name}")
         if definition.permission is Permission.DENY:
             return err("denied", f"工具 {name} 已被禁用")
+        if not isinstance(args, dict):
+            return err("invalid_arguments", "参数必须是 JSON 对象")
+        for key in definition.parameters.get("required", []):
+            if key not in args:
+                return err("invalid_arguments", f"缺少必填参数: {key}")
         if definition.permission is Permission.ASK_USER:
             # 强制审批（硬约束）：管线在执行前打断，宿主经 ctx.extra 注入
             # approval_handler（发审批事件并等用户答复）；fail-closed——
@@ -63,13 +68,8 @@ class ToolPipeline:
                 "tool": name, "args": args,
                 "tool_call_id": str(ctx.extra.get("tool_call_id", "")),
             })
-            if str(reply).strip() != "允许":
+            if not isinstance(reply, ApprovalDecision) or reply.approved is not True:
                 return err("denied", f"用户拒绝执行 {name}")
-        if not isinstance(args, dict):
-            return err("invalid_arguments", "参数必须是 JSON 对象")
-        for key in definition.parameters.get("required", []):
-            if key not in args:
-                return err("invalid_arguments", f"缺少必填参数: {key}")
 
         # --- execute（around：超时 + 异常捕获）---
         try:

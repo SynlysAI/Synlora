@@ -161,7 +161,11 @@ class PluginService:
             attached.add(name)
         if package.skills_root is not None:
             # plugin=<id>：技能标 source='plugin' 且带归属，管理页/会话开关据此过滤
-            self._skill_service.add_root(package.skills_root, plugin=package.id)
+            self._skill_service.add_root(
+                package.skills_root,
+                plugin=package.id,
+                names=frozenset(package.skills),
+            )
         self._attach_connectors(package)
 
     def _attach_connectors(self, package: PluginPackage) -> None:

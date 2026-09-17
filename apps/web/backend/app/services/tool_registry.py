@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from synlys_harness import ToolPipeline, ToolRegistry, register_builtin_tools
 
-from app.tools import knowledge_list, knowledge_search
+from app.tools import knowledge_list, knowledge_search, web_search
 
 
 def build_registry() -> ToolRegistry:
@@ -27,6 +27,7 @@ def build_registry() -> ToolRegistry:
     register_builtin_tools(registry)
     registry.register(knowledge_list)
     registry.register(knowledge_search)
+    registry.register(web_search)
     return registry
 
 

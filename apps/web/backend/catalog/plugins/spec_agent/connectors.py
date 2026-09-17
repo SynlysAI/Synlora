@@ -20,7 +20,7 @@ from synlys_harness import JobStatus
 
 # 宿主定义的连接器异常：插件必须用**同一个类**（宿主按类型捕获：JobPollFailed
 # 保持原状态下轮重试、JobSubmitFailed 判失败），另定义同名类就捕获不到了。
-from app.services.job_connectors import JobPollFailed, JobSubmitFailed
+from app.plugins.contracts import JobPollFailed, JobSubmitFailed
 
 PLUGIN_ID = "spec_agent"
 

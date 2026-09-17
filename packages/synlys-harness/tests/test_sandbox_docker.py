@@ -14,10 +14,12 @@
 import asyncio
 import time
 from pathlib import Path
+from pathlib import PurePosixPath
 
 import pytest
 
 from synlys_harness.tools.sandbox import DockerCodeExecutor
+from synlys_harness.tools.execution import ExecutionRequest, ReadOnlyResource
 
 EXECUTOR = DockerCodeExecutor(image="synlora-sandbox:latest")
 DOCKER_OK, REASON = EXECUTOR.probe()
@@ -119,3 +121,62 @@ async def test_output_truncation(workspace):
         max_output_bytes=1000,
     )
     assert r.truncated and len(r.content) == 1000
+
+
+async def test_execute_shell_with_readonly_resource(workspace, tmp_path):
+    """通用执行入口可运行 Bash，技能资源只读且工作区可写。"""
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "value.txt").write_text("resource", encoding="utf-8")
+    request = ExecutionRequest(
+        argv=(
+            "/bin/bash", "--noprofile", "--norc", "-c",
+            "cat /skills/demo/value.txt && "
+            "echo changed > /skills/demo/value.txt || true; "
+            "echo output > /workspace/output.txt",
+        ),
+        workspace_root=workspace,
+        cwd="tmp",
+        resources=(ReadOnlyResource(
+            skill.resolve(), PurePosixPath("/skills/demo")),),
+        timeout_s=60,
+    )
+
+    result = await EXECUTOR.execute(request)
+
+    assert result.ok and "resource" in result.content
+    assert (skill / "value.txt").read_text(encoding="utf-8") == "resource"
+    assert (workspace / "output.txt").read_text(encoding="utf-8").strip() == "output"
+
+
+async def test_product_csv_skill_script_is_readonly_and_writes_output(workspace):
+    """产品 CSV 脚本可执行，技能包只读，摘要写入工作区。"""
+    repo_root = Path(__file__).resolve().parents[3]
+    skill = repo_root / "apps" / "web" / "backend" / "catalog" / "skills" / "data-analysis"
+    (workspace / "files").mkdir(exist_ok=True)
+    (workspace / "output").mkdir(exist_ok=True)
+    (workspace / "files" / "data.csv").write_text(
+        "name,value\na,1\nb,2\n", encoding="utf-8"
+    )
+    request = ExecutionRequest(
+        argv=(
+            "/bin/bash", "--noprofile", "--norc", "-c",
+            "python /skills/data-analysis/scripts/summarize_csv.py "
+            "--input /workspace/files/data.csv "
+            "--output /workspace/output/summary.json; "
+            "echo bad > /skills/data-analysis/forbidden.txt",
+        ),
+        workspace_root=workspace,
+        cwd="tmp",
+        resources=(ReadOnlyResource(
+            skill.resolve(), PurePosixPath("/skills/data-analysis")),),
+        timeout_s=60,
+    )
+
+    result = await EXECUTOR.execute(request)
+
+    assert not result.ok
+    assert not (skill / "forbidden.txt").exists()
+    summary = (workspace / "output" / "summary.json").read_text(encoding="utf-8")
+    assert '"columns": [' in summary
+    assert '"row_count": 2' in summary

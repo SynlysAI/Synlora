@@ -16,6 +16,7 @@ function categorize(name: string): Category {
   if (name === 'knowledge.search' || name === 'knowledge.list' || name === 'web.search') return 'search'
   if (name === 'file.read_image' || name === 'ask_user' || name === 'file.send') return 'file'
   if (name === 'python.run') return 'code'
+  if (name === 'shell.run') return 'system'
   if (name === 'http.request' || name === 'web.fetch') return 'system'
   return 'other'
 }
@@ -83,6 +84,8 @@ function describe(name: string, args: Record<string, unknown>): string {
       return `列出 ${brief(args.path || '.')} 目录`
     case 'python.run':
       return `执行 Python 代码`
+    case 'shell.run':
+      return `执行命令 ${brief(String(args.command ?? '').split('\n')[0], 30)}`
     case 'file.read_image':
       return `查看图片 ${brief(args.path, 24)}`
     case 'ask_user':

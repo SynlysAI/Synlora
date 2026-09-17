@@ -39,13 +39,16 @@ from app.db.repos import (
     SessionRepo,
 )
 from app.db.store import create_store
-from app.plugins import PluginConfigStore, PluginService
+from app.plugins.config_store import PluginConfigStore
+from app.plugins.service import PluginService
 from app.plugins.api import router as plugins_router
-from app.services.agent_service import AgentService, TooManyRuns, WakeTargetGone
+from app.services.agent_service import AgentService
 from app.services.ai4ms_identity import Ai4msIdentityService
 from app.services.expert_service import UserExpertService
-from app.services.job_connectors import JobConnectorRegistry
+from app.plugins.contracts import JobConnectorRegistry
 from app.services.job_poller import JobPoller
+from app.services.job_access import WorkspaceJobGuard
+from app.services.sandbox_job_runner import SandboxJobRunner
 from app.services.job_service import JobService
 from app.services.project_service import ProjectService
 from app.services.skill_service import SkillService
@@ -96,9 +99,10 @@ async def lifespan(app: FastAPI):
     plugin_config_store = PluginConfigStore(store, settings.fernet_key)
     # 内置技能：catalog/skills 作为只读根直接提供（与插件技能根同一模式），
     # {data_dir}/public/skills 是公共层（管理员自建/导入，始终可见）
-    catalog_skills_root = catalog_roots(settings)[0] / "skills"
-    app.state.skill_service = SkillService(settings.data_root, extra_roots=[catalog_skills_root])
-    removed = app.state.skill_service.migrate_legacy_builtin_copies(catalog_skills_root)
+    app.state.skill_service = SkillService(settings.data_root)
+    app.state.skill_service.set_catalog_skills(index.skills)
+    repo_skills_root = catalog_roots(settings)[0] / "skills"
+    removed = app.state.skill_service.migrate_legacy_builtin_copies(repo_skills_root)
     if removed:
         logger.info("已清理迁移前的内置技能旧副本: %s", removed)
     app.state.weknora_service = WeKnoraService(
@@ -137,44 +141,40 @@ async def lifespan(app: FastAPI):
         plugin_config_store=plugin_config_store,
         ai4ms_identity=app.state.ai4ms_identity)
     # 后台任务：任务服务 → 轮询器。连接器注册表在 PluginService 之前已建
-    # （插件在其挂载时注册连接器）。唤醒回调双向接线在此完成：
-    # JobService → AgentService.wake；AgentService run 结束 → JobService.drain_pending
-    # repo 聚合（唤醒路径解析会话装配用）：唯一构造点，deps.get_repos 复用本对象
+    # （插件在其挂载时注册连接器）。任务终态只写 Job 文档，由运行信息面板
+    # 或 job.status/job.list 主动读取，不自动发起新的 Agent run。
+    # repo 聚合：唯一构造点，deps.get_repos 复用本对象。
     app.state.repos = Repos(
         provider=app.state.provider_repo, assistant=app.state.assistant_repo,
         session=app.state.session_repo, run=app.state.run_repo,
         file=app.state.file_repo, event=app.state.event_repo)
+    job_repo = JobRepo(store)
+    app.state.workspace_job_guard = WorkspaceJobGuard(job_repo)
     app.state.job_service = JobService(
-        repo=JobRepo(store), connectors=app.state.job_connectors,
+        repo=job_repo, connectors=app.state.job_connectors,
         plugin_config_store=plugin_config_store,
-        ai4ms_identity=app.state.ai4ms_identity)
-    app.state.agent_service.set_runtime_deps(
-        app.state.repos, app.state.project_service)
-    app.state.agent_service.set_run_finished_hook(
-        app.state.job_service.drain_pending)
+        ai4ms_identity=app.state.ai4ms_identity,
+        settings=settings,
+        workspace_guard=app.state.workspace_job_guard)
+    executor = await app.state.agent_service._code_executor()  # noqa: SLF001
+    if executor.sandbox == "docker":
+        await app.state.job_service.recover_sandbox_jobs(executor)
+        app.state.sandbox_job_runner = SandboxJobRunner(
+            executor,
+            app.state.job_service.mark_sandbox_running,
+            app.state.job_service.finish_sandbox,
+        )
+        app.state.job_service.set_sandbox_runner(app.state.sandbox_job_runner)
+    else:
+        app.state.sandbox_job_runner = None
     app.state.agent_service.set_job_service(app.state.job_service)
-
-    async def _wake_session(session_id: str, text: str, job_id: str) -> None:
-        """任务完成唤醒：起一轮新对话把结果交回模型。
-
-        注意：**不得**捕获 TooManyRuns / WakeTargetGone —— 它们由 JobService
-        解释为"重新入队"与"静默跳过"；在这里吞掉会让通知被静默丢弃。
-        """
-        try:
-            await app.state.agent_service.wake(session_id, text, job_id)
-        except (TooManyRuns, WakeTargetGone):
-            raise
-        except Exception:  # noqa: BLE001 其余失败只记录，不影响轮询循环
-            logger.warning("任务唤醒失败 session=%s job=%s", session_id, job_id,
-                           exc_info=True)
-
-    app.state.job_service.set_wake_callback(_wake_session)
-    app.state.job_service.set_busy_check(app.state.agent_service.is_busy)
     app.state.job_poller = JobPoller(app.state.job_service)
     await app.state.job_poller.start()
     await seed_experts(store, index.experts)
     yield
     await app.state.job_poller.stop()
+    if app.state.sandbox_job_runner is not None:
+        await app.state.sandbox_job_runner.shutdown()
     await store.close()
 
 

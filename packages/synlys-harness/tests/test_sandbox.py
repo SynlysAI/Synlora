@@ -1,6 +1,7 @@
 """python.run 沙箱执行器单测。"""
 import asyncio
 import time
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -10,6 +11,81 @@ from synlys_harness.tools.sandbox import (
     resolve_executor,
     run_python,
 )
+from synlys_harness.tools.execution import (
+    ExecutionRequest,
+    ReadOnlyResource,
+    validate_execution_request,
+)
+from synlys_harness.tools.execution_tools import shell_run
+from synlys_harness.types import ToolContext
+
+
+def test_execution_request_rejects_escaping_cwd(tmp_path):
+    """执行工作目录必须留在 workspace 内。"""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with pytest.raises(ValueError, match="cwd"):
+        validate_execution_request(ExecutionRequest(
+            argv=("python", "-V"),
+            workspace_root=workspace,
+            cwd="../outside",
+        ))
+
+
+def test_execution_request_rejects_conflicting_resource_targets(tmp_path):
+    """只读资源挂载点不能相同或互为祖先。"""
+    workspace = tmp_path / "workspace"
+    resource_a = tmp_path / "a"
+    resource_b = tmp_path / "b"
+    for path in (workspace, resource_a, resource_b):
+        path.mkdir()
+
+    with pytest.raises(ValueError, match="target"):
+        validate_execution_request(ExecutionRequest(
+            argv=("python", "-V"),
+            workspace_root=workspace,
+            resources=(
+                ReadOnlyResource(resource_a, PurePosixPath("/skills/a")),
+                ReadOnlyResource(resource_b, PurePosixPath("/skills/a/sub")),
+            ),
+        ))
+
+
+def test_execution_request_rejects_workspace_resource_overlap(tmp_path):
+    """资源源目录不得与可写工作区形成包含关系。"""
+    workspace = tmp_path / "workspace"
+    resource = workspace / "skill"
+    resource.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="工作区"):
+        validate_execution_request(ExecutionRequest(
+            argv=("python", "-V"),
+            workspace_root=workspace,
+            resources=(ReadOnlyResource(
+                resource,
+                PurePosixPath("/skills/a"),
+            ),),
+        ))
+
+
+async def test_shell_run_rejects_non_docker_executor(tmp_path):
+    """shell.run 不能在本机或弱降级执行器上运行宿主命令。"""
+    marker = tmp_path / "should-not-exist.txt"
+    ctx = ToolContext(
+        user_id="u1",
+        run_id="r1",
+        workspace_root=tmp_path,
+        extra={"code_executor": FailingExecutor("docker unavailable")},
+    )
+
+    result = await shell_run(
+        ctx,
+        {"command": f"echo bad > {marker}", "cwd": "tmp"},
+    )
+
+    assert not result.ok and result.error == "shell_unavailable"
+    assert not marker.exists()
 
 
 async def test_simple_execution(tmp_path):

@@ -7,7 +7,7 @@ import pytest
 
 from synlys_harness import JobStatus
 
-from app.services.job_connectors import JobSubmitFailed
+from app.plugins.contracts import JobSubmitFailed
 
 # 插件目录不在 sys.path 上，按 loader 的方式动态加载
 PLUGIN_DIR = (Path(__file__).resolve().parents[1]
@@ -138,7 +138,7 @@ async def test_poll_returns_raw_status(connectors, monkeypatch):
 
 async def test_poll_raises_on_http_failure(connectors, monkeypatch):
     """查询失败一律抛 JobPollFailed（静默返回空串会让任务永久挂起）。"""
-    from app.services.job_connectors import JobPollFailed
+    from app.plugins.contracts import JobPollFailed
 
     module = _load_module()
     nmr = next(c for c in connectors if c.kind == "spec.task.nmr")
@@ -171,7 +171,7 @@ async def test_poll_raises_on_http_failure(connectors, monkeypatch):
 
 async def test_poll_raises_when_status_missing(connectors, monkeypatch):
     """上游 200 但缺 status 时抛 JobPollFailed（否则任务静默永久挂起）。"""
-    from app.services.job_connectors import JobPollFailed
+    from app.plugins.contracts import JobPollFailed
 
     module = _load_module()
     nmr = next(c for c in connectors if c.kind == "spec.task.nmr")

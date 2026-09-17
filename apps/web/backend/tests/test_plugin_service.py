@@ -11,7 +11,8 @@ from app.catalog.loader import scan_catalog
 from app.db.repos import AssistantRepo
 from app.plugins.config_store import PluginConfigStore
 from app.plugins.service import PluginService
-from app.services.job_connectors import JobConnectorRegistry, make_fake_connector
+from app.plugins.contracts import JobConnectorRegistry
+from app.services.job_connectors import make_fake_connector
 from app.services.skill_service import SkillService
 
 TOOLS_SOURCE = '''

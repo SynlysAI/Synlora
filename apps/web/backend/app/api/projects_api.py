@@ -100,7 +100,23 @@ async def delete_project(request: Request, pid: str, user=Depends(get_current_us
     Raises:
         HTTPException: 404 表示项目不存在或不属于该用户。
     """
-    ok = await request.app.state.project_service.delete_project(user["sub"], pid)
+    project = await request.app.state.project_service.get(user["sub"], pid)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    guard = getattr(request.app.state, "workspace_job_guard", None)
+    if guard is not None:
+        root = request.app.state.project_service.root_for(project)
+        ownership = {"project_id": pid}
+        async with guard.hold(user["sub"], root, ownership):
+            if await guard.has_active(
+                user_id=user["sub"], workspace_root=root, ownership=ownership
+            ):
+                raise HTTPException(409, "项目仍有后台沙箱任务，请先取消任务")
+            ok = await request.app.state.project_service.delete_project(
+                user["sub"], pid
+            )
+    else:
+        ok = await request.app.state.project_service.delete_project(user["sub"], pid)
     if not ok:
         raise HTTPException(status_code=404, detail="项目不存在")
     return {"ok": True}

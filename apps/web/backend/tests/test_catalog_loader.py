@@ -67,9 +67,17 @@ def _make_plugin(root, plugin_id: str = "demo", manifest: dict | None = None):
     """
     d = root / "plugins" / plugin_id
     d.mkdir(parents=True)
+    effective = manifest or MANIFEST
     (d / "plugin.json").write_text(
-        json.dumps(manifest or MANIFEST, ensure_ascii=False), encoding="utf-8")
+        json.dumps(effective, ensure_ascii=False), encoding="utf-8")
     (d / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
+    for skill_name in effective.get("skills") or []:
+        skill_dir = d / "skills" / skill_name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: 示例技能\n---\n正文\n",
+            encoding="utf-8",
+        )
     return d
 
 
@@ -238,13 +246,13 @@ def test_scan_plugins_parses_manifest(tmp_path):
     assert [f["key"] for f in pkg.config_schema] == ["base_url", "token"]
     assert pkg.skills == ["demo-skill"]
     assert pkg.expert["name"] == "示例专家"
-    assert pkg.skills_root is None  # 包内无 skills/ 目录
+    assert pkg.skills_root == pkg.directory / "skills"
 
 
 def test_skills_root_present_when_dir_exists(tmp_path):
     """包内有 skills/ 目录时 skills_root 指向它。"""
     d = _make_plugin(tmp_path)
-    (d / "skills" / "demo-skill").mkdir(parents=True)
+    (d / "skills" / "demo-skill").mkdir(parents=True, exist_ok=True)
     (d / "skills" / "demo-skill" / "SKILL.md").write_text(
         "---\nname: demo-skill\ndescription: 示例\n---\n正文\n", encoding="utf-8")
     pkg = scan_catalog([tmp_path]).plugins["demo"]
@@ -256,6 +264,7 @@ def test_scan_plugins_skips_malformed(tmp_path):
     root = tmp_path / "plugins"
     bad = root / "bad"
     bad.mkdir(parents=True)
+    (bad / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
     (bad / "plugin.json").write_text("{ not json", encoding="utf-8")
     as_list = root / "as-list"
     as_list.mkdir()
@@ -296,6 +305,41 @@ def test_scan_plugins_duplicate_id_last_wins(tmp_path, caplog):
         packages = scan_catalog([root_a, root_b]).plugins
     assert packages["dup"].name == "数据目录版"
     assert "插件 id 重复" in caplog.text
+
+
+def test_plugin_can_contribute_connectors_without_tools(tmp_path):
+    """仅连接器插件无需创建空 tools.py。"""
+    plugin = tmp_path / "plugins" / "connector-only"
+    plugin.mkdir(parents=True)
+    (plugin / "connectors.py").write_text("CONNECTORS = []\n", encoding="utf-8")
+    (plugin / "plugin.json").write_text(json.dumps({
+        "id": "connector-only",
+        "name": "连接器插件",
+        "version": "1.0.0",
+        "connectors_module": "connectors.py",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    package = scan_catalog([tmp_path]).plugins["connector-only"]
+
+    assert package.tools_module == ""
+    assert load_plugin_tools(package) == []
+
+
+def test_plugin_rejects_empty_contributions_and_escaping_module(tmp_path):
+    """空插件和逃逸模块声明均不能进入有效 catalog。"""
+    empty = tmp_path / "plugins" / "empty"
+    empty.mkdir(parents=True)
+    (empty / "plugin.json").write_text(json.dumps({
+        "id": "empty", "name": "空插件", "version": "1.0.0",
+    }, ensure_ascii=False), encoding="utf-8")
+    escaping = tmp_path / "plugins" / "escaping"
+    escaping.mkdir()
+    (escaping / "plugin.json").write_text(json.dumps({
+        "id": "escaping", "name": "逃逸", "version": "1.0.0",
+        "tools_module": "../outside.py",
+    }, ensure_ascii=False), encoding="utf-8")
+
+    assert scan_catalog([tmp_path]).plugins == {}
 
 
 def test_scan_skills_duplicate_name_last_wins(tmp_path, caplog):
@@ -398,11 +442,10 @@ def test_load_plugin_tools_collects_decorated_functions(tmp_path):
 
 
 def test_load_plugin_tools_missing_module_returns_empty(tmp_path):
-    """工具模块缺失时返回空列表（不抛异常）。"""
+    """声明的工具模块缺失时整个插件包不可用。"""
     d = _make_plugin(tmp_path)
     (d / "tools.py").unlink()
-    pkg = scan_catalog([tmp_path]).plugins["demo"]
-    assert load_plugin_tools(pkg) == []
+    assert scan_catalog([tmp_path]).plugins == {}
 
 
 def test_load_plugin_tools_cleans_sys_modules_on_failure(tmp_path):
@@ -434,6 +477,8 @@ def test_plugin_package_declares_connectors_module(tmp_path):
     """plugin.json 声明 connectors_module 时被解析进包。"""
     plugin_dir = tmp_path / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
+    (plugin_dir / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
+    (plugin_dir / "connectors.py").write_text("CONNECTORS = []\n", encoding="utf-8")
     (plugin_dir / "plugin.json").write_text(json.dumps({
         "id": "demo", "name": "Demo", "version": "1.0.0",
         "tools_module": "tools.py", "connectors_module": "connectors.py",
@@ -446,6 +491,7 @@ def test_plugin_package_without_connectors_module(tmp_path):
     """未声明时为空串（表示本插件不贡献连接器）。"""
     plugin_dir = tmp_path / "plugins" / "plain"
     plugin_dir.mkdir(parents=True)
+    (plugin_dir / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
     (plugin_dir / "plugin.json").write_text(json.dumps({
         "id": "plain", "name": "Plain", "version": "1.0.0",
         "tools_module": "tools.py",
@@ -460,6 +506,7 @@ def test_load_plugin_connectors_collects_list(tmp_path):
 
     plugin_dir = tmp_path / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
+    (plugin_dir / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
     (plugin_dir / "connectors.py").write_text(
         "class _C:\n"
         "    kind = 'k'\n"
@@ -487,6 +534,7 @@ def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
 
     plugin_dir = tmp_path / "plugins" / "demo"
     plugin_dir.mkdir(parents=True)
+    (plugin_dir / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
     (plugin_dir / "plugin.json").write_text(json.dumps({
         "id": "demo", "name": "Demo", "version": "1.0.0",
         "tools_module": "tools.py",
@@ -495,16 +543,15 @@ def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
     package = index.plugins["demo"]
     assert load_plugin_connectors(package) == []          # 未声明（空串：本插件不贡献连接器）
 
-    # 声明了模块名但文件不存在：告警并降级（部署漏拷 connectors.py）
+    # 声明了模块名但文件不存在：扫描阶段拒绝整个包。
     (plugin_dir / "plugin.json").write_text(json.dumps({
         "id": "demo2", "name": "Demo2", "version": "1.0.0",
         "tools_module": "tools.py", "connectors_module": "nope.py",
     }), encoding="utf-8")
     with caplog.at_level(logging.WARNING, logger="app.catalog.loader"):
-        missing = load_plugin_connectors(scan_catalog([tmp_path]).plugins["demo2"])
-    assert missing == []
-    assert any(r.levelno == logging.ERROR and "连接器模块不存在" in r.getMessage()
-               and "不可用" in r.getMessage() for r in caplog.records)
+        missing_index = scan_catalog([tmp_path])
+    assert "demo2" not in missing_index.plugins
+    assert "connectors_module 非法" in caplog.text
 
     # 模块导入抛异常（宿主重构改了 connectors.py 依赖的内部模块路径时会落到这）
     caplog.clear()
@@ -522,6 +569,7 @@ def test_load_plugin_connectors_degraded_paths_return_empty(tmp_path, caplog):
     caplog.clear()
     bad = tmp_path / "plugins" / "demo3"
     bad.mkdir(parents=True)
+    (bad / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
     (bad / "connectors.py").write_text("CONNECTORS = {'k': 1}\n", encoding="utf-8")
     (bad / "plugin.json").write_text(json.dumps({
         "id": "demo3", "name": "Demo3", "version": "1.0.0",
@@ -539,6 +587,7 @@ def test_load_plugin_connectors_warns_on_empty_dict(tmp_path, caplog):
 
     bad = tmp_path / "plugins" / "bad-dict"
     bad.mkdir(parents=True)
+    (bad / "tools.py").write_text(TOOLS_SOURCE, encoding="utf-8")
     # {} / "" 这类假值：旧写法 `getattr(...) or []` 直接放行、无告警
     (bad / "connectors.py").write_text("CONNECTORS = {}\n", encoding="utf-8")
     (bad / "plugin.json").write_text(json.dumps({

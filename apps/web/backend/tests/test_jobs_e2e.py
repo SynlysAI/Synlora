@@ -1,16 +1,11 @@
-"""任务机制端到端：提交 → 轮询 → 完成唤醒 → 会话多出一条事件。
-
-说明：本用例只验证"唤醒消息被注入会话"这一事实，不验证模型回复——真实
-回复需要可用的模型服务。为此会话绑定的 provider 指向一个必然连不上的
-地址，run 会在 LLM 调用处失败，但 turn/start 与 user/message 已经落账，
-足以断言唤醒链路打通。
-"""
-import asyncio
+"""后台任务端到端：提交、轮询、结果落库，不自动创建聊天回复。"""
+from pathlib import Path
 
 import pytest
 
 from app.db.repos import ProviderRepo, SessionRepo
 from app.services.job_connectors import make_fake_connector
+from app.services.job_access import JobSubmissionScope
 from synlys_harness import JobStatus
 
 FAKE_MAP = {"queued": JobStatus.PENDING, "doing": JobStatus.RUNNING,
@@ -30,8 +25,18 @@ async def session_id(app):
     return doc["_id"]
 
 
-async def test_submit_poll_wake_roundtrip(app, session_id):
-    """全链路：工具层提交 → poller 推进到终态 → 会话收到系统通知消息。"""
+async def test_submit_poll_updates_job_without_waking_agent(
+    app, session_id, monkeypatch,
+):
+    """外部任务进入终态后只更新任务文档，不自动唤醒 Agent。"""
+    started_runs: list[tuple[tuple, dict]] = []
+
+    async def chat(*args, **kwargs) -> str:
+        """记录意外触发的新一轮对话。"""
+        started_runs.append((args, kwargs))
+        return "unexpected-run"
+
+    monkeypatch.setattr(app.state.agent_service, "chat", chat)
     # 连接器可在运行期注册（registry 与 ToolRegistry 同为可变注册表）
     app.state.job_connectors.register(
         make_fake_connector("k", plugin_id="p1", script=["queued", "done"]),
@@ -39,24 +44,17 @@ async def test_submit_poll_wake_roundtrip(app, session_id):
     service = app.state.job_service
     result = await service.handle(
         {"action": "submit", "kind": "k", "params": {}, "label": "端到端"},
-        user={"sub": "u-user"}, session_id=session_id, ctx_extra={})
+        user={"sub": "u-user"}, session_id=session_id,
+        ctx_extra=_submission_extra(session_id))
     assert result.ok is True
 
-    # 两轮 tick：第一轮 queued（保持 pending），第二轮 done（终态触发唤醒）
+    # 两轮 tick：第一轮 queued（保持 pending），第二轮 done（写入终态）
     await app.state.job_poller.tick()
     await app.state.job_poller.tick()
 
-    # 唤醒起的 run 是后台 task，等事件落账（最多 2 秒）
-    wake: list = []
-    for _ in range(40):
-        events = await app.state.event_repo.list_events(session_id)
-        wake = [e for e in events if e.type.value == "user/message"
-                and e.payload.get("kind") == "job_completed"]
-        if wake:
-            break
-        await asyncio.sleep(0.05)
-    assert len(wake) == 1
-    assert wake[0].payload["job_id"] == result.data["job_id"]
+    doc = await service.get(result.data["job_id"])
+    assert doc["status"] == "completed"
+    assert started_runs == []
 
 
 async def test_poller_started_with_app(app):
@@ -64,35 +62,8 @@ async def test_poller_started_with_app(app):
     assert app.state.job_poller.running is True
 
 
-async def test_wake_wrapper_does_not_swallow_domain_errors(app, monkeypatch):
-    """唤醒包装必须放行 TooManyRuns / WakeTargetGone（否则通知被静默丢弃）。"""
-    from app.services.agent_service import TooManyRuns, WakeTargetGone
-
-    async def boom(session_id, text, job_id):
-        raise TooManyRuns("会话忙")
-
-    monkeypatch.setattr(app.state.agent_service, "wake", boom)
-    wake_cb = app.state.job_service._wake  # noqa: SLF001
-    with pytest.raises(TooManyRuns):
-        await wake_cb("s1", "text", "job-1")
-
-    async def gone(session_id, text, job_id):
-        raise WakeTargetGone("会话没了")
-
-    monkeypatch.setattr(app.state.agent_service, "wake", gone)
-    with pytest.raises(WakeTargetGone):
-        await wake_cb("s1", "text", "job-1")
-
-    # 其余异常必须被吞掉（只记日志）
-    async def other(session_id, text, job_id):
-        raise ValueError("别的错")
-
-    monkeypatch.setattr(app.state.agent_service, "wake", other)
-    await wake_cb("s1", "text", "job-1")  # 不抛
-
-
 async def test_spec_agent_plugin_end_to_end(app, session_id, tmp_path, monkeypatch):
-    """插件连接器走完整链路：提交 → 轮询成功 → 结果回填 → 会话收到唤醒消息。"""
+    """插件任务走完整链路：提交、轮询和结果回填，不创建聊天消息。"""
     import importlib.util
     import sys
     from pathlib import Path as _Path
@@ -150,8 +121,11 @@ async def test_spec_agent_plugin_end_to_end(app, session_id, tmp_path, monkeypat
         {"action": "submit", "kind": "spec.task.nmr",
          "params": {"path": "sample.nmr"}, "label": "端到端 NMR"},
         user={"sub": "u-user"}, session_id=session_id,
-        ctx_extra={"workspace_root": str(workspace),
-                   "plugins": {"spec_agent": {"base_url": "http://spec.test"}}})
+        ctx_extra=_submission_extra(
+            session_id,
+            workspace_root=str(workspace),
+            plugins={"spec_agent": {"base_url": "http://spec.test"}},
+        ))
     assert result.ok is True
 
     # 4) 一轮 tick：状态推到 SUCCESS 并回填结果
@@ -160,15 +134,24 @@ async def test_spec_agent_plugin_end_to_end(app, session_id, tmp_path, monkeypat
     assert doc["status"] == "completed"
     assert "peaks" in (doc.get("result") or "")
 
-    # 5) 唤醒消息落进会话
-    import asyncio
-    wake: list = []
-    for _ in range(40):
-        events = await app.state.event_repo.list_events(session_id)
-        wake = [e for e in events if e.type.value == "user/message"
-                and e.payload.get("kind") == "job_completed"]
-        if wake:
-            break
-        await asyncio.sleep(0.05)
-    assert len(wake) == 1
+    # 5) 终态不自动发起新一轮对话
+    events = await app.state.event_repo.list_events(session_id)
+    assert not [
+        event for event in events
+        if event.type.value == "user/message"
+        and event.payload.get("kind") == "job_completed"
+    ]
     assert "/api/v1/files/upload" in calls and "/api/v1/tasks/nmr" in calls
+def _submission_extra(session_id: str, **extra) -> dict:
+    """构造新架构要求的显式外部任务授权快照。"""
+    return {
+        **extra,
+        "job_submission_scope": JobSubmissionScope(
+            allowed_tools=frozenset({"job.submit"}),
+            allowed_plugins=frozenset({"p1", "fake", "spec_agent"}),
+            skills=(),
+            resources=(),
+            workspace_root=Path(extra.get("workspace_root") or ".").resolve(),
+            ownership={"session_id": session_id},
+        ),
+    }

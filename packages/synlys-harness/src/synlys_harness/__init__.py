@@ -8,15 +8,16 @@ from .jobs import (
     JobStatus,
     can_transition,
     is_terminal,
-    job_wake_kind,
 )
 from .models.backend import (
     LLMBackend, ModelProviderConfig, OpenAICompatibleBackend, ReasoningDelta,
     TextDelta, ToolCallChunk, Usage,
 )
-from .prompts import build_system_prompt
+from .prompts import PromptSection, render_prompt_sections
 from .session import derive_messages
 from .tools.builtin import register_builtin_tools
+from .tools.execution import ExecutionRequest, ReadOnlyResource, validate_execution_request
+from .tools.execution_tools import shell_run
 from .tools.pipeline import ToolPipeline
 from .tools.registry import ToolRegistry, tool
 from .tools.sandbox import (
@@ -29,19 +30,21 @@ from .tools.sandbox import (
     run_python,
 )
 from .types import (
-    AgentConfig, EventType, ExtensionHooks, Message, Permission, Role,
+    AgentConfig, ApprovalDecision, EventType, ExtensionHooks, Message, Permission, Role,
     SessionEvent, ToolCall, ToolContext, ToolDefinition, ToolResult,
 )
 
 __all__ = [
-    "RunSession", "EventLog", "Compactor", "derive_messages", "build_system_prompt",
+    "RunSession", "EventLog", "Compactor", "derive_messages",
+    "PromptSection", "render_prompt_sections",
     "JobStatus", "ACTIVE_STATUSES", "TERMINAL_STATUSES", "can_transition",
-    "is_terminal", "job_wake_kind",
+    "is_terminal",
     "ToolRegistry", "tool", "ToolPipeline", "register_builtin_tools",
+    "ExecutionRequest", "ReadOnlyResource", "validate_execution_request", "shell_run",
     "CodeExecutor", "LocalCodeExecutor", "DockerCodeExecutor", "FailingExecutor",
     "DEFAULT_LOCAL_EXECUTOR", "resolve_executor", "run_python",
     "LLMBackend", "OpenAICompatibleBackend", "ModelProviderConfig",
     "TextDelta", "ReasoningDelta", "ToolCallChunk", "Usage",
-    "AgentConfig", "EventType", "ExtensionHooks", "Message", "Permission",
+    "AgentConfig", "ApprovalDecision", "EventType", "ExtensionHooks", "Message", "Permission",
     "Role", "SessionEvent", "ToolCall", "ToolContext", "ToolDefinition", "ToolResult",
 ]
