@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import shutil
 import time
 import uuid
@@ -37,6 +38,9 @@ from synlys_harness import (
     OpenAICompatibleBackend,
     RunSession,
     SessionEvent,
+    ToolDefinition,
+    ToolPipeline,
+    ToolRegistry,
     ToolResult,
     resolve_executor,
 )
@@ -89,7 +93,8 @@ class AgentService:
     def __init__(self, store: Any, settings: Any, event_repo: Any,
                  skill_service: SkillService, file_repo: Any = None,
                  plugin_service: Any = None, capability_service: Any = None,
-                 plugin_config_store: Any = None, ai4ms_identity: Any = None) -> None:
+                 plugin_config_store: Any = None, ai4ms_identity: Any = None,
+                 mcp_service: Any = None) -> None:
         """保存依赖。
 
         Args:
@@ -104,6 +109,7 @@ class AgentService:
                 fail-closed 不注入任何插件配置（工具报"未配置"）。
             ai4ms_identity: AI⁴MS 身份代签服务（按登录用户代签子平台凭证）；
                 None 时不注入 ai4ms_token（插件回落自身配置的服务 token）。
+            mcp_service: 用户 MCP 服务；None 表示不装配远程 MCP 工具。
         """
         self._store = store
         self._settings = settings
@@ -114,6 +120,7 @@ class AgentService:
         self._capability_service = capability_service
         self._plugin_config_store = plugin_config_store
         self._ai4ms_identity = ai4ms_identity
+        self._mcp_service = mcp_service
         self._runs: dict[str, ActiveRun] = {}
         # 会话级互斥：session_id → 活跃 run_id 集合（同会话同时只允许一个 run）
         self._active_by_session: dict[str, set[str]] = {}
@@ -343,11 +350,18 @@ class AgentService:
                     pkg = caps.catalog.plugins.get(pid)
                     if pkg is not None:
                         hidden_skills |= set(pkg.skills)
+            expert_skill_refs = [
+                str(name) for name in ((assistant or {}).get("skill_refs") or []) if name
+            ]
+            requested = list(dict.fromkeys([
+                *expert_skill_refs,
+                *[str(name) for name in (requested_skills or []) if name],
+            ]))
             active_skills = select_runtime_skills(
                 all_skills,
                 hidden_names=hidden_skills,
                 active_plugin_ids=effective_plugins,
-                requested_names=requested_skills,
+                requested_names=(requested if requested else None),
             )
             index = [(skill.name, skill.description) for skill in active_skills]
             bodies = {skill.name: skill.body for skill in active_skills}
@@ -361,6 +375,52 @@ class AgentService:
                     assistant = None
             persona = str((assistant or {}).get("system_prompt") or "").strip()
             whitelist = list((assistant or {}).get("tool_whitelist") or [])
+            run_registry = ToolRegistry()
+            for name in _REGISTRY.names:
+                run_registry.register(_REGISTRY.get(name))
+            mcp_tool_names: list[str] = []
+            if self._mcp_service is not None and assistant:
+                connections = await self._mcp_service.runtime_connections(
+                    user_sub,
+                    [str(item) for item in (assistant.get("mcp_refs") or []) if item],
+                )
+                for connection in connections:
+                    mcp_id = str(connection["id"])
+                    for remote_tool in connection.get("tools") or []:
+                        remote_name = str(remote_tool.get("name") or "")
+                        safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", remote_name)
+                        local_name = f"mcp.{mcp_id}.{safe_name}"
+                        if not remote_name or run_registry.find(local_name) is not None:
+                            continue
+
+                        async def execute_mcp(_ctx, args, *, connection_id=mcp_id,
+                                              tool_name=remote_name):
+                            result = await self._mcp_service.call_tool(
+                                user_sub, connection_id, tool_name, args)
+                            parts = result.get("content") or []
+                            text = "\n".join(
+                                str(part.get("text") or "")
+                                for part in parts
+                                if isinstance(part, dict) and part.get("type") == "text"
+                            ).strip()
+                            return ToolResult(
+                                ok=result.get("isError") is not True,
+                                content=text or json.dumps(result, ensure_ascii=False),
+                                data={"mcp_id": connection_id, "result": result},
+                                error=("mcp_tool_error"
+                                       if result.get("isError") is True else None),
+                            )
+
+                        run_registry.register(ToolDefinition(
+                            name=local_name,
+                            description=str(remote_tool.get("description") or remote_name),
+                            parameters=(remote_tool.get("input_schema")
+                                        or {"type": "object", "properties": {}}),
+                            execute=execute_mcp,
+                            timeout_s=60.0,
+                        ))
+                        mcp_tool_names.append(local_name)
+            run_pipeline = ToolPipeline(run_registry)
             # 执行器就在这里解析（后面 ctx.extra 还要用同一个），拿它的 sandbox 标记
             # 写进提示词：模型必须知道代码执行的能力边界（docker 断网、跑完即删；
             # local 无强隔离），否则会去 pip install / 抓外网白烧几步
@@ -395,8 +455,8 @@ class AgentService:
                     }
                     visible_plugin_tools = visible_tools & keep
             tool_names = select_runtime_tools(
-                list(_REGISTRY.names),
-                whitelist=whitelist,
+                list(run_registry.names),
+                whitelist=list(dict.fromkeys([*whitelist, *mcp_tool_names])),
                 sandbox=executor.sandbox,
                 all_plugin_tools=all_plugin_tools,
                 visible_plugin_tools=visible_plugin_tools,
@@ -516,7 +576,7 @@ class AgentService:
                     tool_names=tool_names,
                     max_steps=(assistant or {}).get("max_steps", 25),
                 ),
-                registry=_REGISTRY, pipeline=_PIPELINE, backend=backend,
+                registry=run_registry, pipeline=run_pipeline, backend=backend,
                 event_log=log, user_id=user["sub"], run_id=run_id,
                 hooks=hooks,
                 workspace_root=workspace_root,

@@ -15,7 +15,8 @@ import { useMyCapabilitiesStore } from '@/stores/myCapabilities'
 import type { MyCapability } from '@/types'
 import CapabilityCard, { CardBadge } from './CapabilityCard'
 import Switch from './Switch'
-import { ExpertModal, SkillModal } from './CapabilityModals'
+import { SkillModal } from './CapabilityModals'
+import ExpertEditor from './ExpertEditor'
 
 /** 「我的」子页签（state 由列表页壳层持有，进详情返回后不丢）。 */
 export type SubTab = 'all' | 'enabled' | 'disabled' | 'builtin'
@@ -55,6 +56,7 @@ export default function MinePanel({
   const loadMine = useMyCapabilitiesStore((s) => s.loadMine)
   const [editingSkill, setEditingSkill] = useState<MyCapability | null | undefined>(undefined)
   const [editingExpert, setEditingExpert] = useState<MyCapability | null | undefined>(undefined)
+  const importSkillZip = useMyCapabilitiesStore((s) => s.importSkillZip)
 
   useEffect(() => {
     loadMine().catch((err) => toast('error', `加载我的能力失败：${errorText(err)}`))
@@ -101,13 +103,13 @@ export default function MinePanel({
             插件不支持用户自建，故插件页不出现新建入口） */}
         <div className="flex items-center gap-3">
           {capabilityKind === 'skill' && (
-            <button
-              type="button"
-              onClick={() => setEditingSkill(null)}
-              className="text-sm text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
-            >
-              + 新建技能
-            </button>
+            <>
+              <button type="button" onClick={() => setEditingSkill(null)} className="text-sm text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">+ 手动创建</button>
+              <label className="cursor-pointer text-sm text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]">
+                + 上传 ZIP
+                <input type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; void importSkillZip(file).then(() => toast('success', '已导入技能')).catch((err) => toast('error', errorText(err))) }} />
+              </label>
+            </>
           )}
           {capabilityKind === 'expert' && (
             <button
@@ -185,7 +187,7 @@ export default function MinePanel({
         />
       )}
       {editingExpert !== undefined && (
-        <ExpertModal
+        <ExpertEditor
           initial={editingExpert}
           onClose={(changed) => {
             setEditingExpert(undefined)

@@ -149,7 +149,10 @@ class UserExpertService:
 
     async def write(self, user_id: str, *, dir_name: str, name: str, avatar: str,
                     description: str, system_prompt: str,
-                    tool_whitelist: list[str] | None = None) -> dict:
+                    tool_whitelist: list[str] | None = None,
+                    skill_refs: list[str] | None = None,
+                    mcp_refs: list[str] | None = None,
+                    suggested_prompts: list[str] | None = None) -> dict:
         """写入（新建或覆盖）一个自建专家：先写文件，再刷 assistants 记录。
 
         记录走 `_upsert_record`（**覆盖刷新**）：用户刚显式改了内容，记录必须跟着变；
@@ -163,6 +166,9 @@ class UserExpertService:
             description: 描述。
             system_prompt: 人设提示词。
             tool_whitelist: 可用工具名列表。
+            skill_refs: 默认绑定的技能名列表。
+            mcp_refs: 默认绑定的 MCP ID 列表。
+            suggested_prompts: 推荐问题列表。
 
         Returns:
             专家字典（含 _id）。
@@ -179,6 +185,13 @@ class UserExpertService:
             "description": description,
             "system_prompt": system_prompt,
             "tool_whitelist": [str(t) for t in (tool_whitelist or [])],
+            "skill_refs": list(dict.fromkeys(
+                str(item).strip() for item in (skill_refs or []) if str(item).strip())),
+            "mcp_refs": list(dict.fromkeys(
+                str(item).strip() for item in (mcp_refs or []) if str(item).strip())),
+            "suggested_prompts": [
+                str(item).strip() for item in (suggested_prompts or []) if str(item).strip()
+            ],
         }
         target = self.experts_dir(user_id) / clean
         target.mkdir(parents=True, exist_ok=True)
@@ -269,6 +282,11 @@ class UserExpertService:
             "description": str(data.get("description") or ""),
             "system_prompt": str(data["system_prompt"]),
             "tool_whitelist": [str(t) for t in (data.get("tool_whitelist") or [])],
+            "skill_refs": [str(t) for t in (data.get("skill_refs") or [])],
+            "mcp_refs": [str(t) for t in (data.get("mcp_refs") or [])],
+            "suggested_prompts": [
+                str(t) for t in (data.get("suggested_prompts") or [])
+            ],
         }
 
     @staticmethod
@@ -287,6 +305,9 @@ class UserExpertService:
             "description": expert["description"],
             "system_prompt": expert["system_prompt"],
             "tool_whitelist": list(expert["tool_whitelist"]),
+            "skill_refs": list(expert.get("skill_refs") or []),
+            "mcp_refs": list(expert.get("mcp_refs") or []),
+            "suggested_prompts": list(expert.get("suggested_prompts") or []),
             "model_provider_id": None, "knowledge_base_ids": [],
             "builtin": False, "owner": user_id, "source_dir": expert["dir_name"],
         }

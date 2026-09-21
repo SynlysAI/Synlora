@@ -17,6 +17,7 @@ from app.api.files_api import session_router as session_files_router
 from app.api.jobs_api import router as jobs_router
 from app.api.knowledge_api import router as knowledge_router
 from app.api.me_api import router as me_router
+from app.api.mcp_api import router as mcp_router
 from app.api.models_api import router as models_router
 from app.api.projects_api import router as projects_router
 from app.api.sessions_api import router as sessions_router
@@ -50,6 +51,7 @@ from app.services.job_poller import JobPoller
 from app.services.job_access import WorkspaceJobGuard
 from app.services.sandbox_job_runner import SandboxJobRunner
 from app.services.job_service import JobService
+from app.services.mcp_service import McpService
 from app.services.project_service import ProjectService
 from app.services.skill_service import SkillService
 from app.services.tool_registry import REGISTRY
@@ -86,6 +88,7 @@ async def lifespan(app: FastAPI):
     app.state.project_service = ProjectService(store, settings.data_root)
     # 用户自建专家：文件为事实源，列「我的专家」时幂等实例化进 assistants
     app.state.expert_service = UserExpertService(store, settings.data_root)
+    app.state.mcp_service = McpService(store, settings.fernet_key)
     # 插件框架：扫描内置内容（专家/技能/插件） → 建技能服务 →
     # 注册已安装插件的工具与技能根（插件技能根由 plugin_service.startup()
     # 挂载，先于 AgentService 构造完成）
@@ -139,7 +142,8 @@ async def lifespan(app: FastAPI):
         file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
         capability_service=app.state.capability_service,
         plugin_config_store=plugin_config_store,
-        ai4ms_identity=app.state.ai4ms_identity)
+        ai4ms_identity=app.state.ai4ms_identity,
+        mcp_service=app.state.mcp_service)
     # 后台任务：任务服务 → 轮询器。连接器注册表在 PluginService 之前已建
     # （插件在其挂载时注册连接器）。任务终态只写 Job 文档，由运行信息面板
     # 或 job.status/job.list 主动读取，不自动发起新的 Agent run。
@@ -196,6 +200,7 @@ def create_app() -> FastAPI:
     app.include_router(plugins_router)
     app.include_router(catalog_router)
     app.include_router(me_router)
+    app.include_router(mcp_router)
     app.include_router(jobs_router)
 
     @app.get("/api/health")

@@ -148,3 +148,25 @@ export async function downloadFile(path: string, fallbackName: string): Promise<
   a.remove()
   URL.revokeObjectURL(url)
 }
+
+/**
+ * 获取带鉴权的二进制资源并返回临时 object URL。
+ *
+ * @param path 资源 API 路径。
+ * @returns 可用于图片或下载预览的 object URL。
+ * @throws ApiError 非 2xx 响应。
+ */
+export async function fetchBlobUrl(path: string): Promise<string> {
+  const headers: Record<string, string> = {}
+  const token = getToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+  const resp = await fetch(path, { headers })
+  if (!resp.ok) {
+    if (resp.status === 401) {
+      setToken(null)
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+    }
+    throw await toApiError(resp)
+  }
+  return URL.createObjectURL(await resp.blob())
+}

@@ -11,7 +11,7 @@
  * 写操作复用市场 store 的开关语义（`PUT /me/capabilities/...`）与 `/me/skills|experts` 的 CRUD。
  */
 import { create } from 'zustand'
-import type { CatalogItem, MyCapability } from '@/types'
+import type { CatalogItem, McpConnection, MyCapability } from '@/types'
 import { api } from '@/api/client'
 
 /** 后端 /me/skills 与 /me/experts 的行形状。 */
@@ -57,6 +57,9 @@ export interface ExpertDraft {
   description: string
   system_prompt: string
   tool_whitelist: string[]
+  skill_refs: string[]
+  mcp_refs: string[]
+  suggested_prompts: string[]
 }
 
 interface MyCapabilitiesState {
@@ -71,12 +74,20 @@ interface MyCapabilitiesState {
   createExpert: (draft: ExpertDraft) => Promise<void>
   updateExpert: (id: string, draft: ExpertDraft) => Promise<void>
   deleteExpert: (id: string) => Promise<void>
+  importSkillZip: (file: File) => Promise<void>
+  mcps: McpConnection[]
+  loadMcps: () => Promise<void>
+  createMcp: (payload: Record<string, unknown>) => Promise<void>
+  updateMcp: (id: string, payload: Record<string, unknown>) => Promise<void>
+  deleteMcp: (id: string) => Promise<void>
+  testMcp: (id: string) => Promise<McpConnection>
 }
 
 export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => ({
   items: [],
   builtinItems: [],
   loaded: false,
+  mcps: [],
 
   loadMine: async () => {
     const [skills, experts, plugins, markets] = await Promise.all([
@@ -143,6 +154,13 @@ export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => 
     set({ items, builtinItems, loaded: true })
   },
 
+  importSkillZip: async (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    await api('/api/v1/me/skills/import', { method: 'POST', form })
+    await get().loadMine()
+  },
+
   createSkill: async (draft) => {
     await api('/api/v1/me/skills', { method: 'POST', body: draft })
     await get().loadMine()
@@ -177,5 +195,38 @@ export const useMyCapabilitiesStore = create<MyCapabilitiesState>((set, get) => 
   deleteExpert: async (id) => {
     await api(`/api/v1/me/experts/${encodeURIComponent(id)}`, { method: 'DELETE' })
     await get().loadMine()
+  },
+
+  loadMcps: async () => {
+    const mcps = await api<McpConnection[]>('/api/v1/me/mcps')
+    set({ mcps })
+  },
+
+  createMcp: async (payload) => {
+    await api('/api/v1/me/mcps', { method: 'POST', body: payload })
+    await get().loadMcps()
+  },
+
+  updateMcp: async (id, payload) => {
+    await api(`/api/v1/me/mcps/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: payload,
+    })
+    await get().loadMcps()
+  },
+
+  deleteMcp: async (id) => {
+    await api(`/api/v1/me/mcps/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    await get().loadMcps()
+  },
+
+  testMcp: async (id) => {
+    const result = await api<{ ok: boolean; tools: McpConnection['tools'] }>(
+      `/api/v1/me/mcps/${encodeURIComponent(id)}/test`,
+      { method: 'POST' },
+    )
+    await get().loadMcps()
+    const current = get().mcps.find((item) => item.id === id)
+    return { ...(current as McpConnection), tools: result.tools }
   },
 }))

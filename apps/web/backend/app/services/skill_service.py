@@ -15,13 +15,16 @@ frontmatter 刻意不声明 `tools`：权限由系统分配（jiuwen 明确禁�
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
 import shutil
 import stat
+import tempfile
+import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 import yaml
@@ -36,6 +39,16 @@ logger = logging.getLogger(__name__)
 
 NAME_OK = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", re.DOTALL)
+MAX_SKILL_ARCHIVE_BYTES = 20 * 1024 * 1024
+MAX_SKILL_EXTRACTED_BYTES = 80 * 1024 * 1024
+MAX_SKILL_ARCHIVE_FILES = 500
+MAX_SKILL_PREVIEW_BYTES = 2 * 1024 * 1024
+PREVIEWABLE_SUFFIXES = {
+    ".css", ".csv", ".html", ".ini", ".js", ".json", ".jsx", ".md",
+    ".py", ".rst", ".sh", ".sql", ".toml", ".ts", ".tsx", ".txt",
+    ".xml", ".yaml", ".yml",
+}
+IMAGE_SUFFIXES = {".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
 
 
 @dataclass(frozen=True)
@@ -259,6 +272,79 @@ class SkillService:
             content=content, version=version, author=author,
             tags=tags, allowed_tools=allowed_tools)
 
+    def import_user_skill_zip(self, user_id: str, archive: bytes) -> dict:
+        """从 ZIP 压缩包导入一个用户技能目录。
+
+        Args:
+            user_id: 用户 sub。
+            archive: ZIP 文件字节。
+
+        Returns:
+            导入后的技能字典。
+
+        Raises:
+            ValueError: 压缩包格式、结构或内容不合法。
+            SkillNameTaken: 技能名已被任一来源占用。
+        """
+        if not archive or len(archive) > MAX_SKILL_ARCHIVE_BYTES:
+            raise ValueError("技能压缩包为空或超过 20 MB")
+        try:
+            package = zipfile.ZipFile(io.BytesIO(archive))
+        except zipfile.BadZipFile as exc:
+            raise ValueError("不是有效的 ZIP 压缩包") from exc
+
+        with package, tempfile.TemporaryDirectory(prefix="synlora-skill-") as temp:
+            temp_root = Path(temp)
+            members = package.infolist()
+            if not members or len(members) > MAX_SKILL_ARCHIVE_FILES:
+                raise ValueError("技能压缩包文件数量不合法")
+            extracted_bytes = 0
+            for member in members:
+                relative = PurePosixPath(member.filename)
+                if (relative.is_absolute() or ".." in relative.parts
+                        or not relative.parts or "\\" in member.filename):
+                    raise ValueError(f"压缩包包含非法路径: {member.filename}")
+                mode = member.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"压缩包不允许符号链接: {member.filename}")
+                extracted_bytes += member.file_size
+                if extracted_bytes > MAX_SKILL_EXTRACTED_BYTES:
+                    raise ValueError("技能压缩包解压后超过 80 MB")
+                target = (temp_root / Path(*relative.parts)).resolve()
+                try:
+                    target.relative_to(temp_root.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"压缩包包含非法路径: {member.filename}") from exc
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with package.open(member) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+
+            package_root = self._find_import_root(temp_root)
+            if not self._directory_is_safe(package_root):
+                raise ValueError("技能包包含链接或不可读取文件")
+            try:
+                parsed = parse_skill_md(
+                    (package_root / "SKILL.md").read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
+                raise ValueError(f"SKILL.md 不合法: {exc}") from exc
+            name = parsed["name"]
+            if package_root != temp_root and package_root.name != name:
+                raise ValueError("技能目录名必须与 SKILL.md 的 name 一致")
+            if (self.user_skills_dir(user_id) / name / "SKILL.md").is_file():
+                raise SkillNameTaken(f"你已有同名技能「{name}」")
+            origin = self.name_taken(name)
+            if origin is not None:
+                label = "公共技能" if origin == "public" else "内置技能"
+                raise SkillNameTaken(f"「{name}」与{label}同名，请换一个名字")
+
+            target = self.user_skills_dir(user_id) / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(package_root, target)
+            return {**parsed, "builtin": False, "source": "user"}
+
     def update_user_skill(self, user_id: str, name: str, *, description: str,
                           content: str, version: str = "1.0", author: str = "",
                           tags: list[str] | None = None,
@@ -454,20 +540,160 @@ class SkillService:
         """
         if not NAME_OK.match(name):
             return None
-        roots = ([self.user_skills_dir(user_id)] if user_id else []) + \
-            [self.skills_dir, *self._extra_roots]
+        directory = self.skill_directory(name, user_id=user_id)
+        if directory is not None:
+            try:
+                return parse_skill_md(
+                    (directory / "SKILL.md").read_text(encoding="utf-8"))["content"]
+            except (ValueError, yaml.YAMLError):
+                return None
+        return None
+
+    def skill_directory(self, name: str, user_id: str | None = None) -> Path | None:
+        """解析当前优先级下实际生效的技能目录。
+
+        Args:
+            name: 技能名。
+            user_id: 用户 sub；None 表示不包含用户层。
+
+        Returns:
+            安全且可解析的技能目录；不存在返回 None。
+        """
+        if not NAME_OK.match(name):
+            return None
+        candidates = ([self.user_skills_dir(user_id) / name] if user_id else [])
+        candidates.append(public_skills_root(self._data_root) / name)
         catalog_directory = self._catalog_skills.get(name)
         if catalog_directory is not None:
-            roots.append(catalog_directory.parent)
-        for root in roots:
-            md = root / name / "SKILL.md"
-            if not md.is_file():
+            candidates.append(catalog_directory)
+        candidates.extend(root / name for root in self._extra_roots)
+        for directory in candidates:
+            if not (directory / "SKILL.md").is_file():
+                continue
+            if not self._directory_is_safe(directory):
                 continue
             try:
-                return parse_skill_md(md.read_text(encoding="utf-8"))["content"]
-            except (ValueError, yaml.YAMLError):
-                continue  # 该根的技能损坏：跳过，继续找后续根（与 _scan_root 的"跳过"语义一致）
+                parsed = parse_skill_md(
+                    (directory / "SKILL.md").read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
+                continue
+            if parsed["name"] == name:
+                return directory.resolve()
         return None
+
+    def list_skill_files(self, name: str, user_id: str | None = None) -> list[dict]:
+        """列出技能包文件树。
+
+        Args:
+            name: 技能名。
+            user_id: 用户 sub；用于应用用户层优先级。
+
+        Returns:
+            文件树节点列表；技能不存在时返回空列表。
+        """
+        directory = self.skill_directory(name, user_id=user_id)
+        if directory is None:
+            return []
+
+        def walk(current: Path) -> list[dict]:
+            nodes: list[dict] = []
+            for child in sorted(
+                    current.iterdir(),
+                    key=lambda item: (item.name != "SKILL.md", item.name.lower())):
+                relative = child.relative_to(directory).as_posix()
+                if child.is_dir():
+                    nodes.append({
+                        "path": relative,
+                        "kind": "directory",
+                        "previewable": False,
+                        "children": walk(child),
+                    })
+                elif child.is_file():
+                    size = child.stat().st_size
+                    nodes.append({
+                        "path": relative,
+                        "kind": "file",
+                        "size": size,
+                        "previewable": (
+                            size <= MAX_SKILL_PREVIEW_BYTES
+                            and child.suffix.lower() in PREVIEWABLE_SUFFIXES | IMAGE_SUFFIXES
+                        ),
+                    })
+            return nodes
+
+        return walk(directory)
+
+    def read_skill_file(self, name: str, relative_path: str,
+                        user_id: str | None = None) -> dict | None:
+        """读取技能包内可预览文本文件。
+
+        Args:
+            name: 技能名。
+            relative_path: 技能目录内 POSIX 相对路径。
+            user_id: 用户 sub；用于应用用户层优先级。
+
+        Returns:
+            文件内容字典；不存在或不可预览返回 None。
+        """
+        directory = self.skill_directory(name, user_id=user_id)
+        if directory is None or not isinstance(relative_path, str) or "\\" in relative_path:
+            return None
+        relative = PurePosixPath(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return None
+        target = (directory / Path(*relative.parts)).resolve()
+        try:
+            target.relative_to(directory)
+        except ValueError:
+            return None
+        if (not target.is_file() or target.stat().st_size > MAX_SKILL_PREVIEW_BYTES
+                or target.suffix.lower() not in PREVIEWABLE_SUFFIXES):
+            return None
+        try:
+            content = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return None
+        return {"path": relative.as_posix(), "content": content, "encoding": "utf-8"}
+
+    def skill_file_path(self, name: str, relative_path: str,
+                        user_id: str | None = None) -> Path | None:
+        """解析技能包内文件的安全绝对路径。
+
+        Args:
+            name: 技能名。
+            relative_path: 技能目录内 POSIX 相对路径。
+            user_id: 用户 sub；用于应用用户层优先级。
+
+        Returns:
+            安全文件路径；不存在、越界或超过预览大小返回 None。
+        """
+        directory = self.skill_directory(name, user_id=user_id)
+        if directory is None or not isinstance(relative_path, str) or "\\" in relative_path:
+            return None
+        relative = PurePosixPath(relative_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return None
+        target = (directory / Path(*relative.parts)).resolve()
+        try:
+            target.relative_to(directory)
+        except ValueError:
+            return None
+        if not target.is_file() or target.stat().st_size > MAX_SKILL_PREVIEW_BYTES:
+            return None
+        return target
+
+    @staticmethod
+    def _find_import_root(temp_root: Path) -> Path:
+        """识别 ZIP 中唯一技能包根目录。"""
+        if (temp_root / "SKILL.md").is_file():
+            return temp_root
+        candidates = [
+            child for child in temp_root.iterdir()
+            if child.is_dir() and (child / "SKILL.md").is_file()
+        ]
+        if len(candidates) != 1:
+            raise ValueError("压缩包根目录或唯一一级子目录中必须包含 SKILL.md")
+        return candidates[0]
 
     @staticmethod
     def _directory_is_safe(directory: Path) -> bool:

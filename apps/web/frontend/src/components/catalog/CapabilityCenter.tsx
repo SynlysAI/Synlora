@@ -23,6 +23,7 @@ import type { CapabilityKind, AppRoute } from '@/routing/route'
 import type { CatalogItem, MyCapability } from '@/types'
 import CapabilityCard, { CardBadge } from './CapabilityCard'
 import CapabilityDetail from './CapabilityDetail'
+import ExtensionCenter from './ExtensionCenter'
 import MinePanel, { type SubTab } from './MinePanel'
 import { PluginInstallModal } from './CapabilityModals'
 
@@ -30,7 +31,7 @@ import { PluginInstallModal } from './CapabilityModals'
 const NAV: Array<{ kind: CapabilityKind; label: string }> = [
   { kind: 'expert', label: '专家' },
   { kind: 'skill', label: '技能' },
-  { kind: 'plugin', label: '插件' },
+  { kind: 'plugin', label: '扩展' },
 ]
 
 /**
@@ -40,7 +41,7 @@ const NAV: Array<{ kind: CapabilityKind; label: string }> = [
 const KIND_HEADING: Record<CapabilityKind, { title: string; subtitle: string }> = {
   expert: { title: '专家管理', subtitle: '平台提供的专家，安装后即可在自己的对话里选用' },
   skill: { title: '技能管理', subtitle: '平台提供的技能，安装后即可在自己的对话里调用' },
-  plugin: { title: '插件管理', subtitle: '平台提供的插件，安装后即可在自己的对话里使用' },
+  plugin: { title: '扩展中心', subtitle: '统一管理平台插件与你接入的 MCP 工具服务' },
 }
 
 /** 类型图标（16px 线性，与全站图标风格一致）。 */
@@ -224,6 +225,8 @@ export default function CapabilityCenter({ route }: { route: AppRoute }) {
               capabilityKind={route.capabilityKind}
               itemId={route.itemId}
             />
+          ) : capabilityKind === 'plugin' ? (
+            <ExtensionCenter />
           ) : (
             <CapabilityList
               capabilityKind={capabilityKind}

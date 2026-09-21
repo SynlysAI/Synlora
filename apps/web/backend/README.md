@@ -127,7 +127,24 @@ job 的 `result`（供右侧详情和 `job.status` 主动查询）。
 读工作区谱图文件 → 上传换 file_id → 提交任务 → 轮询 → 取结果。上游只接受 `file_id`
 提交（故连接器必须拿到 `workspace_root`）；上游无取消接口，取消是本地停止跟踪。
 
-## 能力目录与可见性（市场机制）
+## 能力目录、专家编排与扩展中心
+
+### 专家、技能与 MCP
+
+用户侧能力中心（`/capabilities`）按「专家 / 技能 / 扩展」组织。专家 manifest 除人设提示词和工具白名单外，还支持 `skill_refs`、`mcp_refs`、`suggested_prompts`：专家只保存引用，运行时按当前用户可见集解析，不复制技能目录，也不保存 MCP 凭证明文。
+
+技能以完整目录为事实源。用户可以手动创建技能，或上传包含 `SKILL.md` 的 ZIP 目录包；导入保留附属的 `scripts/`、`references/`、`assets/` 文件，并拒绝 Zip Slip、符号链接、过大压缩包、过多文件和超大解压结果。用户侧文件接口为：
+
+- `POST /api/v1/me/skills/import`
+- `GET /api/v1/me/skills/{name}/files`
+- `GET /api/v1/me/skills/{name}/file?path=...`
+- `GET /api/v1/me/skills/{name}/raw?path=...`
+
+详情页可以按文件树选择文本或图片预览；`raw` 端点仍需登录鉴权。
+
+扩展中心统一展示平台插件与用户 MCP。插件继续使用可信 Python 包和能力目录权限模型；MCP 首期仅开放 Streamable HTTP，用户可以配置 URL、Headers、Bearer Token、启用状态，测试连接并发现工具。MCP 凭证按用户加密存储，安全视图只返回 `header_names` 和 `bearer_token_set`。运行时把发现的远程工具映射为 `mcp.<mcp_id>.<safe_tool_name>`，专家引用的 MCP 工具会进入本轮独立工具注册表，但仍受用户 MCP 启用状态和专家工具白名单约束。
+
+### 能力目录与可见性（市场机制）
 
 **设计原则：内置项随仓库走，可见性由策略控制，用户安装只写记录。** 「专家 / 技能 / 插件」统一纳入能力目录（`app/catalog/`），三层模型如下（参考 jiuwen 的目录分层 + DSH 的配置分层）：
 

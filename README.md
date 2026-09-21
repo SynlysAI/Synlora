@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回，终态在右侧运行信息展示，不自动创建聊天回复）。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
 
-- 版本：0.13.0-beta.1（内测版）
+- 版本：0.14.0-beta.1（内测版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -122,17 +122,25 @@ pm2 logs synlys-agent
 
 一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。首个插件 `spec_agent` 提供核磁预测三件套并自动播种「谱图解析专家」，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
-### 能力目录（市场）
+### 能力目录与统一扩展中心（市场）
 
-「专家 / 技能 / 插件」统一纳入能力目录，三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。
+「专家 / 技能 / 扩展」统一纳入能力中心。平台插件仍使用能力目录与用户安装权限模型；用户 MCP 是独立的 Streamable HTTP 扩展配置，不复制插件文件、不绕过用户权限。
+
+专家支持人设提示词、技能引用、MCP 引用、可用工具和推荐问题；专家只保存引用，不复制技能文件或 MCP 凭证。运行时会将专家引用与当前用户可用能力合并，并继续受插件会话开关、用户安装状态和工具白名单约束。
+
+技能支持上传包含 `SKILL.md` 的 ZIP 目录包，保留 `scripts/`、`references/`、`assets/` 等附属文件；详情页提供左侧文件树与右侧文本/图片预览，压缩包大小、文件数量、解压大小和路径逃逸均有安全限制。
+
+扩展中心统一展示插件市场、MCP 接入和我的扩展。普通用户首期仅开放 Streamable HTTP MCP，可配置 URL、Headers、Bearer Token、启用状态，并支持测试连接和发现远程工具；凭证加密存储，接口只返回字段名和是否已配置。
+
+三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。
 
 能力中心按「**市场 / 我的**」页签组织：市场是「可安装的内置条目」，我的 = 用户自建能力 + 已安装能力。用户在市场安装后可**启用 / 停用**（`user_capabilities.enabled`，停用优先于默认启用）；用户还可**自建技能与专家**（落各自 `{data_dir}/users/<uid>/{skills,experts}/`，技能同名全局唯一，内置条目不可编辑、想定制请自建换名）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。
 
-**当前状态**：已上线（0.10.0，改版见计划 12）——用户侧「能力中心」（`/capabilities`）为「左导航分类 + 卡片网格 + 详情页」三段式。左侧按**专家 / 技能 / 插件**分类导航，右侧是卡片网格：顶部「**市场 / 我的**」页签 + 搜索框，「我的」再按「全部 / 已启用 / 已停用 / 内置」子页签过滤（页签与搜索状态在进出详情后保持）。卡片只给最常用的快按钮——市场卡「安装」（带 `config_schema` 的插件先弹配置框）、我的卡「启用 / 停用」，其余操作都在详情页。
+**当前状态**：已上线（0.14.0-beta.1）——用户侧「能力中心」（`/capabilities`）按**专家 / 技能 / 扩展**分类；专家与技能保留市场 / 我的卡片视图，扩展进入统一的插件市场、MCP 接入和我的扩展页面。技能可手动创建或上传 ZIP，专家可在完整编排表单中选择技能、MCP、工具和推荐问题。
 
-点卡片进入**详情页**（路由 `/capabilities/<类型>/<条目 id>`），按条目类型分别展示**技能正文（SKILL.md）**、**专家人设提示词 / 可用工具**、**插件配置字段（带「系统默认已就绪」标记）与附属清单（自带技能 / 播种专家 / 注册工具）**；**安装 / 卸载 / 启用 / 停用 / 编辑（自建技能与专家）/ 删除都在详情页完成**。**内置条目对普通用户只读**（标「内置 · 全员可用」，无启停与编辑入口），管理员在详情页有「在管理后台编辑」跳转直达对应管理页。被管理员**下架**的已装条目不会凭空消失：仍留在「我的」并带「已被管理员下架」标记，可卸载（此时启停返回 404，只保留卸载入口）。
+点卡片进入**详情页**（路由 `/capabilities/<类型>/<条目 id>`），按条目类型展示技能说明与目录文件预览、专家人设与能力编排、插件配置字段与附属清单；**安装 / 卸载 / 启用 / 停用 / 编辑 / 删除**按类型在详情或扩展中心完成。**内置条目对普通用户只读**（标「内置 · 全员可用」，无启停与编辑入口），管理员在详情页有「在管理后台编辑」跳转直达对应管理页。
 
-后端接口：`/api/v1/market/{kind}`、`GET /api/v1/me/capabilities/{kind}/{item_id}`（详情，`origin` 四态 自建 / 已装 / 内置 / 市场可见未装）、`PUT /api/v1/me/capabilities/{kind}/{id}`（安装 / 卸载 / 启停）、`GET /api/v1/me/plugins`（已装插件，供被下架后仍可管理）、`/api/v1/me/{skills,experts}`。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+后端接口：`/api/v1/market/{kind}`、`GET /api/v1/me/capabilities/{kind}/{item_id}`、`PUT /api/v1/me/capabilities/{kind}/{id}`、`/api/v1/me/{skills,experts}`、`POST /api/v1/me/skills/import`、`GET /api/v1/me/skills/{name}/files`、`GET /api/v1/me/skills/{name}/file`、`GET/POST/PATCH/DELETE /api/v1/me/mcps` 和 `POST /api/v1/me/mcps/{id}/test`。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 内置内容布局（catalog/）
 

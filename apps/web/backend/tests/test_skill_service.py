@@ -1,4 +1,7 @@
 """技能文件服务单测（扫描/解析/写入 SKILL.md）。"""
+import io
+import zipfile
+
 import pytest
 
 from app.catalog.loader import SkillPackage
@@ -379,3 +382,64 @@ def test_write_user_skill_rejects_builtin_name(tmp_path):
     with pytest.raises(SkillNameTaken):
         svc.write_user_skill("u1", name="spec-nmr", description="我的",
                              content="## 目标\n我的")
+
+
+def test_import_user_skill_zip_preserves_package_files(tmp_path):
+    """ZIP 导入保留技能目录中的脚本和参考资料。"""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr(
+            "demo-skill/SKILL.md",
+            "---\nname: demo-skill\ndescription: 演示技能\n---\n\n## 目标\n演示\n",
+        )
+        package.writestr("demo-skill/scripts/run.py", "print('ok')\n")
+        package.writestr("demo-skill/references/guide.md", "# 使用说明\n")
+
+    service = SkillService(tmp_path)
+    result = service.import_user_skill_zip("u1", archive.getvalue())
+
+    assert result["name"] == "demo-skill"
+    directory = tmp_path / "users" / "u1" / "skills" / "demo-skill"
+    assert (directory / "scripts" / "run.py").read_text(encoding="utf-8") == "print('ok')\n"
+    assert (directory / "references" / "guide.md").is_file()
+
+
+def test_import_user_skill_zip_rejects_path_traversal(tmp_path):
+    """ZIP 内越界路径必须在写盘前被拒绝。"""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr(
+            "demo-skill/SKILL.md",
+            "---\nname: demo-skill\ndescription: 演示技能\n---\n正文\n",
+        )
+        package.writestr("../escaped.txt", "secret")
+
+    service = SkillService(tmp_path)
+    with pytest.raises(ValueError, match="路径"):
+        service.import_user_skill_zip("u1", archive.getvalue())
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_list_and_read_skill_package_files(tmp_path):
+    """技能详情可列目录树并读取包内文本文件。"""
+    service = SkillService(tmp_path)
+    service.write_user_skill(
+        "u1", name="demo-skill", description="演示技能", content="## 目标\n演示")
+    directory = tmp_path / "users" / "u1" / "skills" / "demo-skill"
+    (directory / "references").mkdir()
+    (directory / "references" / "guide.md").write_text("# 指南\n", encoding="utf-8")
+
+    files = service.list_skill_files("demo-skill", user_id="u1")
+    content = service.read_skill_file(
+        "demo-skill", "references/guide.md", user_id="u1")
+
+    assert files == [
+        {"path": "SKILL.md", "kind": "file", "size": (directory / "SKILL.md").stat().st_size,
+         "previewable": True},
+        {"path": "references", "kind": "directory", "previewable": False, "children": [
+            {"path": "references/guide.md", "kind": "file",
+             "size": (directory / "references" / "guide.md").stat().st_size,
+             "previewable": True},
+        ]},
+    ]
+    assert content == {"path": "references/guide.md", "content": "# 指南\n", "encoding": "utf-8"}

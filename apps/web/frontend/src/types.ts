@@ -142,6 +142,35 @@ export interface CatalogItem {
   config_ready_keys?: string[]
 }
 
+/** 用户 MCP 扩展的安全视图。 */
+export interface McpConnection {
+  id: string
+  name: string
+  description: string
+  url: string
+  enabled: boolean
+  status: 'unknown' | 'unchecked' | 'connected' | 'error'
+  last_error: string
+  checked_at: number | null
+  header_names: string[]
+  bearer_token_set: boolean
+  tools: Array<{
+    name: string
+    description: string
+    input_schema: Record<string, unknown>
+  }>
+}
+
+/** 技能目录中的文件节点。 */
+export interface SkillFile {
+  path: string
+  kind: 'file' | 'directory'
+  size: number
+  media_type?: string
+  previewable?: boolean
+  children?: SkillFile[]
+}
+
 /** 「我的」列表条目：自建（mine）/ 已安装的内置（installed）/ 平台内置只读（builtin）。 */
 export interface MyCapability {
   kind: 'skill' | 'expert' | 'plugin'
@@ -174,8 +203,16 @@ export interface CapabilityDetail {
   system_prompt?: string
   /** 仅专家：可用工具名（空 = 全部内置工具）。 */
   tool_whitelist?: string[]
+  /** 仅专家：绑定的技能名。 */
+  skill_refs?: string[]
+  /** 仅专家：绑定的用户 MCP ID。 */
+  mcp_refs?: string[]
+  /** 仅专家：对话开始时展示的推荐问题。 */
+  suggested_prompts?: string[]
   /** 仅技能：SKILL.md 正文。 */
   content?: string
+  /** 仅技能：目录文件树。 */
+  files?: SkillFile[]
   /** 仅插件：配置字段声明。 */
   config_schema?: PluginConfigField[]
   /** 仅插件：管理员公共配置已就绪的字段名。 */

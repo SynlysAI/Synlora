@@ -44,6 +44,9 @@ class AssistantCreateBody(BaseModel):
     description: str = ""
     system_prompt: str
     tool_whitelist: list[str] = []
+    skill_refs: list[str] = []
+    mcp_refs: list[str] = []
+    suggested_prompts: list[str] = []
     model_provider_id: str | None = None
     knowledge_base_ids: list[str] = []
 
@@ -64,6 +67,9 @@ class AssistantUpdateBody(BaseModel):
     description: str | None = None
     system_prompt: str | None = None
     tool_whitelist: list[str] | None = None
+    skill_refs: list[str] | None = None
+    mcp_refs: list[str] | None = None
+    suggested_prompts: list[str] | None = None
     model_provider_id: str | None = None
     knowledge_base_ids: list[str] | None = None
 
@@ -147,6 +153,9 @@ async def create_assistant(body: AssistantCreateBody, user=Depends(require_admin
         "description": body.description,
         "system_prompt": body.system_prompt,
         "tool_whitelist": body.tool_whitelist,
+        "skill_refs": body.skill_refs,
+        "mcp_refs": body.mcp_refs,
+        "suggested_prompts": body.suggested_prompts,
         "model_provider_id": body.model_provider_id,
         "knowledge_base_ids": body.knowledge_base_ids,
         "builtin": False,
@@ -180,6 +189,12 @@ async def update_assistant(assistant_id: str, body: AssistantUpdateBody,
     if body.tool_whitelist is not None:
         validate_tool_whitelist(body.tool_whitelist)
         fields["tool_whitelist"] = body.tool_whitelist
+    if body.skill_refs is not None:
+        fields["skill_refs"] = body.skill_refs
+    if body.mcp_refs is not None:
+        fields["mcp_refs"] = body.mcp_refs
+    if body.suggested_prompts is not None:
+        fields["suggested_prompts"] = body.suggested_prompts
     if body.model_provider_id is not None:
         await _validate_provider(body.model_provider_id, repos)
         fields["model_provider_id"] = body.model_provider_id

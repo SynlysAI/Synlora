@@ -1,4 +1,7 @@
 """「我的」端点：自建技能（本任务）+ 已安装的内置技能。"""
+import io
+import zipfile
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -26,6 +29,32 @@ def test_create_and_list_my_skill(client):
     rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
     row = next(r for r in rows if r["name"] == "my-skill")
     assert row["source"] == "mine" and row["enabled"] is True
+
+
+def test_import_skill_zip_and_preview_files(client):
+    """用户可上传目录型技能，并通过 API 预览附属文件。"""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as package:
+        package.writestr(
+            "zip-skill/SKILL.md",
+            "---\nname: zip-skill\ndescription: ZIP 技能\n---\n\n## 目标\n演示\n",
+        )
+        package.writestr("zip-skill/references/guide.md", "# 指南\n")
+
+    response = client.post(
+        "/api/v1/me/skills/import",
+        files={"file": ("zip-skill.zip", archive.getvalue(), "application/zip")},
+        headers=HEADERS,
+    )
+    assert response.status_code == 201
+    files = client.get("/api/v1/me/skills/zip-skill/files", headers=HEADERS)
+    assert files.status_code == 200
+    preview = client.get(
+        "/api/v1/me/skills/zip-skill/file",
+        params={"path": "references/guide.md"},
+        headers=HEADERS,
+    )
+    assert preview.json()["content"] == "# 指南\n"
 
 
 def test_my_skill_name_conflict_with_builtin(client):

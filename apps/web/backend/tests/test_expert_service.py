@@ -24,6 +24,26 @@ async def test_write_and_list_own_expert(svc, tmp_path):
     assert await svc.list_own("u2") == []
 
 
+async def test_expert_capability_refs_roundtrip(svc, store):
+    """专家技能、MCP 与推荐问题引用同时写入文件和助手记录。"""
+    expert = await svc.write(
+        "u1", dir_name="chem", name="化学助手", avatar="🧪",
+        description="演示", system_prompt="你是化学助手",
+        tool_whitelist=["python.run"],
+        skill_refs=["data-analysis"],
+        mcp_refs=["lab-db"],
+        suggested_prompts=["分析这组数据"],
+    )
+
+    assert expert["skill_refs"] == ["data-analysis"]
+    loaded = await svc.get_own("u1", "u1:chem")
+    assert loaded is not None and loaded["mcp_refs"] == ["lab-db"]
+    record = await store.get("assistants", "u1:chem")
+    assert record is not None
+    assert record["skill_refs"] == ["data-analysis"]
+    assert record["suggested_prompts"] == ["分析这组数据"]
+
+
 async def test_experts_are_scoped_to_owner(svc):
     await svc.write("u1", dir_name="chem", name="化学助手", avatar="",
                     description="demo", system_prompt="p")

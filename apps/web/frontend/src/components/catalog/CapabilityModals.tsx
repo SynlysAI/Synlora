@@ -190,6 +190,9 @@ export function ExpertModal({
     description: description.trim(),
     system_prompt: systemPrompt,
     tool_whitelist: tools.split(',').map((t) => t.trim()).filter(Boolean),
+    skill_refs: [],
+    mcp_refs: [],
+    suggested_prompts: [],
   })
 
   const handleSubmit = async (e: FormEvent) => {

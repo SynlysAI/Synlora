@@ -160,6 +160,7 @@ async def _own_skill_detail(request: Request, user_id: str, name: str) -> dict |
         "origin": "mine",
         "enabled": True,
         "content": svc.read_body(name, user_id) or "",
+        "files": svc.list_skill_files(name, user_id),
     }
 
 
@@ -191,6 +192,11 @@ async def _own_expert_detail(request: Request, user_id: str, expert_id: str) -> 
         "avatar": str(own.get("avatar") or ""),
         "system_prompt": str(own.get("system_prompt") or ""),
         "tool_whitelist": [str(t) for t in (own.get("tool_whitelist") or [])],
+        "skill_refs": [str(t) for t in (own.get("skill_refs") or [])],
+        "mcp_refs": [str(t) for t in (own.get("mcp_refs") or [])],
+        "suggested_prompts": [
+            str(t) for t in (own.get("suggested_prompts") or [])
+        ],
     }
 
 
@@ -613,9 +619,13 @@ async def capability_detail(kind: str, item_id: str, request: Request,
             row["avatar"] = pkg.avatar
             row["system_prompt"] = pkg.system_prompt
             row["tool_whitelist"] = list(pkg.tool_whitelist)
+            row["skill_refs"] = list(pkg.skill_refs)
+            row["mcp_refs"] = list(pkg.mcp_refs)
+            row["suggested_prompts"] = list(pkg.suggested_prompts)
     elif kind == "skill":
         svc = _state_service(request, "skill_service")
         row["content"] = svc.read_body(item_id, user_id) or ""
+        row["files"] = svc.list_skill_files(item_id, user_id)
     elif kind == "plugin":
         row["config_ready_keys"] = sorted(await _public_ready_keys(request, item_id))
         state = _state_service(request, "plugin_service").state(item_id)

@@ -307,6 +307,11 @@ class PluginService:
             "description": expert.get("description") or package.description,
             "system_prompt": expert.get("system_prompt") or "",
             "tool_whitelist": whitelist,
+            "skill_refs": [str(t) for t in (expert.get("skill_refs") or package.skills)],
+            "mcp_refs": [str(t) for t in (expert.get("mcp_refs") or [])],
+            "suggested_prompts": [
+                str(t) for t in (expert.get("suggested_prompts") or [])
+            ],
             "model_provider_id": None,
             "knowledge_base_ids": list(expert.get("knowledge_base_ids") or []),
             "builtin": True,

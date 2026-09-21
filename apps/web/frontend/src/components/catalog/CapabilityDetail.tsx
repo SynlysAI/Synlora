@@ -21,8 +21,9 @@ import { useRouterStore } from '@/routing/router'
 import type { CapabilityKind } from '@/routing/route'
 import type { CapabilityDetail as Detail, CatalogItem, MyCapability } from '@/types'
 import { CardBadge } from './CapabilityCard'
+import ExpertEditor from './ExpertEditor'
+import SkillFilePreview from './SkillFilePreview'
 import {
-  ExpertModal,
   PluginEditConfigModal,
   PluginInstallModal,
   SkillModal,
@@ -126,6 +127,7 @@ export default function CapabilityDetail({
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [skillTab, setSkillTab] = useState<'overview' | 'files'>('overview')
   const [editing, setEditing] = useState<MyCapability | null | undefined>(undefined)
   const [configuring, setConfiguring] = useState<CatalogItem | null>(null)
   // 插件个人配置编辑（详情页：非敏感字段预填自 detail.config，敏感字段留空保持原值）
@@ -371,13 +373,41 @@ export default function CapabilityDetail({
                 <span className="text-xs text-[var(--sa-alias-label-caption)]">留空表示全部内置工具可用</span>
               )}
             </Section>
+            <Section title="能力编排">
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-wrap gap-2">
+                  {(detail.skill_refs ?? []).length > 0 ? <ChipList items={detail.skill_refs ?? []} /> : <span className="text-xs text-[var(--sa-alias-label-caption)]">未绑定技能</span>}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {(detail.mcp_refs ?? []).length > 0 ? <ChipList items={detail.mcp_refs ?? []} /> : <span className="text-xs text-[var(--sa-alias-label-caption)]">未绑定 MCP</span>}
+                </div>
+              </div>
+            </Section>
+            {(detail.suggested_prompts ?? []).length > 0 && (
+              <Section title="推荐问题">
+                <div className="flex flex-col gap-2">
+                  {(detail.suggested_prompts ?? []).map((prompt) => (
+                    <div key={prompt} className="rounded-[var(--sa-radius-sm)] bg-[var(--sa-alias-interactive-bg-hover)] px-3 py-2 text-[13px] text-[var(--sa-alias-label-primary)]">{prompt}</div>
+                  ))}
+                </div>
+              </Section>
+            )}
           </>
         )}
 
         {detail.kind === 'skill' && (
-          <Section title="技能正文（SKILL.md）">
-            <CodeBlock text={detail.content || '（空）'} />
-          </Section>
+          <>
+            <div className="flex gap-5 border-b border-[var(--sa-alias-border-l2)]">
+              {([['overview', '技能说明'], ['files', '文件']] as const).map(([key, label]) => (
+                <button key={key} type="button" onClick={() => setSkillTab(key)} className={`border-b-2 px-1 pb-2 text-sm ${skillTab === key ? 'border-[var(--sa-alias-link)] font-medium' : 'border-transparent text-[var(--sa-alias-label-secondary)]'}`}>{label}</button>
+              ))}
+            </div>
+            {skillTab === 'overview' ? (
+              <Section title="技能正文（SKILL.md）"><CodeBlock text={detail.content || '（空）'} /></Section>
+            ) : (
+              <SkillFilePreview skillName={detail.name} files={detail.files ?? []} />
+            )}
+          </>
         )}
 
         {detail.kind === 'plugin' && (
@@ -446,7 +476,7 @@ export default function CapabilityDetail({
         />
       )}
       {editing !== undefined && detail.kind === 'expert' && (
-        <ExpertModal
+        <ExpertEditor
           initial={editing}
           onClose={(changed) => {
             setEditing(undefined)

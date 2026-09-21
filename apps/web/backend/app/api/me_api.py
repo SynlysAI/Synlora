@@ -1,7 +1,8 @@
 """「我的」端点：用户自建技能与用户自建专家，以及已安装插件的个人视图。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user, validate_tool_whitelist
@@ -122,6 +123,64 @@ async def create_my_skill(request: Request, body: MySkillBody,
         raise HTTPException(422, str(exc)) from exc
 
 
+@router.post("/skills/import", status_code=201)
+async def import_my_skill(request: Request, file: UploadFile = File(...),
+                          user=Depends(get_current_user)) -> dict:
+    """上传 ZIP 技能目录包。
+
+    Args:
+        request: FastAPI 请求。
+        file: 包含 SKILL.md 的 ZIP 文件。
+        user: 当前用户。
+
+    Returns:
+        导入后的技能字典。
+    """
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(422, "仅支持 .zip 技能压缩包")
+    try:
+        return _skill_service(request).import_user_skill_zip(
+            user["sub"], await file.read())
+    except SkillNameTaken as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/skills/{name}/files")
+async def list_my_skill_files(request: Request, name: str,
+                              user=Depends(get_current_user)) -> list[dict]:
+    """列出当前用户可见技能的目录树。"""
+    files = _skill_service(request).list_skill_files(name, user_id=user["sub"])
+    if not files:
+        raise HTTPException(404, "技能不存在或没有可预览文件")
+    return files
+
+
+@router.get("/skills/{name}/file")
+async def read_my_skill_file(request: Request, name: str,
+                             path: str = Query(...),
+                             user=Depends(get_current_user)) -> dict:
+    """读取当前用户可见技能中的文本文件。"""
+    content = _skill_service(request).read_skill_file(
+        name, path, user_id=user["sub"])
+    if content is None:
+        raise HTTPException(404, "文件不存在或不支持文本预览")
+    return content
+
+
+@router.get("/skills/{name}/raw")
+async def raw_my_skill_file(request: Request, name: str,
+                            path: str = Query(...),
+                            user=Depends(get_current_user)) -> FileResponse:
+    """返回当前用户可见技能中的原始文件，供图片预览。"""
+    target = _skill_service(request).skill_file_path(
+        name, path, user_id=user["sub"])
+    if target is None:
+        raise HTTPException(404, "文件不存在或不可预览")
+    return FileResponse(target)
+
+
 @router.patch("/skills/{name}")
 async def update_my_skill(request: Request, name: str, body: MySkillUpdateBody,
                           user=Depends(get_current_user)) -> dict:
@@ -180,6 +239,9 @@ class MyExpertBody(BaseModel):
     description: str = ""
     system_prompt: str
     tool_whitelist: list[str] = []
+    skill_refs: list[str] = []
+    mcp_refs: list[str] = []
+    suggested_prompts: list[str] = []
 
 
 def _expert_service(request: Request):
@@ -198,6 +260,59 @@ def _expert_service(request: Request):
     if service is None:
         raise HTTPException(503, "专家服务未就绪")
     return service
+
+
+async def _validate_expert_refs(request: Request, user_id: str,
+                                skill_refs: list[str],
+                                mcp_refs: list[str]) -> None:
+    """校验专家引用的技能与 MCP 属于当前用户可用范围。
+
+    Args:
+        request: FastAPI 请求。
+        user_id: 当前用户 ID。
+        skill_refs: 专家绑定的技能名列表。
+        mcp_refs: 专家绑定的 MCP ID 列表。
+
+    Raises:
+        HTTPException: 引用不存在或当前用户不可用。
+    """
+    skill_service = _skill_service(request)
+    capability_service = get_capability_service(request)
+    hidden_skills = await capability_service.hidden_skill_names(user_id)
+    available_skills = {
+        str(item.get("name"))
+        for item in skill_service.list_skills(user_id)
+        if item.get("name") and item.get("name") not in hidden_skills
+    }
+    invalid_skills = sorted(set(skill_refs) - available_skills)
+    if invalid_skills:
+        raise HTTPException(422, f"不可用的技能: {', '.join(invalid_skills)}")
+
+    mcp_service = getattr(request.app.state, "mcp_service", None)
+    if mcp_refs and mcp_service is None:
+        raise HTTPException(503, "MCP 服务未就绪")
+    if mcp_service is not None:
+        available_mcps = {
+            str(item.get("id"))
+            for item in await mcp_service.list_for_user(user_id)
+        }
+        invalid_mcps = sorted(set(mcp_refs) - available_mcps)
+        if invalid_mcps:
+            raise HTTPException(422, f"不存在的 MCP: {', '.join(invalid_mcps)}")
+
+
+def _validate_expert_tools(tool_whitelist: list[str]) -> None:
+    """校验专家可用工具，允许引用运行期发现的 MCP 工具。
+
+    Args:
+        tool_whitelist: 专家配置的工具名列表。
+
+    Raises:
+        HTTPException: 包含未注册的内置工具名。
+    """
+    builtin_tools = [name for name in tool_whitelist
+                     if not str(name).startswith("mcp.")]
+    validate_tool_whitelist(builtin_tools)
 
 
 @router.get("/experts")
@@ -272,12 +387,17 @@ async def create_my_expert(request: Request, body: MyExpertBody,
     svc = _expert_service(request)
     # 自建专家与管理员助手共用同一份工具白名单校验：白名单是替换语义，
     # 未注册的工具名会被运行期静默丢弃，最终专家一个工具都没有
-    validate_tool_whitelist(body.tool_whitelist)
+    _validate_expert_tools(body.tool_whitelist)
+    await _validate_expert_refs(
+        request, user["sub"], body.skill_refs, body.mcp_refs)
     try:
         expert = await svc.write(
             user["sub"], dir_name=body.name, name=body.name, avatar=body.avatar,
             description=body.description, system_prompt=body.system_prompt,
-            tool_whitelist=body.tool_whitelist)
+            tool_whitelist=body.tool_whitelist,
+            skill_refs=body.skill_refs,
+            mcp_refs=body.mcp_refs,
+            suggested_prompts=body.suggested_prompts)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"id": expert["_id"], "name": expert["name"]}
@@ -305,12 +425,17 @@ async def update_my_expert(request: Request, expert_id: str, body: MyExpertBody,
     current = await svc.get_own(user_id, expert_id)
     if current is None:
         raise HTTPException(404, "专家不存在或不可编辑")
-    validate_tool_whitelist(body.tool_whitelist)
+    _validate_expert_tools(body.tool_whitelist)
+    await _validate_expert_refs(
+        request, user_id, body.skill_refs, body.mcp_refs)
     try:
         expert = await svc.write(
             user_id, dir_name=current["dir_name"], name=body.name,
             avatar=body.avatar, description=body.description,
-            system_prompt=body.system_prompt, tool_whitelist=body.tool_whitelist)
+            system_prompt=body.system_prompt, tool_whitelist=body.tool_whitelist,
+            skill_refs=body.skill_refs,
+            mcp_refs=body.mcp_refs,
+            suggested_prompts=body.suggested_prompts)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"id": expert["_id"], "name": expert["name"]}

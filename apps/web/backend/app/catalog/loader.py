@@ -85,6 +85,9 @@ class ExpertPackage:
         description: 描述。
         system_prompt: 人设提示词。
         tool_whitelist: 该专家可用的工具名列表。
+        skill_refs: 默认绑定的技能名列表。
+        mcp_refs: 默认绑定的 MCP ID 列表。
+        suggested_prompts: 推荐问题列表。
         directory: 包目录绝对路径。
     """
 
@@ -94,6 +97,9 @@ class ExpertPackage:
     description: str
     system_prompt: str
     tool_whitelist: list[str]
+    skill_refs: list[str]
+    mcp_refs: list[str]
+    suggested_prompts: list[str]
     directory: Path
 
 
@@ -232,6 +238,11 @@ def _scan_experts(root: Path) -> dict[str, ExpertPackage]:
             description=str(data.get("description") or ""),
             system_prompt=str(data["system_prompt"]),
             tool_whitelist=[str(t) for t in (data.get("tool_whitelist") or [])],
+            skill_refs=[str(t) for t in (data.get("skill_refs") or [])],
+            mcp_refs=[str(t) for t in (data.get("mcp_refs") or [])],
+            suggested_prompts=[
+                str(t) for t in (data.get("suggested_prompts") or [])
+            ],
             directory=entry,
         )
     return out

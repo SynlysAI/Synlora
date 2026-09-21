@@ -21,6 +21,7 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "runs": ["session_id", "user_id", "status"],
     "local_users": ["username"],
     "plugin_configs": [],  # 插件配置：仅按 _id 读写与全量列举，无需提取索引列
+    "mcp_connections": ["user_id"],  # 用户 MCP 连接：按 user_id 列举
     "catalog_policy": [],
     "user_capabilities": ["user_id"],  # 安装记录：按 user_id 过滤列举
     "jobs": ["session_id", "user_id"],  # 后台任务：按会话/用户检索（状态筛选在服务层，不走 store）
