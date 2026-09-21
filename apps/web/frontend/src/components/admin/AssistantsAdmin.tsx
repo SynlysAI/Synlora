@@ -33,6 +33,9 @@ interface AssistantForm {
   systemPrompt: string
   modelProviderId: string
   toolWhitelist: string[]
+  skillRefs: string[]
+  mcpRefs: string[]
+  suggestedPrompts: string[]
   knowledgeBaseIds: string[]
 }
 
@@ -44,6 +47,9 @@ const EMPTY_FORM: AssistantForm = {
   systemPrompt: '',
   modelProviderId: '',
   toolWhitelist: [],
+  skillRefs: [],
+  mcpRefs: [],
+  suggestedPrompts: [''],
   knowledgeBaseIds: [],
 }
 
@@ -84,6 +90,11 @@ function AssistantFormModal({
             systemPrompt: editing.system_prompt,
             modelProviderId: editing.model_provider_id ?? '',
             toolWhitelist: editing.tool_whitelist,
+            skillRefs: editing.skill_refs ?? [],
+            mcpRefs: editing.mcp_refs ?? [],
+            suggestedPrompts: editing.suggested_prompts?.length
+              ? editing.suggested_prompts
+              : [''],
             knowledgeBaseIds: editing.knowledge_base_ids ?? [],
           }
         : EMPTY_FORM,
@@ -93,6 +104,8 @@ function AssistantFormModal({
   /** 知识库选项（打开表单时拉一次；失败不阻塞编辑，仅提示）。 */
   const [kbs, setKbs] = useState<KnowledgeBase[] | null>(null)
   const [kbError, setKbError] = useState('')
+  const skills = useAdminStore((state) => state.skills)
+  const loadSkills = useAdminStore((state) => state.loadSkills)
 
   useEffect(() => {
     let cancelled = false
@@ -107,6 +120,10 @@ function AssistantFormModal({
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    loadSkills().catch(() => undefined)
+  }, [loadSkills])
 
   /** 工具勾选切换。 */
   const toggleTool = (tool: string, checked: boolean) => {
@@ -140,6 +157,9 @@ function AssistantFormModal({
       description: form.description.trim(),
       system_prompt: form.systemPrompt,
       tool_whitelist: TOOL_NAMES.filter((t) => form.toolWhitelist.includes(t)),
+      skill_refs: form.skillRefs,
+      mcp_refs: form.mcpRefs,
+      suggested_prompts: form.suggestedPrompts.map((item) => item.trim()).filter(Boolean),
       model_provider_id: form.modelProviderId || null,
       knowledge_base_ids: form.knowledgeBaseIds,
     }
@@ -263,6 +283,110 @@ function AssistantFormModal({
                 </span>
               </label>
             ))}
+          </div>
+        </div>
+
+        <div className={labelClass}>
+          <div className="flex items-center justify-between">
+            <span>绑定技能</span>
+            <span className="text-xs text-[var(--sa-alias-label-caption)]">
+              已选 {form.skillRefs.length}
+            </span>
+          </div>
+          {skills.length === 0 ? (
+            <span className="text-xs text-[var(--sa-alias-label-caption)]">暂无可用技能</span>
+          ) : (
+            <div className="grid max-h-36 grid-cols-2 gap-1.5 overflow-y-auto rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] p-2.5 sm:grid-cols-3">
+              {skills.map((skill) => (
+                <label key={skill.name} className="flex min-w-0 items-start gap-2 text-[13px]">
+                  <input
+                    type="checkbox"
+                    checked={form.skillRefs.includes(skill.name)}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        skillRefs: event.target.checked
+                          ? [...current.skillRefs, skill.name]
+                          : current.skillRefs.filter((item) => item !== skill.name),
+                      }))
+                    }
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--sa-alias-button-primary-fill)]"
+                  />
+                  <span className="min-w-0 truncate" title={skill.description}>
+                    {skill.name}
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <label className={labelClass}>
+          MCP 引用
+          <input
+            type="text"
+            value={form.mcpRefs.join(', ')}
+            onChange={(event) =>
+              setForm((current) => ({
+                ...current,
+                mcpRefs: event.target.value.split(',').map((item) => item.trim()).filter(Boolean),
+              }))
+            }
+            placeholder="逗号分隔 MCP ID，例如 literature-server"
+            className={inputClass}
+          />
+          <span className="text-xs text-[var(--sa-alias-label-caption)]">
+            这里只保存 MCP ID，不读取或保存凭证；运行时按当前用户可访问的 MCP 连接解析。
+          </span>
+        </label>
+
+        <div className={labelClass}>
+          <span>推荐问题</span>
+          <div className="flex flex-col gap-2">
+            {form.suggestedPrompts.map((prompt, index) => (
+              <div key={index} className="flex gap-2">
+                <input
+                  type="text"
+                  value={prompt}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      suggestedPrompts: current.suggestedPrompts.map((item, itemIndex) =>
+                        itemIndex === index ? event.target.value : item,
+                      ),
+                    }))
+                  }
+                  placeholder="例如：帮我分析这组实验数据"
+                  className={inputClass}
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      suggestedPrompts: current.suggestedPrompts.filter(
+                        (_, itemIndex) => itemIndex !== index,
+                      ),
+                    }))
+                  }
+                  className={secondaryButtonClass}
+                >
+                  移除
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() =>
+                setForm((current) => ({
+                  ...current,
+                  suggestedPrompts: [...current.suggestedPrompts, ''],
+                }))
+              }
+              className={`${secondaryButtonClass} self-start`}
+            >
+              + 添加问题
+            </button>
           </div>
         </div>
 

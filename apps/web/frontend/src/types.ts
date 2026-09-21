@@ -64,6 +64,12 @@ export interface Assistant {
   system_prompt: string
   model_provider_id: string | null
   tool_whitelist: string[]
+  /** 管理员或用户编排时绑定的技能名。 */
+  skill_refs?: string[]
+  /** 平台/用户 MCP 引用 ID；凭证不会出现在助手响应中。 */
+  mcp_refs?: string[]
+  /** 对话开始时展示的推荐问题。 */
+  suggested_prompts?: string[]
   knowledge_base_ids?: string[]
   builtin: boolean
   model_name: string | null

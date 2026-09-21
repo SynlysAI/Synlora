@@ -59,9 +59,12 @@ function FileTree({
 export default function SkillFilePreview({
   skillName,
   files,
+  apiPrefix = '/api/v1/me/skills',
 }: {
   skillName: string
   files: SkillFile[]
+  /** 文件读取 API 前缀；管理员技能使用 /api/v1/skills。 */
+  apiPrefix?: string
 }) {
   const firstFile = useMemo(() => {
     const find = (nodes: SkillFile[]): SkillFile | undefined => {
@@ -98,12 +101,12 @@ export default function SkillFilePreview({
       try {
         if (isImage(selected)) {
           objectUrl = await fetchBlobUrl(
-            `/api/v1/me/skills/${encodeURIComponent(skillName)}/raw?path=${encodeURIComponent(selected)}`,
+            `${apiPrefix}/${encodeURIComponent(skillName)}/raw?path=${encodeURIComponent(selected)}`,
           )
           if (active) setImageUrl(objectUrl)
         } else {
           const result = await api<{ content: string }>(
-            `/api/v1/me/skills/${encodeURIComponent(skillName)}/file?path=${encodeURIComponent(selected)}`,
+            `${apiPrefix}/${encodeURIComponent(skillName)}/file?path=${encodeURIComponent(selected)}`,
           )
           if (active) setContent(result.content)
         }
@@ -118,7 +121,7 @@ export default function SkillFilePreview({
       active = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [selected, skillName])
+  }, [apiPrefix, selected, skillName])
 
   return (
     <div className="grid min-h-[360px] overflow-hidden rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] md:grid-cols-[240px_minmax(0,1fr)]">

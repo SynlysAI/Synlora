@@ -345,6 +345,74 @@ class SkillService:
             shutil.copytree(package_root, target)
             return {**parsed, "builtin": False, "source": "user"}
 
+    def import_public_skill_zip(self, archive: bytes) -> dict:
+        """从 ZIP 压缩包导入一个公共技能目录。
+
+        Args:
+            archive: ZIP 文件字节。
+
+        Returns:
+            导入后的技能字典。
+
+        Raises:
+            ValueError: 压缩包格式、结构或内容不合法。
+            SkillNameTaken: 技能名已被任一来源占用。
+        """
+        if not archive or len(archive) > MAX_SKILL_ARCHIVE_BYTES:
+            raise ValueError("技能压缩包为空或超过 20 MB")
+        try:
+            package = zipfile.ZipFile(io.BytesIO(archive))
+        except zipfile.BadZipFile as exc:
+            raise ValueError("不是有效的 ZIP 压缩包") from exc
+
+        with package, tempfile.TemporaryDirectory(prefix="synlora-public-skill-") as temp:
+            temp_root = Path(temp)
+            members = package.infolist()
+            if not members or len(members) > MAX_SKILL_ARCHIVE_FILES:
+                raise ValueError("技能压缩包文件数量不合法")
+            extracted_bytes = 0
+            for member in members:
+                relative = PurePosixPath(member.filename)
+                if (relative.is_absolute() or ".." in relative.parts
+                        or not relative.parts or "\\" in member.filename):
+                    raise ValueError(f"压缩包包含非法路径: {member.filename}")
+                mode = member.external_attr >> 16
+                if stat.S_ISLNK(mode):
+                    raise ValueError(f"压缩包不允许符号链接: {member.filename}")
+                extracted_bytes += member.file_size
+                if extracted_bytes > MAX_SKILL_EXTRACTED_BYTES:
+                    raise ValueError("技能压缩包解压后超过 80 MB")
+                target = (temp_root / Path(*relative.parts)).resolve()
+                try:
+                    target.relative_to(temp_root.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"压缩包包含非法路径: {member.filename}") from exc
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with package.open(member) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+
+            package_root = self._find_import_root(temp_root)
+            if not self._directory_is_safe(package_root):
+                raise ValueError("技能包包含链接或不可读取文件")
+            try:
+                parsed = parse_skill_md(
+                    (package_root / "SKILL.md").read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError) as exc:
+                raise ValueError(f"SKILL.md 不合法: {exc}") from exc
+            name = parsed["name"]
+            if package_root != temp_root and package_root.name != name:
+                raise ValueError("技能目录名必须与 SKILL.md 的 name 一致")
+            if self.name_taken(name) is not None:
+                raise SkillNameTaken(f"「{name}」已存在，请换一个名字")
+
+            target = self.skills_dir / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(package_root, target)
+            return {**parsed, "builtin": False, "source": "public"}
+
     def update_user_skill(self, user_id: str, name: str, *, description: str,
                           content: str, version: str = "1.0", author: str = "",
                           tags: list[str] | None = None,
@@ -681,6 +749,27 @@ class SkillService:
         if not target.is_file() or target.stat().st_size > MAX_SKILL_PREVIEW_BYTES:
             return None
         return target
+
+    def export_skill_zip(self, name: str,
+                         user_id: str | None = None) -> bytes | None:
+        """把技能目录打包为 ZIP，供管理端或用户侧完整导出。
+
+        Args:
+            name: 技能名。
+            user_id: 用户 sub；用于按用户根优先解析技能。
+
+        Returns:
+            ZIP 文件字节；技能不存在或目录不安全时返回 None。
+        """
+        directory = self.skill_directory(name, user_id=user_id)
+        if directory is None or not self._directory_is_safe(directory):
+            return None
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(directory.rglob("*")):
+                if path.is_file():
+                    archive.write(path, path.relative_to(directory).as_posix())
+        return buffer.getvalue()
 
     @staticmethod
     def _find_import_root(temp_root: Path) -> Path:

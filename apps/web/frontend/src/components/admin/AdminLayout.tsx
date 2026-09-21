@@ -18,7 +18,7 @@ const TABS: Array<{ key: AdminTab; label: string }> = [
   { key: 'models', label: '模型服务' },
   { key: 'assistants', label: '助手管理' },
   { key: 'skills', label: '技能管理' },
-  { key: 'plugins', label: '插件' },
+  { key: 'plugins', label: '扩展管理' },
 ]
 
 /** 无权限页：仅管理员可访问的直链兜底。 */

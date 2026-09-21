@@ -1,7 +1,7 @@
 /**
- * 插件管理页（#/admin/plugins，仅 admin）。
+ * 扩展管理页（#/admin/plugins，仅 admin）。
  *
- * 插件是随包发布的工具扩展包（扫描插件目录 manifest 得到），安装/配置
+ * 扩展是随包发布的平台插件包（扫描插件目录 manifest 得到），安装/配置
  * 均写加密配置库；页面按插件 config_schema 动态渲染配置表单：
  * 敏感字段（secret）加密存储、接口永不回明文，已配置时输入框留空表示
  * 保持原值（对应 secrets_set[key]）。
@@ -231,9 +231,10 @@ export default function PluginsAdmin() {
       {/* 页头 */}
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">插件</h2>
+          <h2 className="text-2xl font-semibold leading-9 text-[var(--sa-alias-label-primary)]">扩展管理</h2>
           <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
-            内置插件包的工具扩展；按插件声明的 schema 配置，敏感字段加密存储、永不明文回显。
+            管理平台级插件、公共配置和能力目录策略；附属技能、专家与工具统一在扩展内查看。
+            普通用户的个人 MCP 接入与凭证不在此管理。
           </p>
         </div>
       </div>
@@ -288,7 +289,7 @@ export default function PluginsAdmin() {
         ))}
         {loaded && plugins.length === 0 && (
           <div className="px-4 py-10 text-center text-[13px] text-[var(--sa-alias-label-caption)]">
-            暂无可用插件
+            暂无可用平台扩展
           </div>
         )}
       </div>

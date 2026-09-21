@@ -1,8 +1,8 @@
 """技能 API：全局技能目录的增删改查 + SKILL.md 导入导出。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user, require_admin
@@ -82,6 +82,107 @@ async def export_skill(request: Request, name: str, user=Depends(get_current_use
     raise HTTPException(status_code=404, detail="技能不存在")
 
 
+@router.get("/{name}/files")
+async def list_skill_files(request: Request, name: str,
+                           user=Depends(require_admin)):
+    """列出公共技能的目录树。
+
+    Args:
+        request: FastAPI 请求。
+        name: 技能名。
+        user: 当前登录用户（须为管理员）。
+
+    Returns:
+        技能文件树；技能不存在时返回 404。
+    """
+    files = request.app.state.skill_service.list_skill_files(name)
+    if not files:
+        raise HTTPException(status_code=404, detail="技能不存在或没有文件")
+    return files
+
+
+@router.get("/{name}/export-zip")
+async def export_skill_zip(request: Request, name: str,
+                           user=Depends(require_admin)):
+    """导出公共技能完整目录 ZIP。
+
+    Args:
+        request: FastAPI 请求。
+        name: 技能名。
+        user: 当前登录用户（须为管理员）。
+
+    Returns:
+        ZIP 文件响应。
+    """
+    content = request.app.state.skill_service.export_skill_zip(name)
+    if content is None:
+        raise HTTPException(status_code=404, detail="技能不存在")
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+    )
+
+
+@router.get("/{name}/file")
+async def read_skill_file(request: Request, name: str, path: str,
+                         user=Depends(require_admin)):
+    """读取公共技能中的文本文件或返回图片预览。
+
+    Args:
+        request: FastAPI 请求。
+        name: 技能名。
+        path: 技能目录内的相对路径。
+        user: 当前登录用户（须为管理员）。
+
+    Returns:
+        文本 JSON 或图片文件响应。
+    """
+    service = request.app.state.skill_service
+    preview = service.read_skill_file(name, path)
+    if preview is not None:
+        return preview
+    target = service.skill_file_path(name, path)
+    if target is None or not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在或不可预览")
+    if target.stat().st_size > 2 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="文件超过预览大小限制")
+    media_type = {
+        ".gif": "image/gif", ".jpeg": "image/jpeg", ".jpg": "image/jpeg",
+        ".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp",
+    }.get(target.suffix.lower())
+    if not media_type:
+        raise HTTPException(status_code=415, detail="文件类型不支持预览")
+    return FileResponse(target, media_type=media_type)
+
+
+@router.get("/{name}/raw")
+async def raw_skill_file(request: Request, name: str, path: str,
+                         user=Depends(require_admin)):
+    """返回公共技能中的图片原始内容。
+
+    Args:
+        request: FastAPI 请求。
+        name: 技能名。
+        path: 技能目录内的图片相对路径。
+        user: 当前登录用户（须为管理员）。
+
+    Returns:
+        图片文件响应。
+    """
+    service = request.app.state.skill_service
+    target = service.skill_file_path(name, path)
+    if target is None or not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在或不可预览")
+    media_type = {
+        ".gif": "image/gif", ".jpeg": "image/jpeg", ".jpg": "image/jpeg",
+        ".png": "image/png", ".svg": "image/svg+xml", ".webp": "image/webp",
+    }.get(target.suffix.lower())
+    if not media_type:
+        raise HTTPException(status_code=415, detail="文件类型不支持图片预览")
+    return FileResponse(target, media_type=media_type)
+
+
 @router.post("", status_code=201)
 async def create_skill(request: Request, body: SkillBody, user=Depends(require_admin)):
     """新建技能（写 {data_root}/public/skills/<name>/SKILL.md，管理员公共层）。
@@ -102,6 +203,26 @@ async def create_skill(request: Request, body: SkillBody, user=Depends(require_a
             name=body.name, description=body.description, content=body.content,
             version=body.version, author=body.author,
             tags=body.tags, allowed_tools=body.allowed_tools)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/import-zip", status_code=201)
+async def import_skill_zip(request: Request, file: UploadFile = File(...),
+                           user=Depends(require_admin)):
+    """导入公共技能 ZIP 压缩包。
+
+    Args:
+        request: FastAPI 请求。
+        file: 包含技能目录和 SKILL.md 的 ZIP 文件。
+        user: 当前登录用户（须为管理员）。
+
+    Returns:
+        导入后的技能字典。
+    """
+    try:
+        archive = await file.read()
+        return request.app.state.skill_service.import_public_skill_zip(archive)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

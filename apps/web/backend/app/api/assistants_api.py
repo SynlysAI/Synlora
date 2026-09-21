@@ -36,6 +36,26 @@ async def _validate_provider(provider_id: str, repos: Repos) -> None:
         raise HTTPException(422, f"模型服务已停用: {doc.get('name', provider_id)}")
 
 
+def _validate_skill_refs(request: Request, skill_refs: list[str]) -> None:
+    """校验助手绑定的技能引用均来自当前技能目录。
+
+    Args:
+        request: FastAPI 请求，用于读取技能服务。
+        skill_refs: 助手绑定的技能名列表。
+
+    Raises:
+        HTTPException: 存在不存在的技能引用时返回 422。
+    """
+    skill_service = getattr(request.app.state, "skill_service", None)
+    if skill_service is None:
+        return
+    available = {str(item.get("name")) for item in skill_service.list_skills()}
+    invalid = sorted({str(item).strip() for item in skill_refs if str(item).strip()}
+                     - available)
+    if invalid:
+        raise HTTPException(422, f"技能不存在: {', '.join(invalid)}")
+
+
 class AssistantCreateBody(BaseModel):
     """新建助手请求体。"""
 
@@ -137,7 +157,8 @@ async def list_assistants(request: Request, user=Depends(get_current_user),
 
 
 @router.post("", status_code=201)
-async def create_assistant(body: AssistantCreateBody, user=Depends(require_admin),
+async def create_assistant(request: Request, body: AssistantCreateBody,
+                           user=Depends(require_admin),
                            repos=Depends(get_repos)) -> dict:
     """新建助手（require_admin；builtin 恒为 False）。
 
@@ -145,6 +166,7 @@ async def create_assistant(body: AssistantCreateBody, user=Depends(require_admin
         HTTPException: 工具白名单/模型服务引用非法（422）。
     """
     validate_tool_whitelist(body.tool_whitelist)
+    _validate_skill_refs(request, body.skill_refs)
     if body.model_provider_id:
         await _validate_provider(body.model_provider_id, repos)
     return await repos.assistant.create({
@@ -163,7 +185,8 @@ async def create_assistant(body: AssistantCreateBody, user=Depends(require_admin
 
 
 @router.patch("/{assistant_id}")
-async def update_assistant(assistant_id: str, body: AssistantUpdateBody,
+async def update_assistant(request: Request, assistant_id: str,
+                           body: AssistantUpdateBody,
                            user=Depends(require_admin),
                            repos=Depends(get_repos)) -> dict:
     """更新助手（require_admin；仅校验提供的字段）。
@@ -190,6 +213,7 @@ async def update_assistant(assistant_id: str, body: AssistantUpdateBody,
         validate_tool_whitelist(body.tool_whitelist)
         fields["tool_whitelist"] = body.tool_whitelist
     if body.skill_refs is not None:
+        _validate_skill_refs(request, body.skill_refs)
         fields["skill_refs"] = body.skill_refs
     if body.mcp_refs is not None:
         fields["mcp_refs"] = body.mcp_refs

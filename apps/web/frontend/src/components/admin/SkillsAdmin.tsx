@@ -10,7 +10,8 @@
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { api, getToken } from '@/api/client'
-import type { CatalogItem, Skill } from '@/types'
+import type { CatalogItem, Skill, SkillFile } from '@/types'
+import SkillFilePreview from '@/components/catalog/SkillFilePreview'
 import { toast } from '@/stores/toasts'
 import { useAdminStore } from '@/stores/admin'
 import { CatalogPolicySwitches, FormError, GrayBadge, Modal } from './shared'
@@ -274,6 +275,108 @@ function SkillImportModal({
   )
 }
 
+/** ZIP 技能目录导入模态：上传完整目录包，服务端写入公共技能层。 */
+function SkillZipImportModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void
+  onDone: (message: string) => void
+}) {
+  const [file, setFile] = useState<File | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  /** 提交 ZIP 文件并刷新管理员公共技能列表。 */
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!file || saving) return
+    setSaving(true)
+    setError('')
+    const form = new FormData()
+    form.append('file', file)
+    try {
+      const created = await api<Skill>('/api/v1/skills/import-zip', {
+        method: 'POST',
+        form,
+      })
+      onDone(`已导入 ${created.name}`)
+    } catch (err) {
+      setError(errorText(err))
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal title="上传技能目录 ZIP" onClose={onClose}>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <label className={labelClass}>
+          技能目录包
+          <input
+            type="file"
+            accept=".zip,application/zip"
+            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            className={`${inputClass} file:mr-3 file:rounded file:border-0 file:bg-[var(--sa-alias-interactive-bg-hover)] file:px-2 file:py-1 file:text-xs`}
+          />
+          <span className="text-xs text-[var(--sa-alias-label-caption)]">
+            ZIP 根目录或唯一一级子目录必须包含 SKILL.md，最大 20 MB；支持附带脚本、模板和图片。
+          </span>
+        </label>
+        {file && (
+          <p className="text-xs text-[var(--sa-alias-label-secondary)]">已选择：{file.name}</p>
+        )}
+        {error && <FormError>{error}</FormError>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className={secondaryButtonClass}>
+            取消
+          </button>
+          <button type="submit" disabled={!file || saving} className={primaryButtonClass}>
+            {saving ? '上传中…' : '上传并导入'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+/** 管理员技能目录预览模态：左侧文件树、右侧文本或图片预览。 */
+function SkillPreviewModal({
+  skill,
+  onClose,
+}: {
+  skill: Skill
+  onClose: () => void
+}) {
+  const [files, setFiles] = useState<SkillFile[]>([])
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let active = true
+    api<SkillFile[]>(`/api/v1/skills/${encodeURIComponent(skill.name)}/files`)
+      .then((items) => {
+        if (active) setFiles(items)
+      })
+      .catch((err) => {
+        if (active) setError(errorText(err))
+      })
+    return () => {
+      active = false
+    }
+  }, [skill.name])
+
+  return (
+    <Modal title={`预览技能 · ${skill.name}`} onClose={onClose}>
+      {error ? (
+        <FormError>{error}</FormError>
+      ) : files.length === 0 ? (
+        <p className="text-sm text-[var(--sa-alias-label-caption)]">加载文件目录…</p>
+      ) : (
+        <SkillFilePreview skillName={skill.name} files={files} apiPrefix="/api/v1/skills" />
+      )}
+    </Modal>
+  )
+}
+
 /** 技能管理页组件。 */
 export default function SkillsAdmin() {
   const allSkills = useAdminStore((s) => s.skills)
@@ -287,6 +390,10 @@ export default function SkillsAdmin() {
   const [editing, setEditing] = useState<Skill | 'new' | null>(null)
   /** 导入模态开关。 */
   const [importing, setImporting] = useState(false)
+  /** ZIP 导入模态开关。 */
+  const [importingZip, setImportingZip] = useState(false)
+  /** 当前打开文件预览的技能。 */
+  const [previewing, setPreviewing] = useState<Skill | null>(null)
   /** 删除二次确认中的技能名。 */
   const [confirmingName, setConfirmingName] = useState<string | null>(null)
   /** 导出中的技能名（按钮转圈/禁用）。 */
@@ -344,12 +451,12 @@ export default function SkillsAdmin() {
     }
   }
 
-  /** 导出：带 Bearer 取 SKILL.md 原文 blob 后本地保存（照 FileTree.handleDownload）。 */
+  /** 导出完整技能目录 ZIP，保留 SKILL.md、脚本、模板和图片。 */
   const handleExport = async (s: Skill) => {
     setExportingName(s.name)
     try {
       const token = getToken()
-      const resp = await fetch(`/api/v1/skills/${s.name}/export`, {
+      const resp = await fetch(`/api/v1/skills/${encodeURIComponent(s.name)}/export-zip`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -357,7 +464,7 @@ export default function SkillsAdmin() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${s.name}-SKILL.md`
+      a.download = `${s.name}.zip`
       a.click()
       URL.revokeObjectURL(url)
     } catch (err) {
@@ -382,6 +489,9 @@ export default function SkillsAdmin() {
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={() => setImporting(true)} className={secondaryButtonClass}>
             导入 SKILL.md
+          </button>
+          <button type="button" onClick={() => setImportingZip(true)} className={secondaryButtonClass}>
+            上传 ZIP
           </button>
           <button type="button" onClick={() => setEditing('new')} className={primaryButtonClass}>
             + 新建
@@ -426,6 +536,13 @@ export default function SkillsAdmin() {
                 className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)] disabled:opacity-60"
               >
                 {exportingName === s.name ? '导出中' : '导出'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreviewing(s)}
+                className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
+              >
+                预览
               </button>
               <button
                 type="button"
@@ -504,6 +621,19 @@ export default function SkillsAdmin() {
           }}
         />
       )}
+
+      {importingZip && (
+        <SkillZipImportModal
+          onClose={() => setImportingZip(false)}
+          onDone={async (message) => {
+            setImportingZip(false)
+            toast('success', message)
+            await loadSkills()
+          }}
+        />
+      )}
+
+      {previewing && <SkillPreviewModal skill={previewing} onClose={() => setPreviewing(null)} />}
     </div>
   )
 }
