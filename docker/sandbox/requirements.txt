@@ -1,7 +1,10 @@
 # python.run 沙箱镜像依赖（与内置技能声明对齐，勿随意删减）：
-# office-doc: docx/pptx/openpyxl/pandas/matplotlib
-# data-analysis: pandas/matplotlib
-# pdf-extraction: pypdf/pdfplumber
+# docx/xlsx/pptx: python-docx/python-pptx/openpyxl/pandas/matplotlib
+# exploratory-data-analysis/statistical-analysis: pandas/matplotlib/scipy/statsmodels/seaborn
+# pdf: pypdf/pdfplumber/reportlab
+# rdkit: rdkit
+# experimental-design: pyDOE3
+# uncertainty-and-units: pint
 pandas>=2.2
 matplotlib>=3.9
 openpyxl>=3.1
@@ -10,3 +13,9 @@ python-pptx>=0.6
 pypdf>=4.0
 pdfplumber>=0.11
 scipy>=1.13
+statsmodels>=0.14
+seaborn>=0.13
+reportlab>=4.0
+rdkit>=2024.3
+pyDOE3>=1.0
+pint>=0.24

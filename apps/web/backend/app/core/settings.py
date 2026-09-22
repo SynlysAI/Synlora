@@ -7,6 +7,11 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# 通过模块位置推导仓库根，避免相对路径受启动 cwd 影响。
+PROJECT_ROOT = Path(__file__).resolve().parents[5]
+RUNTIME_DATA_DIR = PROJECT_ROOT / ".runtime" / "data"
+
+
 class Settings(BaseSettings):
     """全局配置项。
 
@@ -14,12 +19,13 @@ class Settings(BaseSettings):
         storage_backend: 存储后端（mongodb|sqlite）。
         mongodb_uri: Mongo 连接串（backend=mongodb 时必填）。
         mongodb_db: 业务库名。
-        sqlite_path: SQLite 文件路径。
+        sqlite_path: SQLite 文件路径，默认在项目根 `.runtime/data/synlys_agent.db`。
         auth_secret: 与 AI4MS 共享的 HMAC secret（为空时按门户规则派生）。
         auth_enabled: 关闭后匿名放行（仅开发）。
         dev_auth_token: sqlite 开发模式的固定 token。
         host/port: 监听地址。
-        data_dir: 运行数据根（users/<uid>/workspaces、skills 等）。
+        data_dir: 运行数据根（users/<uid>/workspaces、skills 等），默认为项目根
+            `.runtime/data`；可在 .env 显式覆盖。
         http_allowed_hosts: http.request 工具白名单（逗号分隔）。
         fernet_key: provider api_key 加密 key。
         user_quota_bytes: 每用户工作区配额。
@@ -44,13 +50,13 @@ class Settings(BaseSettings):
     storage_backend: str = "sqlite"
     mongodb_uri: str = ""
     mongodb_db: str = "synlys_agent"
-    sqlite_path: str = "../data/synlys_agent.db"
+    sqlite_path: str = str(RUNTIME_DATA_DIR / "synlys_agent.db")
     auth_secret: str = ""
     auth_enabled: bool = True
     dev_auth_token: str = ""
     host: str = "0.0.0.0"
     port: int = 8005
-    data_dir: str = "../data"
+    data_dir: str = str(RUNTIME_DATA_DIR)
     http_allowed_hosts: str = ""
     fernet_key: str = ""
     user_quota_bytes: int = 1_073_741_824

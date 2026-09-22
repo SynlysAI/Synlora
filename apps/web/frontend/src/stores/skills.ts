@@ -23,7 +23,9 @@ export const useSkillsStore = create<SkillsState>((set) => ({
   loaded: false,
 
   load: async () => {
-    const skills = await api<Skill[]>('/api/v1/skills')
+    // scope=usable：对话可用集（内置默认启用 + 已安装启用 + 自建/公共层），
+    // 不分角色——管理员在对话面板也只看到可用技能，全量口径留给管理页
+    const skills = await api<Skill[]>('/api/v1/skills?scope=usable')
     set({ skills, loaded: true })
   },
 }))

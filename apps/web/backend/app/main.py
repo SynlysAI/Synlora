@@ -26,7 +26,7 @@ from app.catalog.api import router as catalog_router
 from app.catalog.items import CatalogService
 from app.catalog.loader import catalog_roots, scan_catalog
 from app.catalog.policy import CatalogPolicyRepo
-from app.catalog.seed import seed_experts
+from app.catalog.seed import seed_experts, seed_skill_policies
 from app.catalog.service import CapabilityService
 from app.catalog.user_caps import UserCapabilityRepo
 from app.core.settings import Settings
@@ -175,6 +175,7 @@ async def lifespan(app: FastAPI):
     app.state.job_poller = JobPoller(app.state.job_service)
     await app.state.job_poller.start()
     await seed_experts(store, index.experts)
+    await seed_skill_policies(store, index.skills)
     yield
     await app.state.job_poller.stop()
     if app.state.sandbox_job_runner is not None:

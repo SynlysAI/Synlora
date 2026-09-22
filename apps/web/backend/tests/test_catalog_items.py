@@ -29,16 +29,18 @@ def test_items_come_from_catalog(tmp_path):
     """三类条目均来自 catalog/（专家不再来自代码常量、技能不再来自内置名单）。"""
     svc = _service(tmp_path)
     assert {i.id for i in svc.list_items("expert")} == {"asst-research", "asst-data"}
-    assert {i.id for i in svc.list_items("skill")} == {
-        "data-analysis", "pdf-extraction", "office-doc"}
+    # 技能库随 catalog/skills 目录扩展（官方技能 12 个），锚定代表条目
+    skill_ids = {i.id for i in svc.list_items("skill")}
+    assert {"docx", "xlsx", "pptx", "pdf", "exploratory-data-analysis",
+            "rdkit", "matplotlib", "uncertainty-and-units"} <= skill_ids
     assert "spec_agent" in {i.id for i in svc.list_items("plugin")}
 
 
 def test_skill_description_comes_from_skill_md(tmp_path):
     """技能条目的 description 取自 SKILL.md frontmatter（单一来源）。"""
     svc = _service(tmp_path)
-    office = next(i for i in svc.list_items("skill") if i.id == "office-doc")
-    assert "生成 Word" in office.description
+    docx = next(i for i in svc.list_items("skill") if i.id == "docx")
+    assert "Word" in docx.description
 
 
 def test_unknown_kind_returns_empty(tmp_path):

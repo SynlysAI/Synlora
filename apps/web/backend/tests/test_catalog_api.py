@@ -17,9 +17,10 @@ def client(monkeypatch, tmp_path):
 
 
 HEADERS = {"Authorization": "Bearer devtok"}
-# 用真实的内置目录条目（catalog/skills/data-analysis）：
-# 公共层技能不在 catalog 里，can_install 会 404，不能拿它当被安装对象
-ITEM = "data-analysis"
+# 用真实的内置目录条目（catalog/skills/rdkit，深度技能 = 缺省 public + 非默认启用）：
+# 公共层技能不在 catalog 里，can_install 会 404；基线技能（docx/xlsx/pptx/pdf/EDA）
+# 启动播种为 default_enabled=True，安装/启停一律 409，都不能拿它们当被安装对象
+ITEM = "rdkit"
 
 
 def test_switch_enabled_without_install_is_422(client):

@@ -28,14 +28,14 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `STORAGE_BACKEND` | `sqlite` | 存储后端二选一：`sqlite`（开发）或 `mongodb`（生产） |
-| `SQLITE_PATH` | `../data/synlys_agent.db` | sqlite 库文件路径 |
+| `SQLITE_PATH` | `<项目根>/.runtime/data/synlys_agent.db` | sqlite 库文件路径；默认按项目根推导 |
 | `MONGODB_URI` | 空 | `mongodb` 模式必填，业务数据连接串 |
 | `MONGODB_DB` | `synlys_agent` | 业务库名（用户认证固定读 `ai4ms.users`，见下） |
 | `AUTH_SECRET` | 空 | 与 AI4MS 门户共享的 HMAC-SHA256 签名 secret；**为空时按门户规则派生：`sha256("<进程cwd>_ai4ms_portal")`**，单机部署可留空，多实例/跨机器必须显式配置同一值 |
 | `AUTH_ENABLED` | `true` | `false` 时匿名放行（仅本机调试） |
 | `DEV_AUTH_TOKEN` | 空 | sqlite 开发模式的固定 token（免登录调试用） |
 | `HOST` / `PORT` | `0.0.0.0` / `8005` | 监听地址与端口 |
-| `DATA_DIR` | `../data` | 运行数据根，按用户分层：公共层 `public/{skills,catalog}`；用户层 `users/<uid>/{workspaces,sessions,skills,experts}`（workspaces=用户文件、sessions=事件 JSONL） |
+| `DATA_DIR` | `<项目根>/.runtime/data` | 运行数据根，默认按项目根推导，按用户分层：公共层 `public/{skills,catalog}`；用户层 `users/<uid>/{workspaces,sessions,skills,experts}`（workspaces=用户文件、sessions=事件 JSONL） |
 | `FERNET_KEY` | 空 | provider `api_key` 落库加密 key（Fernet）。生成：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`；留空则 api_key 明文落库（仅开发）；生产配置后注意：换 key 前已加密的数据不可解（读取报错需重录） |
 | `HTTP_ALLOWED_HOSTS` | 空 | `http.request` 工具的域名白名单（逗号分隔，支持子域后缀匹配），空则全部拒绝 |
 | `USER_QUOTA_BYTES` | `1073741824` | 每用户工作区配额（字节） |

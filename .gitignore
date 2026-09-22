@@ -18,7 +18,8 @@ dist/
 .codegraph/
 
 # 运行时数据（用户工作区/会话事件/本地库）
-data/
+/.runtime/
+/apps/web/data/
 
 # 环境与密钥
 .env

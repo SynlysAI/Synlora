@@ -1,7 +1,7 @@
 """技能 API：全局技能目录的增删改查 + SKILL.md 导入导出。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
@@ -41,22 +41,29 @@ class SkillImportBody(BaseModel):
 
 
 @router.get("")
-async def list_skills(request: Request, user=Depends(get_current_user)):
-    """列出技能（普通用户按可见性过滤，管理员看全部）。
+async def list_skills(request: Request, user=Depends(get_current_user),
+                      scope: str = Query("all")):
+    """列出技能（对话可用集或全量，普通用户两口径一致，管理员可选）。
 
     Args:
         request: FastAPI 请求（取 app.state.skill_service 与 capability_service）。
         user: 当前登录用户。
+        scope: all = 管理视角全量（管理页用，管理员直通）；usable = 对话可用集
+            （「+ → 技能」面板用，不分角色：内置默认启用 + 已安装且启用 +
+            用户自建/公共层技能，与运行期装配口径一致）。
 
     Returns:
         技能字典列表。
     """
     skills = request.app.state.skill_service.list_skills(user_id=user["sub"])
     caps = getattr(request.app.state, "capability_service", None)
+    if scope == "usable" and caps is not None:
+        # 黑名单口径：只剔除策略隐藏的内置技能与不可见插件的技能；公共目录里管理员
+        # 自建/导入的技能不属能力目录条目，始终可见（否则普通用户看不到它们）
+        hidden = await caps.hidden_skill_names(user["sub"])
+        return [s for s in skills if s["name"] not in hidden]
     if caps is None or user.get("role") == "admin":
         return skills
-    # 黑名单口径：只剔除策略隐藏的内置技能与不可见插件的技能；公共目录里管理员
-    # 自建/导入的技能不属能力目录条目，始终可见（否则普通用户看不到它们）
     hidden = await caps.hidden_skill_names(user["sub"])
     return [s for s in skills if s["name"] not in hidden]
 

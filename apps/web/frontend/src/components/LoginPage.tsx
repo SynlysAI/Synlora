@@ -1,8 +1,8 @@
 /**
  * 登录页：居中卡片（DSH 风格），支持账号密码登录与开发模式快捷进入。
  *
- * dev 快捷入口仅在本地开发流程使用（sqlite + DEV_AUTH_TOKEN 模式），
- * 生产构建中 VITE_DEV_TOKEN 未定义时按钮隐藏。
+ * dev 快捷入口仅在 Vite dev 模式且显式配置 VITE_DEV_TOKEN 时展示（sqlite +
+ * DEV_AUTH_TOKEN 模式），生产构建永不渲染。
  */
 import { useState, type FormEvent } from 'react'
 import { ApiError } from '@/api/client'
@@ -10,11 +10,13 @@ import { VersionTag } from '@/components/layout'
 import BrandMark from '@/components/layout/BrandMark'
 import { useAuthStore } from '@/stores/auth'
 
-/** dev 模式 token（.env 的 VITE_DEV_TOKEN 或默认 devtok，须与后端 DEV_AUTH_TOKEN 一致）。 */
-const DEV_TOKEN = import.meta.env.VITE_DEV_TOKEN || 'devtok'
+/** dev 模式 token（仅本地显式配置才有效，须与后端 DEV_AUTH_TOKEN 一致）。 */
+const DEV_TOKEN = import.meta.env.DEV && import.meta.env.VITE_DEV_TOKEN
+  ? import.meta.env.VITE_DEV_TOKEN
+  : ''
 
-/** dev 快捷按钮是否展示（显式置 "0" 时隐藏）。 */
-const SHOW_DEV_ENTRY = import.meta.env.VITE_DEV_TOKEN !== '0'
+/** dev 快捷按钮是否展示（生产构建与未配置 token 时均隐藏）。 */
+const SHOW_DEV_ENTRY = import.meta.env.DEV && !!import.meta.env.VITE_DEV_TOKEN
 
 /** 错误归一为用户可读文案。 */
 function toMessage(err: unknown): string {

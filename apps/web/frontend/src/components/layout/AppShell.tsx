@@ -262,6 +262,9 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
           height={32}
           className="text-[var(--sa-alias-label-primary)]"
         />
+        <span className="self-end pb-4">
+          <VersionTag />
+        </span>
       </div>
       {/* 中部：新会话/助手/会话列表 */}
       <div className="min-h-0 flex-1">
@@ -284,10 +287,6 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
             </svg>
           )}
         </IconButton>
-      </div>
-      {/* 版本徽标（读 /api/health，与后端口径一致） */}
-      <div className="flex shrink-0 justify-center pb-1.5">
-        <VersionTag />
       </div>
     </div>
   )
@@ -360,7 +359,8 @@ function ChatToolbar({
 export default function AppShell() {
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
-  const [rightState, setRightState] = useState<RightPanelState>('normal')
+  // 右栏默认隐藏（工具条按钮展开），进入对话后保持用户手动选择的状态
+  const [rightState, setRightState] = useState<RightPanelState>('hidden')
   const [dragging, setDragging] = useState(false)
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches)
   const [sidebarOpen, setSidebarOpen] = useState(false)
