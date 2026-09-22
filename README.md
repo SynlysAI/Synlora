@@ -164,6 +164,7 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 
 - **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 URL hash 提取 token 放入 `Authorization: Bearer` 请求头，后端用 `AUTH_SECRET` 校验。
 - **账号打通**：`STORAGE_BACKEND=mongodb` 时，登录直连 MongoDB 的 `ai4ms.users` 集合校验用户名/密码（PBKDF2-SHA256，格式与门户兼容）并签发同格式 token；sqlite 模式使用本地 `local_users`（开发用）。
+- **Plane 科研上下文**：建会话可携带 `X-Research-Context-Token`（短期 Context 校验），校验通过后 scope metadata 落库并以只读 `ResearchContextScope` 注入 Agent 运行，会话事件经回写 client 同步回 Plane；opaque token 本身不落库。
 
 ## 测试
 
