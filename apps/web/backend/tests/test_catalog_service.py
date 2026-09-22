@@ -148,6 +148,21 @@ async def test_market_expert_rows_include_avatar(caps):
     assert all("avatar" in r for r in rows)   # 每个专家行都有该键（无头像时为 ""）
     # 与 config_schema 同约定：只有专家才加该字段
     assert all("avatar" not in r for r in await caps.market_items("u1", "skill"))
+
+
+async def test_market_rows_put_default_enabled_first(caps):
+    """市场列表内置（default_enabled）条目排前，组内按 id 升序。"""
+    # 管理员把一个普通技能配成内置：它应排到全部非内置技能之前
+    await caps.policy.set("skill", "seaborn", visibility="public", default_enabled=True)
+    rows = await caps.market_items("u1", "skill")
+    flags = [r["default_enabled"] for r in rows]
+    # True 连续在前（内置组），False 连续在后（列表本身即展示顺序）
+    assert flags == sorted(flags, reverse=True)
+    builtin_ids = [r["id"] for r in rows if r["default_enabled"]]
+    other_ids = [r["id"] for r in rows if not r["default_enabled"]]
+    assert builtin_ids == sorted(builtin_ids)
+    assert other_ids == sorted(other_ids)
+    assert "seaborn" in builtin_ids
     assert all("avatar" not in r for r in await caps.market_items("u1", "plugin"))
 
 

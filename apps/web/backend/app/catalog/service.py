@@ -254,4 +254,7 @@ class CapabilityService:
                 pkg = self.catalog.experts.get(item.id)
                 row["avatar"] = pkg.avatar if pkg is not None else ""
             rows.append(row)
+        # 内置（全员默认可用）排前展示，同组内按 id 稳定排序；
+        # 前端市场页与插件选择器均直接消费本顺序
+        rows.sort(key=lambda r: (not r["default_enabled"], r["id"]))
         return rows
