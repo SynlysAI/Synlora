@@ -17,6 +17,27 @@ async def test_list_skills_includes_seeds(client, user_headers):
     assert {"docx", "xlsx", "pptx", "pdf", "exploratory-data-analysis"} <= names
 
 
+async def test_list_skills_usable_scope_applies_to_admin(client, admin_headers):
+    """scope=usable：对话可用集不分角色——管理员也只见内置 + 已装，全量留给管理页。"""
+    # 管理视角全量（无参调用，管理页口径）：含未安装的市场技能
+    all_names = {s["name"] for s in (await client.get("/api/v1/skills",
+                                                      headers=admin_headers)).json()}
+    assert {"rdkit", "matplotlib", "seaborn"} <= all_names
+
+    # 对话面板口径：管理员同样被过滤到「内置默认 + 已安装启用」
+    usable = {s["name"] for s in (await client.get("/api/v1/skills?scope=usable",
+                                                   headers=admin_headers)).json()}
+    assert {"docx", "xlsx", "pptx", "pdf", "exploratory-data-analysis"} <= usable
+    assert not ({"rdkit", "matplotlib", "seaborn"} & usable)
+
+    # 安装后进入可用集（安装记录跟用户走）
+    assert (await client.post("/api/v1/catalog/skill/rdkit/install",
+                              json={}, headers=admin_headers)).status_code == 201
+    usable = {s["name"] for s in (await client.get("/api/v1/skills?scope=usable",
+                                                   headers=admin_headers)).json()}
+    assert "rdkit" in usable and "matplotlib" not in usable
+
+
 async def test_list_skills_includes_user_own(client, user_headers):
     """列表端点并入调用者自己的自建技能（前端技能选择器依赖它）。"""
     created = await client.post("/api/v1/me/skills", json={
