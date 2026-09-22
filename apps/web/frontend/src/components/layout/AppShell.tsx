@@ -359,7 +359,8 @@ function ChatToolbar({
 export default function AppShell() {
   const [leftWidth, setLeftWidth] = useState(LEFT_DEFAULT)
   const [rightWidth, setRightWidth] = useState(RIGHT_DEFAULT)
-  const [rightState, setRightState] = useState<RightPanelState>('normal')
+  // 右栏默认隐藏（工具条按钮展开），进入对话后保持用户手动选择的状态
+  const [rightState, setRightState] = useState<RightPanelState>('hidden')
   const [dragging, setDragging] = useState(false)
   const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_QUERY).matches)
   const [sidebarOpen, setSidebarOpen] = useState(false)
