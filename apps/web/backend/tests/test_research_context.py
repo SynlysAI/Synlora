@@ -4,7 +4,6 @@ import json
 
 import httpx
 import pytest
-from synlys_harness import ResearchContextScope
 
 from app.services.research_context import (
     PlaneResearchClient,
@@ -148,16 +147,3 @@ async def test_research_session_requires_context_token(app, client, user_headers
     )
     assert response.status_code == 401
     assert called is False
-
-
-def test_harness_scope_is_read_only():
-    """Harness 工具上下文中的科研范围不可赋值替换。"""
-    scope = ResearchContextScope(
-        context_id="context-1",
-        workspace_id="workspace-1",
-        research_project_id="project-1",
-        chain_node_id="node-1",
-        context_hash="hash-1",
-        visibility_scope="PRIVATE",
-    )
-    assert scope.research_project_id == "project-1"

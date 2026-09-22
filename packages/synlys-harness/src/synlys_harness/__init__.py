@@ -32,7 +32,6 @@ from .tools.sandbox import (
 from .types import (
     AgentConfig, ApprovalDecision, EventType, ExtensionHooks, Message, Permission, Role,
     SessionEvent, ToolCall, ToolContext, ToolDefinition, ToolResult,
-    ResearchContextScope,
 )
 
 __all__ = [
@@ -48,5 +47,4 @@ __all__ = [
     "TextDelta", "ReasoningDelta", "ToolCallChunk", "Usage",
     "AgentConfig", "ApprovalDecision", "EventType", "ExtensionHooks", "Message", "Permission",
     "Role", "SessionEvent", "ToolCall", "ToolContext", "ToolDefinition", "ToolResult",
-    "ResearchContextScope",
 ]

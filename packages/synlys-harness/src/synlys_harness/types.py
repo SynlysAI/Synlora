@@ -61,23 +61,6 @@ class Message(BaseModel):
     images: list[dict[str, str]] = Field(default_factory=list)
 
 
-class ResearchContextScope(BaseModel):
-    """Plane 签发的只读科研上下文范围。
-
-    字段与 ``agent-context.v1`` 对齐。模型冻结，工具不能运行期扩大范围。
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    schema_version: str = "agent-context.v1"
-    context_id: str
-    workspace_id: str
-    research_project_id: str
-    chain_node_id: str
-    context_hash: str
-    visibility_scope: str
-
-
 class SessionEvent(BaseModel):
     """会话事件信封：seq 单调递增，ts 为 unix 秒。"""
 
@@ -113,7 +96,6 @@ class ToolContext(BaseModel):
     user_id: str
     run_id: str
     workspace_root: Path | None = None
-    research_context: ResearchContextScope | None = Field(default=None, frozen=True)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -36,7 +36,6 @@ from synlys_harness import (
     ExtensionHooks,
     ModelProviderConfig,
     OpenAICompatibleBackend,
-    ResearchContextScope,
     RunSession,
     SessionEvent,
     ToolDefinition,
@@ -268,7 +267,8 @@ class AgentService:
                 在本轮生效——工具、配置注入、技能索引按它收窄，未启用插件的
                 播种专家按未选处理。None 与空列表同为"未启用任何插件"；
                 内置工具不受影响。
-            research_context: Plane 签发的只读科研范围；None 表示普通 Synlora 会话。
+            research_context: Plane 签发的只读科研范围（会话创建时已校验），
+                经 ctx.extra 透传给工具；None 表示普通 Synlora 会话。
         Returns:
             run_id。
 
@@ -510,6 +510,9 @@ class AgentService:
             ctx_extra_snapshot: dict = {
                 # 工作区根：插件连接器读取用户文件（如谱图上传）时用
                 "workspace_root": str(workspace_root),
+                # Plane 签发的只读科研范围（会话创建时已校验落库）；经 extra
+                # 通道透传给工具，harness 不感知业务形状
+                "research_context": research_context,
                 "http_allowed_hosts": self._settings.allowed_hosts,
                 # python.run 执行器（部署级注入，缺省工具回落本机执行；已在上文解析）
                 "code_executor": executor,
@@ -584,10 +587,6 @@ class AgentService:
                 event_log=log, user_id=user["sub"], run_id=run_id,
                 hooks=hooks,
                 workspace_root=workspace_root,
-                research_context=(
-                    ResearchContextScope.model_validate(research_context)
-                    if research_context else None
-                ),
                 context_extra=ctx_extra_snapshot,
             )
             active.session = session
