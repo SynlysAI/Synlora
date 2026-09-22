@@ -57,7 +57,7 @@ export default function ChatPanel() {
           <div className="mx-auto w-full max-w-3xl px-4 sm:px-6">
             <h1 className="mb-5 text-[32px] font-semibold leading-[48px] tracking-tight text-[var(--sa-alias-label-primary)]">
               {/* 品牌名单独包一层加重（照 jiuwen chat-welcome__heading-highlight 结构） */}
-              <span className="font-bold">Synlora</span> 轻松解决科研每个问题！
+              <span className="font-bold">Synlora</span> 轻松解决每个科研问题！
             </h1>
           </div>
           <Composer empty={empty} />
