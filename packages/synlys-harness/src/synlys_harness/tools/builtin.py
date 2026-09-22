@@ -24,7 +24,11 @@ def _safe_path(root: Path, rel: str) -> Path | None:
     Returns:
         绝对 Path；逃逸时返回 None。
     """
-    target = (root / rel).resolve()
+    raw = str(rel)
+    windows_absolute = bool(re.match(r"^[A-Za-z]:[\\/]", raw)) or raw.startswith("\\\\")
+    if Path(raw).is_absolute() or windows_absolute:
+        return None
+    target = (root / raw).resolve()
     root_resolved = root.resolve()
     if target != root_resolved and root_resolved not in target.parents:
         return None

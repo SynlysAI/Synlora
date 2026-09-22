@@ -41,6 +41,7 @@ from app.services.agent_service import AgentService
 from app.services.ai4ms_identity import Ai4msIdentityService
 from app.services.expert_service import UserExpertService
 from app.services.project_service import ProjectService
+from app.services.research_context import PlaneResearchClient, ResearchContextAdapter
 from app.services.skill_service import SkillService
 from app.services.tool_registry import REGISTRY
 from app.services.weknora_service import WeKnoraService
@@ -130,6 +131,15 @@ def create_app() -> FastAPI:
     """构建 FastAPI 应用（任务逐步扩展路由）。"""
     app = FastAPI(title="Synlora", version=APP_VERSION, lifespan=lifespan)
     app.state.settings = Settings()
+    app.state.research_context_adapter = ResearchContextAdapter(
+        app.state.settings.plane_base_url,
+        app.state.settings.plane_request_timeout_seconds,
+    )
+    app.state.plane_research_client = PlaneResearchClient(
+        app.state.settings.plane_base_url,
+        app.state.settings.plane_api_token,
+        app.state.settings.plane_request_timeout_seconds,
+    )
     app.state.store = None  # lifespan 启动时初始化（未就绪时依赖层 503）
     app.include_router(auth_router)
     app.include_router(models_router)

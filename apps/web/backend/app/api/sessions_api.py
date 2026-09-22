@@ -17,6 +17,7 @@ from app.api.assistants_api import _validate_provider
 from app.api.deps import Repos, get_current_user, get_repos
 from app.services import workspace
 from app.services.agent_service import AgentService, TooManyRuns
+from app.services.research_context import ResearchContextError, ResearchContextMetadata
 
 router = APIRouter(prefix="/api/v1", tags=["sessions"])
 
@@ -163,6 +164,7 @@ class SessionCreateBody(BaseModel):
     model_provider_id: str | None = None
     project_id: str | None = None
     enabled_plugins: list[str] | None = None
+    research_context: ResearchContextMetadata | None = None
 
 
 class SessionUpdateBody(BaseModel):
@@ -262,6 +264,15 @@ async def create_session(body: SessionCreateBody, request: Request,
         await _validate_provider(body.model_provider_id, repos)
     if body.enabled_plugins is not None:
         await _validate_plugin_ids(request, body.enabled_plugins)
+    if body.research_context is not None:
+        context_token = request.headers.get("X-Research-Context-Token", "")
+        if not context_token:
+            raise HTTPException(401, "缺少科研上下文令牌")
+        try:
+            await request.app.state.research_context_adapter.validate(
+                token=context_token, expected=body.research_context)
+        except ResearchContextError as exc:
+            raise HTTPException(exc.status_code, exc.message) from exc
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
@@ -271,6 +282,10 @@ async def create_session(body: SessionCreateBody, request: Request,
         "model_provider_id": body.model_provider_id,
         "project_id": body.project_id,
         "enabled_plugins": body.enabled_plugins,
+        "research_context": (
+            body.research_context.model_dump(mode="json")
+            if body.research_context is not None else None
+        ),
     })
 
 
@@ -444,7 +459,8 @@ async def send_message(sid: str, body: MessageIn, request: Request,
                                     requested_skills=body.skills,
                                     attachments=attachments_meta,
                                     file_ownership=ownership,
-                                    enabled_plugins=doc.get("enabled_plugins"))
+                                    enabled_plugins=doc.get("enabled_plugins"),
+                                    research_context=doc.get("research_context"))
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
 

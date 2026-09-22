@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     user_quota_bytes: int = 1_073_741_824
     weknora_base_url: str = ""
     weknora_api_key: str = ""
+    plane_base_url: str = ""
+    plane_api_token: str = ""
+    plane_request_timeout_seconds: float = 3.0
     assistant_web_search_endpoint: str = ""
     assistant_web_search_api_key: str = ""
     sandbox_mode: str = "local"
