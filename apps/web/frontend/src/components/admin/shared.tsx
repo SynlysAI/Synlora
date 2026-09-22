@@ -4,6 +4,7 @@
  * 仅导出组件（表单样式常量与 errorText 见 ./form.ts）；
  * ModelsAdmin 与 AssistantsAdmin 共用，保持两页交互一致。
  */
+import { useRef } from 'react'
 import type { ReactNode } from 'react'
 import type { CatalogItem } from '@/types'
 
@@ -102,12 +103,22 @@ interface ModalProps {
   children: ReactNode
 }
 
-/** 居中模态框：遮罩点击关闭，内容区滚动防溢出。 */
+/** 居中模态框：遮罩点击关闭（按下与松开都在遮罩上才算），内容区滚动防溢出。 */
 export function Modal({ title, onClose, children }: ModalProps) {
+  // 记录 mousedown 起点是否在遮罩本身：弹窗内划选文字拖到遮罩外松开时，
+  // click 目标是「按下元素与松开元素的公共祖先」= 遮罩 div，若只看 click 目标
+  // 会误判为点击遮罩而关闭——起点校验把这种划选拖出场景排除掉。
+  const downOnBackdrop = useRef(false)
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--sa-alias-bg-mask-1)] p-4"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        downOnBackdrop.current = e.target === e.currentTarget
+      }}
+      onClick={(e) => {
+        if (downOnBackdrop.current && e.target === e.currentTarget) onClose()
+        downOnBackdrop.current = false
+      }}
       role="presentation"
     >
       <div
