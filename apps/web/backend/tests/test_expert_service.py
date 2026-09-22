@@ -1,5 +1,4 @@
-"""用户自建专家（文件为事实源 + 实例化进 assistants）。"""
-import asyncio
+"""用户自建专家（文件为唯一事实源，不进全局 assistants 集合）。"""
 import json
 
 import pytest
@@ -8,8 +7,8 @@ from app.services.expert_service import UserExpertService
 
 
 @pytest.fixture()
-def svc(tmp_path, store):
-    return UserExpertService(store, tmp_path)
+def svc(tmp_path):
+    return UserExpertService(tmp_path)
 
 
 async def test_write_and_list_own_expert(svc, tmp_path):
@@ -24,24 +23,24 @@ async def test_write_and_list_own_expert(svc, tmp_path):
     assert await svc.list_own("u2") == []
 
 
-async def test_expert_capability_refs_roundtrip(svc, store):
-    """专家技能、MCP 与推荐问题引用同时写入文件和助手记录。"""
-    expert = await svc.write(
-        "u1", dir_name="chem", name="化学助手", avatar="🧪",
-        description="演示", system_prompt="你是化学助手",
-        tool_whitelist=["python.run"],
-        skill_refs=["data-analysis"],
-        mcp_refs=["lab-db"],
-        suggested_prompts=["分析这组数据"],
-    )
+async def test_write_does_not_touch_assistants(svc, store):
+    """专家只写文件：assistants 集合（管理员资产）不被写入任何记录。"""
+    await svc.write("u1", dir_name="chem", name="化学助手", avatar="🧪",
+                    description="演示", system_prompt="你是化学助手",
+                    skill_refs=["data-analysis"], mcp_refs=["lab-db"],
+                    suggested_prompts=["分析这组数据"])
+    assert await store.list("assistants") == []
 
-    assert expert["skill_refs"] == ["data-analysis"]
+
+async def test_loaded_expert_is_assistant_shaped(svc):
+    """读出的专家与助手文档同构（含运行期需要的缺省字段）。"""
+    await svc.write("u1", dir_name="chem", name="化学助手", avatar="🧪",
+                    description="演示", system_prompt="你是化学助手")
     loaded = await svc.get_own("u1", "u1:chem")
-    assert loaded is not None and loaded["mcp_refs"] == ["lab-db"]
-    record = await store.get("assistants", "u1:chem")
-    assert record is not None
-    assert record["skill_refs"] == ["data-analysis"]
-    assert record["suggested_prompts"] == ["分析这组数据"]
+    assert loaded is not None
+    assert loaded["model_provider_id"] is None
+    assert loaded["knowledge_base_ids"] == []
+    assert loaded["system_prompt"] == "你是化学助手"
 
 
 async def test_experts_are_scoped_to_owner(svc):
@@ -51,14 +50,12 @@ async def test_experts_are_scoped_to_owner(svc):
     assert await svc.get_own("u2", "u1:chem") is None
 
 
-async def test_delete_removes_file_and_record(svc, tmp_path, store):
+async def test_delete_removes_directory(svc, tmp_path):
     await svc.write("u1", dir_name="chem", name="化学助手", avatar="",
                     description="demo", system_prompt="p")
-    await svc.ensure_instantiated("u1")
-    assert await store.get("assistants", "u1:chem") is not None
     assert await svc.delete("u1", "u1:chem") is True
     assert not (tmp_path / "users" / "u1" / "experts" / "chem").exists()
-    assert await store.get("assistants", "u1:chem") is None
+    assert await svc.delete("u1", "u1:chem") is False
 
 
 async def test_expert_id_rejects_path_traversal(svc, tmp_path):
@@ -69,25 +66,17 @@ async def test_expert_id_rejects_path_traversal(svc, tmp_path):
                 "u1:", "u1:.", "u1:.."):
         assert await svc.get_own("u1", bad) is None
         assert await svc.delete("u1", bad) is False
-    # 越界删除被拒后，别人的专家文件与记录原样保留
+    # 越界删除被拒后，别人的专家文件原样保留
     assert (tmp_path / "users" / "u2" / "experts" / "chem" / "expert.json").is_file()
 
 
-async def test_instantiate_is_idempotent(svc, store):
-    await svc.write("u1", dir_name="chem", name="化学助手", avatar="",
-                    description="demo", system_prompt="p")
-    await svc.ensure_instantiated("u1")
-    await store.update("assistants", "u1:chem", {"name": "管理员改过"})
-    await svc.ensure_instantiated("u1")  # 已存在 → 不覆盖
-    assert (await store.get("assistants", "u1:chem"))["name"] == "管理员改过"
-
-
-async def test_concurrent_instantiate_does_not_raise(svc, store):
-    """并发实例化同一批专家不该因 _id 冲突抛错（锁内串行）。"""
-    await svc.write("u1", dir_name="chem", name="化学助手", avatar="",
-                    description="demo", system_prompt="p")
-    # 先删记录，制造"文件在、记录不在"的首访态
-    await store.delete("assistants", "u1:chem")
-    results = await asyncio.gather(*[svc.ensure_instantiated("u1") for _ in range(5)])
-    assert all(r and r[0]["_id"] == "u1:chem" for r in results)
-    assert await store.get("assistants", "u1:chem") is not None
+async def test_purge_legacy_records_only_removes_owner_docs(store):
+    """启动清理只删带 owner 的历史实例记录，管理员资产原样保留。"""
+    await store.insert("assistants", {"_id": "u1:chem", "name": "化学助手",
+                                      "owner": "u1", "builtin": False})
+    await store.insert("assistants", {"_id": "asst-research", "name": "科研助手",
+                                      "builtin": True})
+    removed = await UserExpertService.purge_legacy_records(store)
+    assert removed == 1
+    assert await store.get("assistants", "u1:chem") is None
+    assert await store.get("assistants", "asst-research") is not None

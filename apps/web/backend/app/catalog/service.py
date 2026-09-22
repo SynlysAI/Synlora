@@ -244,10 +244,15 @@ class CapabilityService:
                 "visible": visible,
             }
             # 插件行补配置 schema：用户侧市场据此渲染"安装时填配置"的表单；
-            # 非插件条目无此概念，不加该字段（避免前端误判）
+            # 非插件条目无此概念，不加该字段（避免前端误判）。
+            # scope=admin 的字段是管理员公共配置（管理后台插件页填写），用户侧
+            # 一律不透出——schema 过滤为空即前端"一键安装、不弹配置表单"。
             if kind == "plugin":
                 pkg = self.catalog.plugins.get(item.id)
-                row["config_schema"] = list(pkg.config_schema) if pkg is not None else []
+                row["config_schema"] = [
+                    f for f in (pkg.config_schema if pkg is not None else [])
+                    if f.get("scope") != "admin"
+                ]
             # 专家行补头像 emoji：卡片有则渲染 emoji、空串走标题首字母兜底；
             # 技能/插件没有头像概念，同样不加字段
             elif kind == "expert":

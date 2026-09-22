@@ -120,7 +120,7 @@ pm2 logs synlys-agent
 
 ### 插件机制（AI⁴MS 子平台接入）
 
-一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。首个插件 `spec_agent` 提供核磁预测三件套并自动播种「谱图解析专家」，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。配置字段按 `scope` 分层：`"scope": "admin"` 为管理员公共配置（管理后台填写，用户侧不透出、不可写，插件全量 admin 字段时用户安装**不出配置表单一键装**，管理员未配置则调用时 fail-closed 报错），缺省为用户可填（安装时/详情页编辑，个人层优先于公共兜底）。已接入插件：`spec_agent`（核磁预测三件套 + 五类谱图异步解析）、`poly_agent`（Poly_Agent 高分子垂类预测五件套：聚酰亚胺 Tg / 氟基电解质配方 / Raman 光谱解析 / 共聚竞聚率拟合 / 硅键谱图集成）、`sciverse`（科技文献检索），各自动播种对应专家，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 能力目录与统一扩展中心（市场）
 
@@ -136,7 +136,7 @@ pm2 logs synlys-agent
 
 三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。
 
-能力中心按「**市场 / 我的**」页签组织：市场是「可安装的内置条目」，我的 = 用户自建能力 + 已安装能力。用户在市场安装后可**启用 / 停用**（`user_capabilities.enabled`，停用优先于默认启用）；用户还可**自建技能与专家**（落各自 `{data_dir}/users/<uid>/{skills,experts}/`，技能同名全局唯一，内置条目不可编辑、想定制请自建换名）。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。
+能力中心按「**市场 / 我的**」页签组织：市场是「可安装的内置条目」，我的 = 用户自建能力 + 已安装能力。用户在市场安装后可**启用 / 停用**（`user_capabilities.enabled`，停用优先于默认启用）；用户还可**自建技能与专家**（落各自 `{data_dir}/users/<uid>/{skills,experts}/`，技能同名全局唯一，内置条目不可编辑、想定制请自建换名）。**自建技能与专家仅本人可见**：文件只存在作者目录里（专家为纯文件事实源，不实例化进全局助手集合；`assistants` 集合仅存管理员资产——目录播种/插件播种/后台自建），专家选择列表由「集合管理员资产 ∪ 本人文件根专家」组装，会话绑定与运行期按 id 前缀路由解析。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。
 
 **当前状态**：已上线（1.0.0）——用户侧「能力中心」（`/capabilities`）按**专家 / 技能 / 扩展**分类；专家与技能保留市场 / 我的卡片视图，扩展进入统一的插件市场、MCP 接入和我的扩展页面。技能可手动创建或上传 ZIP，专家可在完整编排表单中选择技能、MCP、工具和推荐问题。
 
@@ -164,6 +164,7 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 
 - **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 URL hash 提取 token 放入 `Authorization: Bearer` 请求头，后端用 `AUTH_SECRET` 校验。
 - **账号打通**：`STORAGE_BACKEND=mongodb` 时，登录直连 MongoDB 的 `ai4ms.users` 集合校验用户名/密码（PBKDF2-SHA256，格式与门户兼容）并签发同格式 token；sqlite 模式使用本地 `local_users`（开发用）。
+- **Plane 科研上下文**：建会话可携带 `X-Research-Context-Token`（短期 Context 校验），校验通过后 scope metadata 落库并以只读 `ResearchContextScope` 注入 Agent 运行，会话事件经回写 client 同步回 Plane；opaque token 本身不落库。
 
 ## 测试
 

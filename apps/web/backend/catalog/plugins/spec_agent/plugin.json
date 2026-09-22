@@ -11,6 +11,7 @@
       "key": "base_url",
       "label": "服务地址",
       "type": "text",
+      "scope": "admin",
       "required": true,
       "placeholder": "http://10.26.15.93:8001",
       "description": "Spec_Agent 服务地址（含协议与端口）"
@@ -19,6 +20,7 @@
       "key": "token",
       "label": "访问凭证",
       "type": "password",
+      "scope": "admin",
       "secret": true,
       "required": false,
       "placeholder": "服务端未开启鉴权时可留空",

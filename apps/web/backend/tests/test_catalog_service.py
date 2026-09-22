@@ -94,11 +94,15 @@ async def test_market_listing_marks_state(caps):
 
 
 async def test_market_items_hides_hidden_from_users(caps):
-    """普通用户视角不出现 hidden 条目；管理员视角出现。"""
+    """普通用户视角不出现 hidden 条目；管理员视角出现。
+
+    市场列表含全部非 hidden 插件（如 poly_agent），故按条目存在性断言而非
+    精确列表——本测试只关心 spec_agent 的 hidden 语义。
+    """
     await caps.policy.set("plugin", "spec_agent", visibility="hidden", default_enabled=False)
-    assert await caps.market_items("u1", "plugin") == []
-    admin_rows = await caps.market_items("admin1", "plugin", admin=True)
-    assert [r["id"] for r in admin_rows] == ["spec_agent"]
+    assert "spec_agent" not in {r["id"] for r in await caps.market_items("u1", "plugin")}
+    admin_ids = {r["id"] for r in await caps.market_items("admin1", "plugin", admin=True)}
+    assert "spec_agent" in admin_ids
 
 
 async def test_exists_and_can_install(caps):
@@ -130,10 +134,15 @@ async def test_visible_skill_names_includes_plugin_skills(caps):
 
 
 async def test_market_plugin_rows_include_config_schema(caps):
-    """插件行带 config_schema（用户侧市场据此渲染安装表单）。"""
+    """插件行带 config_schema（用户侧市场据此渲染安装表单）。
+
+    scope=admin 的字段是管理员公共配置（管理后台插件页填写），用户侧 schema
+    必须过滤为空——用户安装不出配置表单（一键安装），缺配置在调用期报错。
+    """
     rows = await caps.market_items("u1", "plugin")
     spec_row = next(r for r in rows if r["id"] == "spec_agent")
-    assert [f["key"] for f in spec_row["config_schema"]] == ["base_url", "token"]
+    keys = [f["key"] for f in spec_row["config_schema"]]
+    assert "base_url" not in keys and "token" not in keys
     # 非插件行不带该字段
     expert_rows = await caps.market_items("u1", "expert")
     assert all("config_schema" not in r for r in expert_rows)

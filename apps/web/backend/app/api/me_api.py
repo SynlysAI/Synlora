@@ -333,8 +333,7 @@ async def list_my_experts(request: Request, user=Depends(get_current_user)) -> l
     svc = _expert_service(request)
     caps = get_capability_service(request)
     user_id = user["sub"]
-    # 顺带幂等实例化进 assistants：会话侧选助手时读的是 assistants 集合
-    own = await svc.ensure_instantiated(user_id)
+    own = await svc.list_own(user_id)
     rows = [
         {"id": e["_id"], "name": e["name"], "avatar": e["avatar"],
          "description": e["description"], "source": "mine",

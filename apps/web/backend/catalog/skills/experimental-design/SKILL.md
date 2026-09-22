@@ -1,7 +1,7 @@
 ---
 name: experimental-design
 description: 数据采集前的实验设计（DOE）：随机化、阻断、因子 / 部分因子 / 响应面设计、避免混杂与伪重复。用户要"设计实验 / 安排配方与工艺因素
-  / 优化反应条件"时用；已采集数据的分析走 statistical-analysis。
+  / 优化反应条件"时用。
 version: '1.2'
 author: K-Dense scientific-agent-skills (MIT)
 tags:
@@ -202,14 +202,14 @@ These are structural — they can't be fixed in analysis, only in design.
 2. **List nuisance factors** (batch, day, site, operator, position) — plan to block,
    stratify, or randomize across each.
 3. **Pick the design** using the decision tree and reference files.
-4. **Decide replication** at the correct level (and get n from the
-   **statistical-power** skill for the chosen design).
+4. **Decide replication** at the correct level for the chosen design, and derive n
+   from power considerations.
 5. **Generate the layout** with `randomization.py` / `doe_designs.py`, seeded.
 6. **Randomize run/processing order** and plate/batch positions.
 7. **Document** the design, seed, and schedule (pre-register if possible) so the
    analysis is confirmatory and the layout is auditable.
 8. **Match the analysis to the design** — blocks, strata, clusters, and nesting must
-   appear in the model (hand off to **statistical-analysis** / **statsmodels**).
+   appear in the model.
 
 ---
 
@@ -233,11 +233,6 @@ These are structural — they can't be fixed in analysis, only in design.
   pseudoreplication problem in depth.
 - `references/sequential_and_adaptive.md` — group-sequential designs, alpha spending,
   interim stopping, and adaptive sample-size re-estimation.
-
-### Related skills
-- **statistical-power** — required sample size / power for the design you've chosen.
-- **statistical-analysis** — running and reporting the analysis after collection.
-- **statsmodels** / **pymc** — fitting the models the design implies.
 
 ### Key references
 - Fisher, R. A. (1935). *The Design of Experiments*.

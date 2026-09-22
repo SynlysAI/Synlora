@@ -78,7 +78,8 @@ async def _resolve_provider(provider_id: str | None, owner_desc: str,
 
 
 async def resolve_session_runtime(settings: Any, project_service: Any, repos: Any,
-                                  doc: dict, user: dict) -> SessionRuntime:
+                                  doc: dict, user: dict,
+                                  expert_service: Any = None) -> SessionRuntime:
     """解析会话的运行装配（模型优先级：会话级覆盖 > 助手绑定 > 首个启用模型）。
 
     副作用：会话绑定的项目已失效时清空其 project_id（幂等，仅写一次 None）。
@@ -89,6 +90,8 @@ async def resolve_session_runtime(settings: Any, project_service: Any, repos: An
         repos: repo 集中访问对象。
         doc: 会话文档（调用方已校验归属）。
         user: 当前用户 payload。
+        expert_service: 用户专家服务（自建专家按 id 前缀路由到作者文件根；
+            None 时跳过文件解析）。
 
     Returns:
         SessionRuntime。
@@ -96,8 +99,15 @@ async def resolve_session_runtime(settings: Any, project_service: Any, repos: An
     Raises:
         NoUsableProvider: 无可用模型服务。
     """
-    # 助手指针失效（未选专家/专家已删）不报错，交 chat 走无 persona 路径
-    assistant = await repos.assistant.get(doc.get("assistant_id") or "")
+    # 助手指针解析：本人自建专家（{uid}:{dir}，文件事实源）优先，否则查
+    # assistants 集合（管理员资产）。指针失效（未选专家/专家已删）不报错，
+    # 交 chat 走无 persona 路径
+    aid = str(doc.get("assistant_id") or "")
+    assistant = None
+    if expert_service is not None:
+        assistant = await expert_service.get_own(user["sub"], aid)
+    if assistant is None:
+        assistant = await repos.assistant.get(aid)
     # 模型优先级：会话级覆盖 > 助手绑定 > 第一个启用模型（回落）。回落只作用于
     # 本次运行、**不写回会话**——查看会话必须零写入（否则 updated_at 变"刚刚"，
     # 侧栏时间/排序漂移）；口径与前端 ModelPicker 的 explicitId 一致

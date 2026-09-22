@@ -59,7 +59,7 @@ export interface ExpertDraft {
   tool_whitelist: string[]
   skill_refs: string[]
   mcp_refs: string[]
-  suggested_prompts: string[]
+  suggested_prompts?: string[]
 }
 
 interface MyCapabilitiesState {

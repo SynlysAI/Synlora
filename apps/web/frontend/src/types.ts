@@ -99,6 +99,8 @@ export interface PluginConfigField {
   key: string
   label: string
   type: 'text' | 'password'
+  /** 配置层级：admin = 管理员公共配置（用户侧不透出），缺省/其它 = 用户可填 */
+  scope?: 'admin' | 'user'
   required?: boolean
   secret?: boolean
   placeholder?: string

@@ -98,6 +98,22 @@ async def _public_ready_keys(request: Request, plugin_id: str) -> set[str]:
     return {k for k, v in resolved.items() if str(v or "").strip()}
 
 
+def _user_fields(schema: list[dict]) -> list[dict]:
+    """过滤出用户侧可填的配置字段（scope != admin）。
+
+    scope=admin 的字段统一由管理员在管理后台「插件」页配置（公共层），用户侧
+    既不展示也不允许写入——防止个人层覆盖公共层，也保证"管理员没配置也能装、
+    调用时才报缺配置"的语义成立（schema 过滤为空 = 用户侧一键安装不出表单）。
+
+    Args:
+        schema: 插件配置 schema。
+
+    Returns:
+        用户侧字段列表。
+    """
+    return [f for f in (schema or []) if f.get("scope") != "admin"]
+
+
 async def _personal_config_snapshot(request: Request, user_id: str, plugin_id: str,
                                     schema: list[dict]) -> tuple[dict, dict]:
     """用户个人配置快照（非敏感值明文 + 敏感字段是否已配置，绝不回传敏感明文）。
@@ -287,22 +303,29 @@ async def install_capability(kind: str, item_id: str, request: Request,
         package = packages.get(item_id)
         if package is None:
             raise HTTPException(404, f"插件不存在: {item_id}")
-        # 必填校验按"个人值 ∪ 公共配置打底"判定：管理员公共配置已就绪的字段，
-        # 用户可以留空（运行期个人优先、公共兜底）；个人层只存非空值，
-        # 空串不落个人层——避免用空串把公共打底覆盖成"未配置"
-        ready = await _public_ready_keys(request, item_id)
-        missing = [
-            f["key"] for f in package.config_schema
-            if f.get("required") and f["key"] not in ready
-            and not str(values.get(f["key"]) or "").strip()
-        ]
-        if missing:
-            raise HTTPException(422, f"缺少必填配置: {', '.join(missing)}")
-        store = getattr(request.app.state, "plugin_config_store", None)
-        if store is None:
-            raise HTTPException(503, "插件配置存储未就绪")
-        values = {k: v for k, v in values.items() if str(v or "").strip()}
-        await store.save_for_user(user["sub"], item_id, values, package.config_schema)
+        # scope=admin 的字段管理员专属：用户提交值一律丢弃（不落个人层，防止
+        # 个人优先语义覆盖管理员公共配置）；剩余字段为空则整段跳过（纯一键安装）
+        user_schema = _user_fields(package.config_schema)
+        user_keys = {f["key"] for f in user_schema}
+        values = {k: v for k, v in values.items() if k in user_keys}
+        if values:
+            # 必填校验按"个人值 ∪ 公共配置打底"判定且只看用户侧字段：管理员公共
+            # 配置已就绪的字段，用户可以留空（运行期个人优先、公共兜底）；
+            # 管理员完全没配置也不再挡安装——缺配置在调用期由工具 fail-closed 报错。
+            # 个人层只存非空值，空串不落个人层——避免用空串把公共打底覆盖成"未配置"
+            ready = await _public_ready_keys(request, item_id)
+            missing = [
+                f["key"] for f in user_schema
+                if f.get("required") and f["key"] not in ready
+                and not str(values.get(f["key"]) or "").strip()
+            ]
+            if missing:
+                raise HTTPException(422, f"缺少必填配置: {', '.join(missing)}")
+            store = getattr(request.app.state, "plugin_config_store", None)
+            if store is None:
+                raise HTTPException(503, "插件配置存储未就绪")
+            values = {k: v for k, v in values.items() if str(v or "").strip()}
+            await store.save_for_user(user["sub"], item_id, values, package.config_schema)
     await _install_core(request, service, user["sub"], kind, item_id)
     return {"kind": kind, "id": item_id, "installed": True}
 
@@ -372,10 +395,15 @@ async def update_user_plugin_config(plugin_id: str, body: UserPluginConfigBody,
     store = getattr(request.app.state, "plugin_config_store", None)
     if store is None:
         raise HTTPException(503, "插件配置存储未就绪")
-    values = {k: v for k, v in body.config.items() if str(v or "").strip()}
+    # scope=admin 的字段管理员专属：用户侧提交值一律丢弃（不落个人层，防止
+    # 个人优先语义覆盖管理员公共配置），与安装路径同口径
+    user_schema = _user_fields(package.config_schema)
+    user_keys = {f["key"] for f in user_schema}
+    values = {k: v for k, v in body.config.items()
+              if k in user_keys and str(v or "").strip()}
     await store.save_for_user(user["sub"], plugin_id, values, package.config_schema)
     config, secrets_set = await _personal_config_snapshot(
-        request, user["sub"], plugin_id, package.config_schema)
+        request, user["sub"], plugin_id, user_schema)
     return {"kind": "plugin", "id": plugin_id, "config": config, "secrets_set": secrets_set}
 
 
@@ -520,8 +548,11 @@ async def market(kind: str, request: Request, user=Depends(get_current_user),
     rows = await service.market_items(user["sub"], kind)
     if kind == "plugin":
         for row in rows:
+            # ready keys 与过滤后的 schema 求交：admin 字段已在用户侧 schema 里
+            # 被剔除，其公共配置就绪与否对用户无意义
+            user_keys = {f["key"] for f in row.get("config_schema") or []}
             row["config_ready_keys"] = sorted(
-                await _public_ready_keys(request, str(row["id"])))
+                await _public_ready_keys(request, str(row["id"])) & user_keys)
     return rows
 
 
@@ -627,9 +658,14 @@ async def capability_detail(kind: str, item_id: str, request: Request,
         row["content"] = svc.read_body(item_id, user_id) or ""
         row["files"] = svc.list_skill_files(item_id, user_id)
     elif kind == "plugin":
-        row["config_ready_keys"] = sorted(await _public_ready_keys(request, item_id))
         state = _state_service(request, "plugin_service").state(item_id)
-        row["config_schema"] = state["config_schema"]
+        # 用户侧只透出 scope != admin 的字段：admin 字段统一由管理员在管理后台
+        # 配置（公共层），schema 过滤为空即详情页不出现任何配置编辑入口
+        user_schema = _user_fields(state["config_schema"])
+        user_keys = {f["key"] for f in user_schema}
+        row["config_schema"] = user_schema
+        row["config_ready_keys"] = sorted(
+            await _public_ready_keys(request, item_id) & user_keys)
         row["skills"] = state["skills"]
         row["experts"] = state["experts"]
         row["tools"] = state["tools"]
@@ -638,7 +674,7 @@ async def capability_detail(kind: str, item_id: str, request: Request,
         # 前端就不会渲染出"编辑配置"入口。敏感字段只回布尔，明文永不出库。
         if origin == "installed" and not revoked:
             config, secrets_set = await _personal_config_snapshot(
-                request, user_id, item_id, state["config_schema"])
+                request, user_id, item_id, user_schema)
             row["config"] = config
             row["secrets_set"] = secrets_set
     return row

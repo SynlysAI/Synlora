@@ -14,9 +14,6 @@ import { useAdminStore } from '@/stores/admin'
 import { CatalogPolicySwitches, FormError, GrayBadge, Modal } from './shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from './form'
 
-/** 全部合法工具名（与后端 ToolRegistry 注册项一一对应，标签见 toolLabels.ts）。 */
-const TOOL_NAMES = Object.keys(TOOL_LABELS)
-
 /** 知识库选项（后端代理 WeKnora 列表；doc_count 取不到时为 null）。 */
 interface KnowledgeBase {
   id: string
@@ -35,7 +32,6 @@ interface AssistantForm {
   toolWhitelist: string[]
   skillRefs: string[]
   mcpRefs: string[]
-  suggestedPrompts: string[]
   knowledgeBaseIds: string[]
 }
 
@@ -49,7 +45,6 @@ const EMPTY_FORM: AssistantForm = {
   toolWhitelist: [],
   skillRefs: [],
   mcpRefs: [],
-  suggestedPrompts: [''],
   knowledgeBaseIds: [],
 }
 
@@ -92,9 +87,6 @@ function AssistantFormModal({
             toolWhitelist: editing.tool_whitelist,
             skillRefs: editing.skill_refs ?? [],
             mcpRefs: editing.mcp_refs ?? [],
-            suggestedPrompts: editing.suggested_prompts?.length
-              ? editing.suggested_prompts
-              : [''],
             knowledgeBaseIds: editing.knowledge_base_ids ?? [],
           }
         : EMPTY_FORM,
@@ -104,6 +96,8 @@ function AssistantFormModal({
   /** 知识库选项（打开表单时拉一次；失败不阻塞编辑，仅提示）。 */
   const [kbs, setKbs] = useState<KnowledgeBase[] | null>(null)
   const [kbError, setKbError] = useState('')
+  /** 工具名清单（实取 /api/v1/tools；拉取失败回落 TOOL_LABELS 键，标签见 toolLabels.ts）。 */
+  const [toolNames, setToolNames] = useState<string[]>(() => Object.keys(TOOL_LABELS))
   const skills = useAdminStore((state) => state.skills)
   const loadSkills = useAdminStore((state) => state.loadSkills)
 
@@ -116,6 +110,11 @@ function AssistantFormModal({
       .catch((err) => {
         if (!cancelled) setKbError(errorText(err))
       })
+    api<Array<{ name: string; description: string }>>('/api/v1/tools')
+      .then((list) => {
+        if (!cancelled) setToolNames(list.map((item) => item.name))
+      })
+      .catch(() => undefined)
     return () => {
       cancelled = true
     }
@@ -145,7 +144,7 @@ function AssistantFormModal({
     }))
   }
 
-  /** 提交：新建 POST / 编辑 PATCH（全字段提交，白名单顺序按固定工具序）。 */
+  /** 提交：新建 POST / 编辑 PATCH（全字段提交，白名单按勾选原样提交，保留清单外已存工具名）。 */
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     if (saving) return
@@ -156,10 +155,9 @@ function AssistantFormModal({
       avatar: form.avatar.trim(),
       description: form.description.trim(),
       system_prompt: form.systemPrompt,
-      tool_whitelist: TOOL_NAMES.filter((t) => form.toolWhitelist.includes(t)),
+      tool_whitelist: form.toolWhitelist,
       skill_refs: form.skillRefs,
       mcp_refs: form.mcpRefs,
-      suggested_prompts: form.suggestedPrompts.map((item) => item.trim()).filter(Boolean),
       model_provider_id: form.modelProviderId || null,
       knowledge_base_ids: form.knowledgeBaseIds,
     }
@@ -251,11 +249,11 @@ function AssistantFormModal({
         </label>
         <div className={labelClass}>
           <div className="flex items-center justify-between">
-            <span>工具白名单（已选 {form.toolWhitelist.length}/{TOOL_NAMES.length}）</span>
+            <span>工具白名单（已选 {form.toolWhitelist.length}/{toolNames.length}）</span>
             <span className="flex gap-2 text-xs">
               <button
                 type="button"
-                onClick={() => setForm((f) => ({ ...f, toolWhitelist: [...TOOL_NAMES] }))}
+                onClick={() => setForm((f) => ({ ...f, toolWhitelist: [...toolNames] }))}
                 className="text-[var(--sa-alias-label-tertiary)] transition-colors hover:text-[var(--sa-alias-label-primary)]"
               >
                 全选
@@ -270,7 +268,7 @@ function AssistantFormModal({
             </span>
           </div>
           <div className="grid grid-cols-2 gap-1.5 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-specific-input-major)] p-2.5 sm:grid-cols-3">
-            {TOOL_NAMES.map((tool) => (
+            {toolNames.map((tool) => (
               <label key={tool} className="flex items-center gap-2 text-[13px] text-[var(--sa-alias-label-primary)]">
                 <input
                   type="checkbox"
@@ -279,7 +277,7 @@ function AssistantFormModal({
                   className="h-4 w-4 accent-[var(--sa-alias-button-primary-fill)]"
                 />
                 <span className="truncate" title={tool}>
-                  {TOOL_LABELS[tool]}
+                  {TOOL_LABELS[tool] ?? tool}
                 </span>
               </label>
             ))}
@@ -339,56 +337,6 @@ function AssistantFormModal({
             这里只保存 MCP ID，不读取或保存凭证；运行时按当前用户可访问的 MCP 连接解析。
           </span>
         </label>
-
-        <div className={labelClass}>
-          <span>推荐问题</span>
-          <div className="flex flex-col gap-2">
-            {form.suggestedPrompts.map((prompt, index) => (
-              <div key={index} className="flex gap-2">
-                <input
-                  type="text"
-                  value={prompt}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      suggestedPrompts: current.suggestedPrompts.map((item, itemIndex) =>
-                        itemIndex === index ? event.target.value : item,
-                      ),
-                    }))
-                  }
-                  placeholder="例如：帮我分析这组实验数据"
-                  className={inputClass}
-                />
-                <button
-                  type="button"
-                  onClick={() =>
-                    setForm((current) => ({
-                      ...current,
-                      suggestedPrompts: current.suggestedPrompts.filter(
-                        (_, itemIndex) => itemIndex !== index,
-                      ),
-                    }))
-                  }
-                  className={secondaryButtonClass}
-                >
-                  移除
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              onClick={() =>
-                setForm((current) => ({
-                  ...current,
-                  suggestedPrompts: [...current.suggestedPrompts, ''],
-                }))
-              }
-              className={`${secondaryButtonClass} self-start`}
-            >
-              + 添加问题
-            </button>
-          </div>
-        </div>
 
         {/* 知识库绑定（WeKnora）：knowledge.search 工具的检索范围 */}
         <div className={labelClass}>

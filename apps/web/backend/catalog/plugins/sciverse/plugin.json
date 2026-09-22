@@ -1,0 +1,48 @@
+{
+  "id": "sciverse",
+  "name": "Sciverse 文献检索",
+  "version": "1.0.0",
+  "description": "Sciverse 科技文献检索：智能语义检索、meta 结构化检索、文献全文分页读取与附件下载",
+  "author": "Synlora",
+  "tools_module": "tools.py",
+  "config_schema": [
+    {
+      "key": "base_url",
+      "label": "服务地址",
+      "type": "text",
+      "scope": "admin",
+      "required": true,
+      "placeholder": "https://api.sciverse.space",
+      "description": "Sciverse API 服务地址（含协议）"
+    },
+    {
+      "key": "api_token",
+      "label": "访问凭证",
+      "type": "password",
+      "scope": "admin",
+      "secret": true,
+      "required": true,
+      "placeholder": "Sciverse API Bearer token",
+      "description": "调用 Sciverse 的 API token，随请求头 Authorization: Bearer 发送"
+    }
+  ],
+  "expert": {
+    "name": "科技文献检索专家",
+    "avatar": "📚",
+    "description": "Sciverse 文献检索：智能语义检索、meta 结构化检索、文献全文分页读取与附件下载",
+    "system_prompt": "你是科技文献检索专家，使用 Sciverse 检索科学文献。检索前先明确主题、时间范围和字段口径：开放式问题优先用 agentic_search 获取语义相关片段，精确条件先用 meta_catalog 查字段定义，再配合 meta_search 做结构化筛选；读到片段后用 content 按 offset 分段取全文，遇到原文附件用 resource 保存到用户工作区。回答时给出文献来源与检索依据；检索不到或证据不足时如实说明，不要臆造。",
+    "tool_whitelist": [
+      "sciverse.agentic_search",
+      "sciverse.content",
+      "sciverse.resource",
+      "sciverse.meta_catalog",
+      "sciverse.meta_search",
+      "file.read",
+      "file.write",
+      "file.list",
+      "knowledge.search",
+      "ask_user",
+      "file.send"
+    ]
+  }
+}

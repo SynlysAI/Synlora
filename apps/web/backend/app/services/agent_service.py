@@ -238,7 +238,8 @@ class AgentService:
                    requested_skills: list[str] | None = None,
                    attachments: list[dict] | None = None,
                    file_ownership: dict | None = None,
-                   enabled_plugins: list[str] | None = None) -> str:
+                   enabled_plugins: list[str] | None = None,
+                   research_context: dict | None = None) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
@@ -266,11 +267,14 @@ class AgentService:
                 在本轮生效——工具、配置注入、技能索引按它收窄，未启用插件的
                 播种专家按未选处理。None 与空列表同为"未启用任何插件"；
                 内置工具不受影响。
+            research_context: Plane 签发的只读科研范围（会话创建时已校验），
+                经 ctx.extra 透传给工具；None 表示普通 Synlora 会话。
         Returns:
             run_id。
 
         Raises:
             TooManyRuns: 该会话已有进行中的消息，或该用户运行中的对话已达上限。
+
         """
         # 用户身份：一次取值（取不到即 KeyError，与函数内其余用法口径一致），
         # 绝不兜底成字面量目录名——那会让多个用户共用 users/anonymous/ 且与
@@ -506,6 +510,9 @@ class AgentService:
             ctx_extra_snapshot: dict = {
                 # 工作区根：插件连接器读取用户文件（如谱图上传）时用
                 "workspace_root": str(workspace_root),
+                # Plane 签发的只读科研范围（会话创建时已校验落库）；经 extra
+                # 通道透传给工具，harness 不感知业务形状
+                "research_context": research_context,
                 "http_allowed_hosts": self._settings.allowed_hosts,
                 # python.run 执行器（部署级注入，缺省工具回落本机执行；已在上文解析）
                 "code_executor": executor,
