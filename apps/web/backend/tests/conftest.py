@@ -43,7 +43,53 @@ async def store(request, tmp_path):
 
 
 @pytest.fixture
-async def app(tmp_path):
+def seed_public_catalog(tmp_path) -> None:
+    """数据目录预置钩子：在 app lifespan 扫描 catalog 之前调用。
+
+    默认不预置任何内容；需要内置测试插件包的测试在本模块覆写本夹具，
+    向 `tmp_path/data/public/catalog` 写入包目录即可。
+
+    Args:
+        tmp_path: pytest 临时目录夹具（即本 app 的 data_dir 上层）。
+    """
+
+
+def write_dummy_user_plugin(tmp_path) -> str:
+    """向数据目录公共 catalog 根写入混合 scope 的测试插件包。
+
+    schema：base_url（scope=admin 必填）/ api_key（用户侧 secret 必填）/
+    top_k（用户侧可选文本）——覆盖「管理员公共配置 + 用户侧可填」的组合。
+
+    Args:
+        tmp_path: pytest 临时目录夹具（即本 app 的 data_dir 上层）。
+
+    Returns:
+        插件 id。
+    """
+    import json
+
+    pkg = tmp_path / "data" / "public" / "catalog" / "plugins" / "dummy_user_cfg"
+    pkg.mkdir(parents=True)
+    (pkg / "tools.py").write_text('"""测试插件工具模块（无工具）。"""\n', encoding="utf-8")
+    (pkg / "plugin.json").write_text(json.dumps({
+        "id": "dummy_user_cfg",
+        "name": "Dummy 用户配置插件",
+        "version": "1.0.0",
+        "description": "测试用混合 scope 插件",
+        "tools_module": "tools.py",
+        "config_schema": [
+            {"key": "base_url", "label": "服务地址", "type": "text",
+             "scope": "admin", "required": True},
+            {"key": "api_key", "label": "API Key", "type": "password",
+             "secret": True, "required": True},
+            {"key": "top_k", "label": "Top K", "type": "text"},
+        ],
+    }, ensure_ascii=False), encoding="utf-8")
+    return "dummy_user_cfg"
+
+
+@pytest.fixture
+async def app(tmp_path, seed_public_catalog):
     """lifespan 完整初始化的测试 app（临时 Settings + sqlite store + repos + 种子助手）。
 
     Yields:

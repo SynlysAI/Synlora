@@ -2,15 +2,27 @@
 
 个人配置更新（PUT /api/v1/me/plugins/{id}/config）与详情回显同属"详情页编辑配置"
 一条链，故合在本文件：详情给表单预填值与已配置标记，更新端点写回。
+个人配置相关用例用混合 scope 的测试插件（spec_agent 已全量 admin 化，用户侧
+无字段可填），spec_agent 用例只覆盖与个人配置无关的详情行为。
 """
 from __future__ import annotations
 
 import pytest
 
+from tests.conftest import write_dummy_user_plugin
+
 # 插件唯一内置条目：spec_agent（catalog/plugins/spec_agent）。用户安装它会把
 # spec.* 工具注册进进程级单例 REGISTRY，用例收尾必须回收，否则污染后续用例
 # （照抄 tests/test_plugins_api.py 的 clean_plugin_state 模式）。
 PLUGIN = "spec_agent"
+# 混合 scope 测试插件（base_url=admin；api_key=用户 secret 必填；top_k=用户可选）
+USER_PLUGIN = "dummy_user_cfg"
+
+
+@pytest.fixture
+def seed_public_catalog(tmp_path):
+    """预置混合 scope 测试插件包（须在 lifespan 扫描前写入）。"""
+    return write_dummy_user_plugin(tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -308,17 +320,38 @@ async def test_my_expert_detail_isolation(client, user_headers, admin_headers):
         headers=admin_headers)).status_code == 404
 
 
+async def _install_user_plugin(client, headers: dict, **config) -> None:
+    """以给定个人配置安装测试插件（校验安装路径本身可用）。
+
+    Args:
+        client: 异步测试客户端。
+        headers: 请求头。
+        **config: 个人配置字段（api_key / top_k 等用户侧字段）。
+    """
+    res = await client.post(f"/api/v1/catalog/plugin/{USER_PLUGIN}/install",
+                            headers=headers, json={"config": config})
+    assert res.status_code == 201, res.text
+
+
 async def test_plugin_detail_returns_personal_config_without_secret(client, user_headers):
-    """详情回显个人配置：非敏感字段给明文，敏感字段只给"已配置"布尔，明文不出库。"""
-    await _install_spec_agent(client, user_headers,
-                              base_url="http://u.local", token="u-secret")
-    res = await client.get(f"/api/v1/me/capabilities/plugin/{PLUGIN}", headers=user_headers)
+    """详情回显个人配置：非敏感字段给明文，敏感字段只给"已配置"布尔，明文不出库。
+
+    scope=admin 的 base_url 用户侧提交即被丢弃：详情 schema 里不出现，
+    个人层也不落库——admin 字段只归管理后台。
+    """
+    await _install_user_plugin(client, user_headers,
+                               base_url="http://u.local",  # admin 字段：应被丢弃
+                               api_key="u-secret", top_k="5")
+    res = await client.get(f"/api/v1/me/capabilities/plugin/{USER_PLUGIN}",
+                           headers=user_headers)
     assert res.status_code == 200
     body = res.json()
     assert body["origin"] == "installed"
-    assert body["config"] == {"base_url": "http://u.local"}
-    assert body["secrets_set"] == {"token": True}
+    assert body["config"] == {"top_k": "5"}
+    assert body["secrets_set"] == {"api_key": True}
     assert "u-secret" not in res.text
+    schema_keys = [f["key"] for f in body["config_schema"]]
+    assert schema_keys == ["api_key", "top_k"]  # base_url（admin）不透出
 
 
 async def test_plugin_detail_without_personal_layer_has_no_config_keys(client, user_headers):
@@ -335,33 +368,31 @@ async def test_plugin_detail_without_personal_layer_has_no_config_keys(client, u
 
 async def test_update_plugin_config_changes_non_secret(client, user_headers):
     """更新非敏感字段：写回个人层，响应给出可直接刷新的最新快照。"""
-    await _install_spec_agent(client, user_headers,
-                              base_url="http://a", token="tok-1")
-    res = await client.put(f"/api/v1/me/plugins/{PLUGIN}/config",
-                           headers=user_headers, json={"config": {"base_url": "http://b"}})
+    await _install_user_plugin(client, user_headers, api_key="tok-1", top_k="3")
+    res = await client.put(f"/api/v1/me/plugins/{USER_PLUGIN}/config",
+                           headers=user_headers, json={"config": {"top_k": "9"}})
     assert res.status_code == 200
     assert res.json() == {
-        "kind": "plugin", "id": PLUGIN,
-        "config": {"base_url": "http://b"}, "secrets_set": {"token": True},
+        "kind": "plugin", "id": USER_PLUGIN,
+        "config": {"top_k": "9"}, "secrets_set": {"api_key": True},
     }
     detail = await client.get(
-        f"/api/v1/me/capabilities/plugin/{PLUGIN}", headers=user_headers)
-    assert detail.json()["config"] == {"base_url": "http://b"}
+        f"/api/v1/me/capabilities/plugin/{USER_PLUGIN}", headers=user_headers)
+    assert detail.json()["config"] == {"top_k": "9"}
 
 
 async def test_update_plugin_config_blank_secret_keeps_stored_value(app, client, user_headers):
     """敏感字段留空 = 保持已存值（核心行为）：既不回显明文，也不因空串被清掉。"""
-    await _install_spec_agent(client, user_headers,
-                              base_url="http://a", token="tok-1")
-    res = await client.put(f"/api/v1/me/plugins/{PLUGIN}/config", headers=user_headers,
-                           json={"config": {"base_url": "http://b", "token": "   "}})
+    await _install_user_plugin(client, user_headers, api_key="tok-1", top_k="3")
+    res = await client.put(f"/api/v1/me/plugins/{USER_PLUGIN}/config", headers=user_headers,
+                           json={"config": {"top_k": "9", "api_key": "   "}})
     assert res.status_code == 200
-    assert res.json()["config"] == {"base_url": "http://b"}
-    assert res.json()["secrets_set"] == {"token": True}
+    assert res.json()["config"] == {"top_k": "9"}
+    assert res.json()["secrets_set"] == {"api_key": True}
     assert "tok-1" not in res.text
     # 直读存储：旧凭证确实还在（"留空保持不变"必须落到库上，而不只是响应好看）
-    assert await app.state.plugin_config_store.resolved_for_user("u-user", PLUGIN) == {
-        "base_url": "http://b", "token": "tok-1"}
+    assert await app.state.plugin_config_store.resolved_for_user("u-user", USER_PLUGIN) == {
+        "api_key": "tok-1", "top_k": "9"}
 
 
 async def test_update_plugin_config_not_installed_404(app, client, user_headers,

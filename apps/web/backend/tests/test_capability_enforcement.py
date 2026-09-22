@@ -14,6 +14,7 @@ from synlys_harness import ModelProviderConfig, TextDelta, Usage
 from app.core.auth import issue_token
 from app.services import agent_service as agent_service_mod
 from app.services.tool_registry import REGISTRY
+from tests.conftest import write_dummy_user_plugin
 
 SPEC_TOOLS = {"spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"}
 # 启动播种为全员默认启用的基线技能（seed.py::DEFAULT_ENABLED_SKILLS）
@@ -21,6 +22,14 @@ BUILTIN_SKILLS = {"docx", "xlsx", "pptx", "pdf", "exploratory-data-analysis"}
 PLUGIN_EXPERT = "谱图解析专家"
 # 随仓库的内置内容根（内置技能由 catalog/skills 只读根提供，与生产口径一致）
 REPO_CATALOG = Path(__file__).resolve().parents[1] / "catalog"
+# 混合 scope 测试插件（base_url=admin 必填；api_key=用户 secret 必填；top_k=用户可选）
+USER_PLUGIN = "dummy_user_cfg"
+
+
+@pytest.fixture
+def seed_public_catalog(tmp_path):
+    """预置混合 scope 测试插件包（须在 lifespan 扫描前写入）。"""
+    return write_dummy_user_plugin(tmp_path)
 
 
 class _NoopBackend:
@@ -121,6 +130,20 @@ async def _install_plugin(client, admin_headers) -> None:
     """
     resp = await client.post("/api/v1/plugins/spec_agent/install",
                              json={"config": {"base_url": "http://spec.local"}},
+                             headers=admin_headers)
+    assert resp.status_code == 201, resp.text
+
+
+async def _install_user_plugin_public(client, admin_headers) -> None:
+    """以管理员公共配置安装测试插件（base_url + api_key 打底）。
+
+    Args:
+        client: httpx 异步客户端。
+        admin_headers: 管理员请求头。
+    """
+    resp = await client.post(f"/api/v1/plugins/{USER_PLUGIN}/install",
+                             json={"config": {"base_url": "http://public",
+                                              "api_key": "pub-key"}},
                              headers=admin_headers)
     assert resp.status_code == 201, resp.text
 
@@ -317,7 +340,11 @@ async def test_skill_and_expert_policies_filter_lists(
 
 async def test_user_assistant_visible_and_personal_config_overrides(
         app, client, admin_headers, user_headers):
-    """用户自建助手不受过滤；插件个人配置覆盖公共配置且互不串号。"""
+    """用户自建助手不受过滤；插件用户侧配置走个人层且互不串号。
+
+    spec_agent 全量 admin 化后用户侧无字段，覆盖语义用混合 scope 测试插件验证：
+    用户提交的 admin 字段被丢弃（不覆盖公共配置），用户侧字段落个人层。
+    """
     created = await client.post("/api/v1/assistants", headers=admin_headers,
                                 json={"name": "自定义助手", "system_prompt": "p"})
     assert created.status_code == 201
@@ -325,55 +352,56 @@ async def test_user_assistant_visible_and_personal_config_overrides(
              (await client.get("/api/v1/assistants", headers=user_headers)).json()}
     assert "自定义助手" in names
 
-    await client.post("/api/v1/plugins/spec_agent/install",
-                      json={"config": {"base_url": "http://public", "token": "pub"}},
-                      headers=admin_headers)
-    resp = await client.post("/api/v1/catalog/plugin/spec_agent/install",
-                             json={"config": {"base_url": "http://mine", "token": "mine"}},
+    # 管理员公共安装必须带全量必填（api_key 也是必填，否则公共打底本身 422）
+    await _install_user_plugin_public(client, admin_headers)
+    resp = await client.post(f"/api/v1/catalog/plugin/{USER_PLUGIN}/install",
+                             json={"config": {"base_url": "http://mine",
+                                              "top_k": "9"}},
                              headers=user_headers)
     assert resp.status_code == 201
 
     store = app.state.plugin_config_store
-    assert await store.resolved_for_user("u-user", "spec_agent") == {
-        "base_url": "http://mine", "token": "mine"}
-    assert await store.resolved_for_user("u-other", "spec_agent") == {
-        "base_url": "http://public", "token": "pub"}
+    # 个人层只有用户侧字段；admin 字段的公共打底对任何用户都生效
+    assert await store.resolved_for_user("u-user", USER_PLUGIN) == {
+        "base_url": "http://public", "api_key": "pub-key", "top_k": "9"}
+    assert await store.resolved_for_user("u-other", USER_PLUGIN) == {
+        "base_url": "http://public", "api_key": "pub-key"}
 
 
 # ---------- 安装/卸载与参数校验 ----------
 
 
 async def test_install_missing_required_config_422(app, client, user_headers):
-    """带 config 安装插件时缺必填字段 422，且不产生安装记录。"""
-    resp = await client.post("/api/v1/catalog/plugin/spec_agent/install",
-                             json={"config": {"token": "t"}}, headers=user_headers)
-    assert resp.status_code == 422 and "base_url" in resp.json()["detail"]
+    """缺用户侧必填字段 422 且不产生安装记录；admin 字段用户提交被丢弃、不挡安装。"""
+    resp = await client.post(f"/api/v1/catalog/plugin/{USER_PLUGIN}/install",
+                             json={"config": {"top_k": "3"}}, headers=user_headers)
+    assert resp.status_code == 422 and "api_key" in resp.json()["detail"]
 
     rows = (await client.get("/api/v1/market/plugin", headers=user_headers)).json()
-    row = next(r for r in rows if r["id"] == "spec_agent")
+    row = next(r for r in rows if r["id"] == USER_PLUGIN)
     assert row["installed"] is False
 
 
 async def test_install_with_public_config_can_skip_required(
         app, client, admin_headers, user_headers):
-    """公共配置打底后：必填字段可留空安装（市场行 config_ready_keys 供前端放宽）。
+    """公共配置打底后：用户侧必填字段可留空安装（市场行 config_ready_keys 供前端放宽）。
 
-    个人层只存非空值——留空的 base_url 不落个人配置，运行期回落公共值；
-    空串也不会把公共打底覆盖成"未配置"。
+    个人层只存非空值——留空的 api_key 不落个人配置，运行期回落公共值；
+    空串也不会把公共打底覆盖成"未配置"；admin 字段的用户提交值直接丢弃。
     """
-    await _install_plugin(client, admin_headers)  # 管理员公共安装：base_url 打底
+    await _install_user_plugin_public(client, admin_headers)
     market = (await client.get("/api/v1/market/plugin", headers=user_headers)).json()
-    row = next(r for r in market if r["id"] == "spec_agent")
-    assert "base_url" in row["config_ready_keys"]
+    row = next(r for r in market if r["id"] == USER_PLUGIN)
+    assert "api_key" in row["config_ready_keys"]
 
-    resp = await client.post("/api/v1/catalog/plugin/spec_agent/install",
-                             json={"config": {"token": "my-own", "base_url": ""}},
+    resp = await client.post(f"/api/v1/catalog/plugin/{USER_PLUGIN}/install",
+                             json={"config": {"top_k": "9", "api_key": ""}},
                              headers=user_headers)
     assert resp.status_code == 201, resp.text
     resolved = await app.state.plugin_config_store.resolved_for_user(
-        "u-user", "spec_agent")
-    assert resolved["base_url"] == "http://spec.local"  # 空串未覆盖公共打底
-    assert resolved["token"] == "my-own"
+        "u-user", USER_PLUGIN)
+    assert resolved["api_key"] == "pub-key"  # 留空未覆盖公共打底
+    assert resolved["top_k"] == "9"
 
 
 async def test_install_unknown_kind_and_uninstall(client, user_headers):

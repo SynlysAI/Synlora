@@ -120,7 +120,7 @@ pm2 logs synlys-agent
 
 ### 插件机制（AI⁴MS 子平台接入）
 
-一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。首个插件 `spec_agent` 提供核磁预测三件套并自动播种「谱图解析专家」，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。配置字段按 `scope` 分层：`"scope": "admin"` 为管理员公共配置（管理后台填写，用户侧不透出、不可写，插件全量 admin 字段时用户安装**不出配置表单一键装**，管理员未配置则调用时 fail-closed 报错），缺省为用户可填（安装时/详情页编辑，个人层优先于公共兜底）。已接入插件：`spec_agent`（核磁预测三件套 + 五类谱图异步解析）、`poly_agent`（Poly_Agent 高分子垂类预测五件套：聚酰亚胺 Tg / 氟基电解质配方 / Raman 光谱解析 / 共聚竞聚率拟合 / 硅键谱图集成）、`sciverse`（科技文献检索），各自动播种对应专家，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 能力目录与统一扩展中心（市场）
 

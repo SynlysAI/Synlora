@@ -49,26 +49,29 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 
 **设计原则：一切皆插件。** 新增子平台 = 新增一个插件目录，宿主与 harness 零改动；插件配置由插件自己声明（`plugin.json` 的 `config_schema`），由管理员在管理页填写后**落库加密**（敏感字段 Fernet 加密），**不写 `.env`/`settings.py`**。
 
+配置字段按 `scope` 分层：`"scope": "admin"` = 管理员公共配置专属（用户侧市场/详情的 schema 不透出该字段、安装与个人配置端点直接丢弃用户提交值，防止个人层覆盖公共层）；缺省 = 用户可填（个人层优先、公共兜底）。插件全量 admin 字段时，用户在扩展中心**一键安装不出配置表单**；管理员未配置也能装，调用时工具 fail-closed 报「未配置，请在管理后台插件页填写」。
+
 插件包结构：
 
 ```
 apps/web/backend/catalog/plugins/<id>/
   plugin.json              # manifest：id/name/version/tools_module/config_schema/skills/expert
   tools.py                 # 用 harness @tool 声明的工具，配置从 ctx.extra["plugins"][id] 取
+  connectors.py            # 异步任务连接器（可选；spec_agent 的 5 类谱图解析走这里）
   skills/<name>/SKILL.md   # 插件自带技能（可选）
 ```
 
-**管理入口**：管理后台 →「插件」页（左侧导航）→ 安装（填写配置）/ 配置（敏感字段留空 = 保持原值，已配置的敏感字段可点「清除」）。
+**管理入口**：管理后台 →「插件」页（左侧导航）→ 配置即启用（首次保存 = install：存公共配置 + 挂载工具/技能 + 播种专家；敏感字段留空 = 保持原值，已配置的敏感字段可点「清除」）。管理员视角没有独立的"安装"动作。
 
 **新增一个子平台的步骤**：
 
-1. 复制 `catalog/plugins/spec_agent/`，改 `plugin.json`（`id`/`name`/`config_schema`/`tools_module`/`expert`）
+1. 复制 `catalog/plugins/spec_agent/`，改 `plugin.json`（`id`/`name`/`config_schema`（字段按需标 `scope: "admin"`）/`tools_module`/`expert`）
 2. 写 `tools.py`（`from synlys_harness import tool, ToolContext, ToolResult`，配置走 `ctx.extra["plugins"]["<id>"]`；需要以登录用户身份调子平台时，另见下方 `ctx.extra["ai4ms_token"]` 约定）
-3. 重启服务后在插件页安装
+3. 重启服务后在插件页配置启用
 
 宿主与 harness 一行不用改。
 
-**已接入**：`spec_agent`（Spec_Agent 核磁预测三件套 `spec.nmr.forward/reverse/search`；安装后自动播种「谱图解析专家」；服务端未开鉴权时凭证留空）。
+**已接入**：`spec_agent`（Spec_Agent 核磁预测三件套 `spec.nmr.forward/reverse/search` + 5 类谱图异步解析；自动播种「谱图解析专家」；服务端未开鉴权时凭证留空）、`poly_agent`（Poly_Agent 高分子垂类预测五件套 `poly.tg_predict/electrolyte_predict/raman_analyze/reactivity_fit/silicon_bond`；同步阻塞调用 `POST /research-engine/algorithm-runs`，Raman 走 multipart 上传光谱文件；平台级账号自动登录并缓存凭证；自动播种「高分子性能预测专家」）、`sciverse`（科技文献检索）。三者配置字段均为 `scope: "admin"`（统一管理员配置，用户只装不配）。
 
 **访问凭证（调用 AI⁴MS 子平台的身份）**：
 

@@ -1,10 +1,11 @@
 /**
  * 扩展管理页（#/admin/plugins，仅 admin）。
  *
- * 扩展是随包发布的平台插件包（扫描插件目录 manifest 得到），安装/配置
- * 均写加密配置库；页面按插件 config_schema 动态渲染配置表单：
- * 敏感字段（secret）加密存储、接口永不回明文，已配置时输入框留空表示
- * 保持原值（对应 secrets_set[key]）。
+ * 扩展是随包发布的平台插件包（扫描插件目录 manifest 得到），配置即启用
+ * （首次保存配置 = 后端 install，写加密配置库）；页面按插件 config_schema
+ * 动态渲染配置表单：敏感字段（secret）加密存储、接口永不回明文，已配置时
+ * 输入框留空表示保持原值（对应 secrets_set[key]）。scope=admin 的字段只在
+ * 本页填写（用户侧安装不弹表单）。
  *
  * 结构照 SkillsAdmin（行卡片列表）+ ModelsAdmin（模态表单的
  * saving/error 局部态、errorText 内联展示、提交后刷新列表）。
@@ -17,9 +18,9 @@ import { useAdminStore } from '@/stores/admin'
 import { CatalogPolicySwitches, FormError, GrayBadge, Modal } from './shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from './form'
 
-/** 状态徽标：未安装（灰）/ 已配置（灰）/ 待补配置（弱红，列出缺失必填项）。 */
+/** 状态徽标：未配置（灰）/ 已配置（灰）/ 待补配置（弱红，列出缺失必填项）。 */
 function StatusBadge({ plugin }: { plugin: PluginInfo }) {
-  if (!plugin.installed) return <GrayBadge>未安装</GrayBadge>
+  if (!plugin.installed) return <GrayBadge>未配置</GrayBadge>
   if (plugin.configured) return <GrayBadge>已配置</GrayBadge>
   return (
     <span className="inline-flex shrink-0 items-center rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-interactive-bg-hover-danger)] px-1.5 py-px text-[10px] leading-4 text-[var(--sa-alias-state-error-primary)]">
@@ -66,7 +67,7 @@ function PluginFormModal({
     if (value.trim()) setClearing((list) => list.filter((k) => k !== key))
   }
 
-  /** 提交：未安装 POST /install，已安装 PUT /config（422 缺必填等 detail 内联展示）。 */
+  /** 提交：未配置 POST /install（配置即启用），已配置 PUT /config（422 缺必填等 detail 内联展示）。 */
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault()
     if (saving) return
@@ -86,13 +87,13 @@ function PluginFormModal({
           body,
         })
         setClearing([])
-        onDone(`已更新 ${plugin.name}`)
+        onDone(`已更新 ${plugin.name} 配置`)
       } else {
         await api(`/api/v1/plugins/${plugin.id}/install`, {
           method: 'POST',
           body: { config },
         })
-        onDone(`已安装 ${plugin.name}`)
+        onDone(`配置完成，${plugin.name} 已启用`)
       }
     } catch (err) {
       setError(errorText(err))
@@ -101,8 +102,14 @@ function PluginFormModal({
   }
 
   return (
-    <Modal title={plugin.installed ? `配置 ${plugin.name}` : `安装 ${plugin.name}`} onClose={onClose}>
+    <Modal title={`配置 ${plugin.name}`} onClose={onClose}>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        {/* 未配置时说明首次保存的启用效果；已配置则是纯改配置，无需提示 */}
+        {!plugin.installed && (
+          <p className="text-xs text-[var(--sa-alias-label-caption)]">
+            首次保存后将启用该插件：工具与专家对平台生效，用户即可在能力中心安装使用。
+          </p>
+        )}
         {plugin.config_schema.map((field, index) => {
           // 仅「已配置的敏感字段」才有清除入口（未配置时无事可做）
           const clearable = Boolean(field.secret) && Boolean(plugin.secrets_set[field.key])
@@ -282,7 +289,7 @@ export default function PluginsAdmin() {
                 onClick={() => setEditing(p)}
                 className="text-[13px] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-primary)]"
               >
-                {p.installed ? '配置' : '安装'}
+                配置
               </button>
             </div>
           </div>

@@ -1,0 +1,57 @@
+{
+  "id": "poly_agent",
+  "name": "Poly_Agent 高分子垂类预测",
+  "version": "1.0.0",
+  "description": "高分子垂类模型预测：聚酰亚胺 Tg、氟基电解质配方、Raman 光谱解析、共聚竞聚率拟合、硅键谱图集成评分",
+  "author": "AI⁴MS",
+  "tools_module": "tools.py",
+  "config_schema": [
+    {
+      "key": "base_url",
+      "label": "服务地址",
+      "type": "text",
+      "scope": "admin",
+      "required": true,
+      "placeholder": "http://10.26.15.93:8003",
+      "description": "Poly_Agent 服务地址（含协议与端口）"
+    },
+    {
+      "key": "username",
+      "label": "登录账号",
+      "type": "text",
+      "scope": "admin",
+      "required": true,
+      "placeholder": "Poly_Agent 平台账号",
+      "description": "调用 Poly_Agent 的平台级登录账号（所有用户共用）"
+    },
+    {
+      "key": "password",
+      "label": "登录密码",
+      "type": "password",
+      "scope": "admin",
+      "secret": true,
+      "required": true,
+      "placeholder": "Poly_Agent 平台账号密码",
+      "description": "上述账号的登录密码；插件自动登录并缓存凭证（过期自动重登）"
+    }
+  ],
+  "expert": {
+    "name": "高分子性能预测专家",
+    "avatar": "🧪",
+    "description": "高分子垂类模型预测：聚酰亚胺 Tg、氟基电解质配方、Raman 光谱解析、共聚竞聚率拟合、硅键谱图集成评分",
+    "system_prompt": "你是高分子材料性能预测专家，可以调用 Poly_Agent 平台的五个垂类模型：聚酰亚胺玻璃化转变温度预测、含氟电解质配方性能预测与配方推荐、Raman 光谱结构解析、共聚竞聚率拟合、硅键谱图集成评分。使用时先确认用户输入完整（SMILES/配方表/光谱文件路径/实验数据行），缺什么先问再调；结果要给出数值、单位与模型版本，多候选要排序并说明理由；预测结果属于模型估计，要提醒用户结合实验验证，不要臆造模型没有输出的结论。",
+    "tool_whitelist": [
+      "poly.tg_predict",
+      "poly.electrolyte_predict",
+      "poly.raman_analyze",
+      "poly.reactivity_fit",
+      "poly.silicon_bond",
+      "file.read",
+      "file.list",
+      "python.run",
+      "knowledge.search",
+      "ask_user",
+      "file.send"
+    ]
+  }
+}
