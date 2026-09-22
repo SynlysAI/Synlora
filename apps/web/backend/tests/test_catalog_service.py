@@ -50,14 +50,14 @@ async def test_not_default_requires_install(caps):
     非默认取值已与缺省相同，"未安装不可见"单看是恒真的；先设一次"默认启用"
     作对照，证明策略确实在放行/拦截。
     """
-    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=True)
-    assert await caps.is_visible("u1", "skill", "office-doc") is True
+    await caps.policy.set("skill", "rdkit", visibility="public", default_enabled=True)
+    assert await caps.is_visible("u1", "skill", "rdkit") is True
 
-    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=False)
-    assert await caps.is_visible("u1", "skill", "office-doc") is False
-    await caps.installs.install("u1", "skill", "office-doc")
-    assert await caps.is_visible("u1", "skill", "office-doc") is True
-    assert await caps.is_visible("u2", "skill", "office-doc") is False
+    await caps.policy.set("skill", "rdkit", visibility="public", default_enabled=False)
+    assert await caps.is_visible("u1", "skill", "rdkit") is False
+    await caps.installs.install("u1", "skill", "rdkit")
+    assert await caps.is_visible("u1", "skill", "rdkit") is True
+    assert await caps.is_visible("u2", "skill", "rdkit") is False
 
 
 async def test_unknown_item_is_not_visible(caps):
@@ -114,19 +114,19 @@ async def test_exists_and_can_install(caps):
 
 async def test_visible_skill_names_includes_plugin_skills(caps):
     """插件技能跟随其插件可见性（不是目录条目也要能算出来）。"""
-    # 缺省 = 非默认启用：先给 u1 装上内置技能与插件，才谈得上"可见"
-    for name in ("data-analysis", "pdf-extraction", "office-doc"):
+    # 缺省 = 非默认启用：先给 u1 装上深度技能与插件，才谈得上"可见"
+    for name in ("rdkit", "matplotlib", "seaborn"):
         await caps.installs.install("u1", "skill", name)
     await caps.installs.install("u1", "plugin", "spec_agent")
 
     names = await caps.visible_skill_names("u1")
-    assert {"data-analysis", "pdf-extraction", "office-doc"} <= names
+    assert {"rdkit", "matplotlib", "seaborn"} <= names
     assert "spec-nmr" in names  # 来自 spec_agent 插件的 skills 声明
 
     await caps.policy.set("plugin", "spec_agent", visibility="hidden", default_enabled=False)
     names_after = await caps.visible_skill_names("u1")
     assert "spec-nmr" not in names_after
-    assert "data-analysis" in names_after  # 内置技能不受插件策略影响
+    assert "rdkit" in names_after  # 目录技能不受插件策略影响
 
 
 async def test_market_plugin_rows_include_config_schema(caps):
@@ -153,57 +153,57 @@ async def test_market_expert_rows_include_avatar(caps):
 
 async def test_visible_ids_matches_per_item_visibility(caps):
     """批量计算与逐条判定结果一致（优化不改变语义）。"""
-    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=False)
-    await caps.installs.install("u1", "skill", "office-doc")
+    await caps.policy.set("skill", "rdkit", visibility="public", default_enabled=False)
+    await caps.installs.install("u1", "skill", "rdkit")
     batch = await caps.visible_ids("u1", "skill")
     per_item = {i.id for i in caps.catalog.list_items("skill")
                 if await caps.is_visible("u1", "skill", i.id)}
     assert batch == per_item
 
     # 停用后仍须一致（上一轮遗漏：这条不变量原先只覆盖了启用态）
-    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
+    await caps.installs.set_enabled("u1", "skill", "rdkit", False)
     assert await caps.visible_ids("u1", "skill") == {
         i.id for i in caps.catalog.list_items("skill")
         if await caps.is_visible("u1", "skill", i.id)
     }
     # 且该条目确实被判为不可见（防两侧同时退化为"恒可见"而假绿）
-    assert await caps.is_visible("u1", "skill", "office-doc") is False
+    assert await caps.is_visible("u1", "skill", "rdkit") is False
 
 
 async def test_disabled_install_is_not_visible(caps):
     """已装但停用 → 与未装同等不可见，并进入技能黑名单。"""
-    await caps.installs.install("u1", "skill", "office-doc")
-    assert "office-doc" in await caps.visible_ids("u1", "skill")
-    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
-    assert "office-doc" not in await caps.visible_ids("u1", "skill")
-    assert "office-doc" in await caps.hidden_skill_names("u1")
+    await caps.installs.install("u1", "skill", "rdkit")
+    assert "rdkit" in await caps.visible_ids("u1", "skill")
+    await caps.installs.set_enabled("u1", "skill", "rdkit", False)
+    assert "rdkit" not in await caps.visible_ids("u1", "skill")
+    assert "rdkit" in await caps.hidden_skill_names("u1")
 
 
 async def test_market_items_expose_enabled(caps):
     """市场行暴露 enabled：已装启用 → True/True/True；停用后 → True/False/False。"""
-    await caps.installs.install("u1", "skill", "office-doc")
+    await caps.installs.install("u1", "skill", "rdkit")
     # 正例先断言：否则 enabled 写成常量 False 也能过（字段本身没被验真）
     rows = await caps.market_items("u1", "skill")
-    row = next(r for r in rows if r["id"] == "office-doc")
+    row = next(r for r in rows if r["id"] == "rdkit")
     assert row["installed"] is True and row["enabled"] is True and row["visible"] is True
 
-    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
+    await caps.installs.set_enabled("u1", "skill", "rdkit", False)
     rows = await caps.market_items("u1", "skill")
-    row = next(r for r in rows if r["id"] == "office-doc")
+    row = next(r for r in rows if r["id"] == "rdkit")
     assert row["installed"] is True and row["enabled"] is False and row["visible"] is False
 
 
 async def test_builtin_item_ignores_user_records(caps):
     """内置条目（default_enabled=True）全员强制可见：历史安装/停用记录一并忽略，
     用户停用压不过"内置"（内置优先，用户侧只读）。"""
-    await caps.policy.set("skill", "office-doc", visibility="public", default_enabled=True)
-    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 没装：内置
-    await caps.installs.install("u1", "skill", "office-doc")
-    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 装了：仍内置
-    await caps.installs.set_enabled("u1", "skill", "office-doc", False)
-    assert await caps.is_visible("u1", "skill", "office-doc") is True   # 停用记录被忽略
-    assert "office-doc" in await caps.visible_ids("u1", "skill")
-    assert "office-doc" not in await caps.hidden_skill_names("u1")
+    await caps.policy.set("skill", "rdkit", visibility="public", default_enabled=True)
+    assert await caps.is_visible("u1", "skill", "rdkit") is True   # 没装：内置
+    await caps.installs.install("u1", "skill", "rdkit")
+    assert await caps.is_visible("u1", "skill", "rdkit") is True   # 装了：仍内置
+    await caps.installs.set_enabled("u1", "skill", "rdkit", False)
+    assert await caps.is_visible("u1", "skill", "rdkit") is True   # 停用记录被忽略
+    assert "rdkit" in await caps.visible_ids("u1", "skill")
+    assert "rdkit" not in await caps.hidden_skill_names("u1")
 
 
 async def test_disabled_plugin_tools_are_filtered(caps):

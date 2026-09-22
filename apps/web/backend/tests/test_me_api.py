@@ -60,12 +60,12 @@ def test_import_skill_zip_and_preview_files(client):
 def test_my_skill_name_conflict_with_builtin(client):
     """自建与内置同名 → 409 而非 422，这条才真正守住 except 顺序。
 
-    "data-analysis" 是内置目录条目；自建同名抛 SkillNameTaken，它继承 ValueError，
+    "docx" 是内置目录条目；自建同名抛 SkillNameTaken，它继承 ValueError，
     若 API 层把 `except ValueError` 写在 `except SkillNameTaken` 之前，会被截成 422，
     本用例断言 409 即失败。
     """
     dup = client.post("/api/v1/me/skills", json={
-        "name": "data-analysis", "description": "我", "content": "## 目标\ny"},
+        "name": "docx", "description": "我", "content": "## 目标\ny"},
         headers=HEADERS)
     assert dup.status_code == 409
 
@@ -88,46 +88,46 @@ def test_update_and_delete_only_own(client):
 
 def test_cannot_edit_or_delete_non_own_skill(client):
     """内置技能不在用户目录里 → 改/删都 403/404，不能动到 catalog。"""
-    assert client.patch("/api/v1/me/skills/data-analysis", json={
+    assert client.patch("/api/v1/me/skills/docx", json={
         "description": "x", "content": "y"}, headers=HEADERS).status_code == 403
-    assert client.delete("/api/v1/me/skills/data-analysis", headers=HEADERS).status_code == 404
+    assert client.delete("/api/v1/me/skills/docx", headers=HEADERS).status_code == 404
 
 
 def test_my_skills_lists_installed_builtin(client):
     """已安装的内置技能出现在「我的」里，且带 enabled 状态。"""
-    client.put("/api/v1/me/capabilities/skill/data-analysis",
+    client.put("/api/v1/me/capabilities/skill/rdkit",
                json={"installed": True}, headers=HEADERS)
     rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
-    row = next(r for r in rows if r["name"] == "data-analysis")
+    row = next(r for r in rows if r["name"] == "rdkit")
     assert row["source"] == "installed" and row["builtin"] is True and row["enabled"] is True
 
-    client.put("/api/v1/me/capabilities/skill/data-analysis",
+    client.put("/api/v1/me/capabilities/skill/rdkit",
                json={"enabled": False}, headers=HEADERS)
     rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
-    row = next(r for r in rows if r["name"] == "data-analysis")
+    row = next(r for r in rows if r["name"] == "rdkit")
     assert row["enabled"] is False          # 停用后仍在「我的」里，但状态为停用
     assert row["installed"] is True
 
 
 def test_my_skills_marks_revoked_installed_item(client):
     """管理员下架后，已安装条目在「我的」里标 revoked（仍列出，但不可用）。"""
-    client.put("/api/v1/me/capabilities/skill/data-analysis",
+    client.put("/api/v1/me/capabilities/skill/rdkit",
                json={"installed": True}, headers=HEADERS)
-    client.put("/api/v1/admin/catalog/skill/data-analysis/policy",
+    client.put("/api/v1/admin/catalog/skill/rdkit/policy",
                json={"visibility": "hidden", "default_enabled": False}, headers=HEADERS)
     rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
-    row = next(r for r in rows if r["name"] == "data-analysis")
+    row = next(r for r in rows if r["name"] == "rdkit")
     assert row["revoked"] is True
 
 
 def test_builtin_item_not_in_my_skills(client):
     """内置条目（default_enabled=True）不进「我的」：先安装再切内置，记录被口径忽略。"""
-    client.put("/api/v1/me/capabilities/skill/data-analysis",
+    client.put("/api/v1/me/capabilities/skill/rdkit",
                json={"installed": True}, headers=HEADERS)
-    client.put("/api/v1/admin/catalog/skill/data-analysis/policy",
+    client.put("/api/v1/admin/catalog/skill/rdkit/policy",
                json={"visibility": "public", "default_enabled": True}, headers=HEADERS)
     rows = client.get("/api/v1/me/skills", headers=HEADERS).json()
-    assert all(r["name"] != "data-analysis" for r in rows)
+    assert all(r["name"] != "rdkit" for r in rows)
 
 
 EXPERT = {"name": "化学助手", "avatar": "🧪", "description": "演示",

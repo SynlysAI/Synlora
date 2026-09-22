@@ -7,12 +7,14 @@ admin_headers（管理员，sub=u-admin）。
 
 
 async def test_list_skills_includes_seeds(client, user_headers):
-    """普通用户安装后能读到随包内置的技能（缺省策略 = public + 非默认，需安装）。"""
-    for name in ("data-analysis", "pdf-extraction"):
+    """深度技能安装后可读（缺省 = public + 非默认，需安装）；基线技能免安装即可见。"""
+    for name in ("rdkit", "matplotlib"):
         assert (await client.post(f"/api/v1/catalog/skill/{name}/install",
                                   json={}, headers=user_headers)).status_code == 201
     names = {s["name"] for s in (await client.get("/api/v1/skills", headers=user_headers)).json()}
-    assert {"data-analysis", "pdf-extraction"} <= names
+    assert {"rdkit", "matplotlib"} <= names
+    # 基线技能（文档四件套 + EDA）启动播种为默认启用：未安装即对普通用户可见
+    assert {"docx", "xlsx", "pptx", "pdf", "exploratory-data-analysis"} <= names
 
 
 async def test_list_skills_includes_user_own(client, user_headers):
@@ -63,9 +65,9 @@ async def test_import_bad_text_422(client, admin_headers):
 
 async def test_delete_builtin_skill_404(client, admin_headers):
     """内置技能来自只读根（catalog/skills），不在可写公共层 → 删除 404 且内容原样。"""
-    assert (await client.delete("/api/v1/skills/data-analysis",
+    assert (await client.delete("/api/v1/skills/rdkit",
                                 headers=admin_headers)).status_code == 404
-    exported = await client.get("/api/v1/skills/data-analysis/export", headers=admin_headers)
+    exported = await client.get("/api/v1/skills/rdkit/export", headers=admin_headers)
     assert exported.status_code == 200
 
 

@@ -1,7 +1,6 @@
 """平台沙箱后台任务编译与运行器测试。"""
 
 import asyncio
-from pathlib import Path
 import pytest
 
 from synlys_harness import ExecutionRequest, ToolResult
@@ -240,10 +239,28 @@ async def test_real_docker_runs_three_sandbox_kinds_and_cancels(tmp_path):
     assert shell_doc["status"] == "completed" and "shell-ok" in shell_doc["result"]
     assert skill_doc["status"] == "completed" and "ok" in skill_doc["result"]
 
-    repo_root = Path(__file__).resolve().parents[4]
-    product_skill_dir = (
-        repo_root / "apps" / "web" / "backend" / "catalog" / "skills"
-        / "data-analysis"
+    # 产品形态技能（SKILL.md + scripts/）自建于临时目录：仓库 catalog 已不随包
+    # 分发带脚本的技能（官方技能为纯指导型），但 sandbox.skill 面向的正是这种
+    # 「带脚本的产品技能」形态（公共层/插件技能根都会出现）
+    product_skill_dir = tmp_path / "product-skill"
+    (product_skill_dir / "scripts").mkdir(parents=True)
+    (product_skill_dir / "SKILL.md").write_text(
+        "---\nname: csv-summary\ndescription: CSV 摘要\n---\n\n# CSV 摘要\n",
+        encoding="utf-8",
+    )
+    (product_skill_dir / "scripts" / "summarize_csv.py").write_text(
+        "import argparse, json\n"
+        "import pandas as pd\n"
+        "\n"
+        "p = argparse.ArgumentParser()\n"
+        "p.add_argument('--input', required=True)\n"
+        "p.add_argument('--output', required=True)\n"
+        "a = p.parse_args()\n"
+        "df = pd.read_csv(a.input)\n"
+        "summary = {'row_count': int(len(df)), 'columns': list(df.columns)}\n"
+        "with open(a.output, 'w', encoding='utf-8') as f:\n"
+        "    json.dump(summary, f, ensure_ascii=False)\n",
+        encoding="utf-8",
     )
     (scope.workspace_root / "files").mkdir()
     (scope.workspace_root / "output").mkdir()
@@ -251,7 +268,7 @@ async def test_real_docker_runs_three_sandbox_kinds_and_cancels(tmp_path):
         "name,value\na,1\nb,2\n", encoding="utf-8"
     )
     product_skill = ResolvedSkill(
-        name="data-analysis",
+        name="csv-summary",
         description="CSV 摘要",
         body="正文",
         directory=product_skill_dir,
@@ -271,7 +288,7 @@ async def test_real_docker_runs_three_sandbox_kinds_and_cancels(tmp_path):
             "action": "submit",
             "kind": "sandbox.skill",
             "params": {
-                "skill": "data-analysis",
+                "skill": "csv-summary",
                 "script": "scripts/summarize_csv.py",
                 "args": [
                     "--input", "/workspace/files/data.csv",

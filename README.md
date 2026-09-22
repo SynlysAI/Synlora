@@ -126,9 +126,11 @@ pm2 logs synlys-agent
 
 「专家 / 技能 / 扩展」统一纳入能力中心。平台插件仍使用能力目录与用户安装权限模型；用户 MCP 是独立的 Streamable HTTP 扩展配置，不复制插件文件、不绕过用户权限。
 
-专家支持人设提示词、技能引用、MCP 引用、可用工具和推荐问题；专家只保存引用，不复制技能文件或 MCP 凭证。运行时会将专家引用与当前用户可用能力合并，并继续受插件会话开关、用户安装状态和工具白名单约束。
+专家支持人设提示词、技能引用、MCP 引用、可用工具和推荐问题；专家只保存引用，不复制技能文件或 MCP 凭证。运行时会将专家引用与当前用户可用能力合并，并继续受插件会话开关、用户安装状态和工具白名单约束。内置专家随 catalog 升级自愈刷新（`seed.py` 按播种指纹判定，管理员在后台编辑过的记录不覆盖）。
 
 技能支持上传包含 `SKILL.md` 的 ZIP 目录包，保留 `scripts/`、`references/`、`assets/` 等附属文件；详情页提供左侧文件树与右侧文本/图片预览，压缩包大小、文件数量、解压大小和路径逃逸均有安全限制。
+
+内置技能库（`catalog/skills/`，1.1.0 官方化重构为 12 个）：**文档四件套** `docx` / `xlsx` / `pptx` / `pdf`（基于 Anthropic 官方技能方法论适配到沙箱 Python 栈：python-docx / openpyxl / python-pptx / pypdf+pdfplumber+reportlab）+ **数据分析与可视化** `exploratory-data-analysis` / `statistical-analysis` / `matplotlib` / `seaborn` / `scientific-visualization` + **科研方向** `rdkit` / `experimental-design` / `uncertainty-and-units`（后三者及分析类取自 K-Dense scientific-agent-skills，MIT）。其中文档四件套 + EDA 为平台基线，启动时由 `app/catalog/seed.py::seed_skill_policies` 幂等播种为**全员默认启用**（不覆盖管理员显式配置）；其余深度技能走市场、用户按需自行安装。技能正文头部带「Synlora 沙箱适配」块（依赖已预装、禁止 pip/uv 安装、产物写 `output/`），对应依赖已同步进 `docker/sandbox/requirements.txt` 与 conda 环境。
 
 扩展中心统一展示插件市场、MCP 接入和我的扩展。普通用户首期仅开放 Streamable HTTP MCP，可配置 URL、Headers、Bearer Token、启用状态，并支持测试连接和发现远程工具；凭证加密存储，接口只返回字段名和是否已配置。
 
@@ -196,6 +198,6 @@ npm run lint
 
 完整计划（含每项的做法与验收标准）见 [docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md](docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md)；06 号 backlog 保留为历史记录。
 
-**已完成的主要演进**：沙箱 Docker 化（0.4.0）· AI⁴MS 首期接入（Spec_Agent 同步三件套 + 按登录用户代签凭证，0.5.0）· 能力市场三层可见性模型（0.6.0）· 内置内容统一 `catalog/`（0.7.0）· 用户自建技能与专家（0.8.0）· 能力中心「市场 / 我的」两栏（0.9.0）· 能力中心左导航 + 卡片 + 详情页改版（0.10.0）· 统一 Job 注册表（0.11.0）· Spec_Agent 五类谱图异步任务（0.12.0）。
+**已完成的主要演进**：沙箱 Docker 化（0.4.0）· AI⁴MS 首期接入（Spec_Agent 同步三件套 + 按登录用户代签凭证，0.5.0）· 能力市场三层可见性模型（0.6.0）· 内置内容统一 `catalog/`（0.7.0）· 用户自建技能与专家（0.8.0）· 能力中心「市场 / 我的」两栏（0.9.0）· 能力中心左导航 + 卡片 + 详情页改版（0.10.0）· 统一 Job 注册表（0.11.0）· Spec_Agent 五类谱图异步任务（0.12.0）· 1.0.0 正式版 · 内置技能库官方化扩容（3 → 15 个，1.1.0）。
 
 **当前明确不做**：按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、用户自建插件、双进程 headless 运行时、移动端适配。

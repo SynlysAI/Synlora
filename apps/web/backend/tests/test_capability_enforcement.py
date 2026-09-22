@@ -16,7 +16,8 @@ from app.services import agent_service as agent_service_mod
 from app.services.tool_registry import REGISTRY
 
 SPEC_TOOLS = {"spec.nmr.forward", "spec.nmr.reverse", "spec.nmr.search"}
-BUILTIN_SKILLS = {"data-analysis", "pdf-extraction", "office-doc"}
+# 启动播种为全员默认启用的基线技能（seed.py::DEFAULT_ENABLED_SKILLS）
+BUILTIN_SKILLS = {"docx", "xlsx", "pptx", "pdf", "exploratory-data-analysis"}
 PLUGIN_EXPERT = "谱图解析专家"
 # 随仓库的内置内容根（内置技能由 catalog/skills 只读根提供，与生产口径一致）
 REPO_CATALOG = Path(__file__).resolve().parents[1] / "catalog"
@@ -163,12 +164,15 @@ async def _wait_run_done(app, run_id: str, timeout_s: float = 5.0) -> None:
 
 async def test_default_policy_requires_install(
         app, client, admin_headers, user_headers):
-    """不动策略时：条目在市场可见，但普通用户需安装后才可用。"""
+    """不动策略时：深度技能在市场可见但需安装；基线技能播种为全员默认可用。"""
     await _install_plugin(client, admin_headers)
 
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
-    assert not (BUILTIN_SKILLS & skills)
+    # 基线技能（文档四件套 + EDA）启动播种 default_enabled=True：未安装即对用户可见
+    assert BUILTIN_SKILLS <= skills
+    # 深度技能（rdkit 等）缺省 = 需安装：未安装不可见
+    assert not ({"rdkit", "matplotlib", "seaborn"} & skills)
     assert "spec-nmr" not in skills
 
     names = {a["name"] for a in
@@ -187,12 +191,12 @@ async def test_default_policy_requires_install(
     assert BUILTIN_SKILLS <= admin_skills
 
     # 安装后对该用户可见（含插件播种的技能与专家）
-    for kind, item in (("plugin", "spec_agent"), ("skill", "data-analysis")):
+    for kind, item in (("plugin", "spec_agent"), ("skill", "rdkit")):
         assert (await client.post(f"/api/v1/catalog/{kind}/{item}/install",
                                   json={}, headers=user_headers)).status_code == 201
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
-    assert "data-analysis" in skills and "spec-nmr" in skills
+    assert "rdkit" in skills and "spec-nmr" in skills
     names = {a["name"] for a in
              (await client.get("/api/v1/assistants", headers=user_headers)).json()}
     assert PLUGIN_EXPERT in names
@@ -222,12 +226,12 @@ async def test_not_default_plugin_needs_user_install(
     await client.put("/api/v1/admin/catalog/plugin/spec_agent/policy",
                      json={"visibility": "public", "default_enabled": False},
                      headers=admin_headers)
-    # 先装上内置技能，用于对照"内置技能不受插件策略影响"
-    await _install(client, user_headers, "skill", "data-analysis")
+    # 先装上深度技能，用于对照"技能可见性不受插件策略影响"
+    await _install(client, user_headers, "skill", "matplotlib")
 
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
-    assert "spec-nmr" not in skills and "data-analysis" in skills
+    assert "spec-nmr" not in skills and "matplotlib" in skills
     names = {a["name"] for a in
              (await client.get("/api/v1/assistants", headers=user_headers)).json()}
     assert PLUGIN_EXPERT not in names
@@ -279,14 +283,14 @@ async def test_skill_and_expert_policies_filter_lists(
     """技能与专家列表按各自策略过滤；管理员不过滤。"""
     # 缺省 = 非默认启用：四个条目都先安装，让它们"本应可见"，下面的 hidden
     # 才真正承担过滤职责（若改成 public + 非默认启用，取值恰好等于缺省，
-    # 策略 PUT 完全失效也会通过）。data-analysis / 科研助手 不被改策略，
-    # 作可见性对照组。
-    for kind, item in (("skill", "data-analysis"), ("expert", "asst-research"),
-                       ("skill", "office-doc"), ("expert", "asst-data")):
+    # 策略 PUT 完全失效也会通过）。matplotlib / 科研助手 不被改策略，作可见性对照组
+    # （基线技能播种为内置不可安装，故技能样本用深度技能 matplotlib / rdkit）。
+    for kind, item in (("skill", "matplotlib"), ("expert", "asst-research"),
+                       ("skill", "rdkit"), ("expert", "asst-data")):
         await _install(client, user_headers, kind, item)
 
     # hidden 是唯一"既挡得住已安装条目、又区别于新缺省"的取值
-    await client.put("/api/v1/admin/catalog/skill/office-doc/policy",
+    await client.put("/api/v1/admin/catalog/skill/rdkit/policy",
                      json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)
     await client.put("/api/v1/admin/catalog/expert/asst-data/policy",
@@ -295,14 +299,14 @@ async def test_skill_and_expert_policies_filter_lists(
 
     skills = {s["name"] for s in
               (await client.get("/api/v1/skills", headers=user_headers)).json()}
-    assert "office-doc" not in skills and "data-analysis" in skills
+    assert "rdkit" not in skills and "matplotlib" in skills
     names = {a["name"] for a in
              (await client.get("/api/v1/assistants", headers=user_headers)).json()}
     assert "数据分析助手" not in names and "科研助手" in names
 
-    assert "office-doc" in {s["name"] for s in
-                            (await client.get("/api/v1/skills",
-                                              headers=admin_headers)).json()}
+    assert "rdkit" in {s["name"] for s in
+                       (await client.get("/api/v1/skills",
+                                         headers=admin_headers)).json()}
     assert "数据分析助手" in {a["name"] for a in
                              (await client.get("/api/v1/assistants",
                                                headers=admin_headers)).json()}
@@ -691,17 +695,18 @@ async def test_hidden_builtin_skill_invisible_to_user(
         app, client, admin_headers, user_headers):
     """被策略隐藏的内置技能：普通用户不可见，管理员可见。"""
     # 先安装：缺省（public + 非默认）下未安装本就不可见，装上后"不可见"
-    # 才是 hidden 策略的结果，断言才有判别力
-    await _install(client, user_headers, "skill", "office-doc")
-    await client.put("/api/v1/admin/catalog/skill/office-doc/policy",
+    # 才是 hidden 策略的结果，断言才有判别力（样本用深度技能 rdkit，
+    # 基线三技能播种为内置、不可安装）
+    await _install(client, user_headers, "skill", "rdkit")
+    await client.put("/api/v1/admin/catalog/skill/rdkit/policy",
                      json={"visibility": "hidden", "default_enabled": False},
                      headers=admin_headers)
     user_names = [s["name"] for s in (await client.get(
         "/api/v1/skills", headers=user_headers)).json()]
-    assert "office-doc" not in user_names
+    assert "rdkit" not in user_names
     admin_names = [s["name"] for s in (await client.get(
         "/api/v1/skills", headers=admin_headers)).json()]
-    assert "office-doc" in admin_names
+    assert "rdkit" in admin_names
 
 
 async def test_plugin_skill_follows_plugin_policy(app, client, admin_headers, user_headers):

@@ -56,11 +56,11 @@ async def test_builtin_expert_detail(client, user_headers):
 
 async def test_builtin_skill_detail(client, user_headers):
     """内置技能详情：返回 SKILL.md 正文。"""
-    res = await client.get("/api/v1/me/capabilities/skill/office-doc", headers=user_headers)
+    res = await client.get("/api/v1/me/capabilities/skill/xlsx", headers=user_headers)
     assert res.status_code == 200
     body = res.json()
     assert body["kind"] == "skill"
-    assert body["id"] == "office-doc"
+    assert body["id"] == "xlsx"
     assert body["content"].strip() != ""
 
 
@@ -79,11 +79,11 @@ async def test_builtin_plugin_detail(client, user_headers):
 async def test_installed_item_origin_installed(client, user_headers):
     """已安装条目 origin='installed'，enabled 反映安装态。"""
     install = await client.put(
-        "/api/v1/me/capabilities/skill/office-doc",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers, json={"installed": True},
     )
     assert install.status_code == 200
-    res = await client.get("/api/v1/me/capabilities/skill/office-doc", headers=user_headers)
+    res = await client.get("/api/v1/me/capabilities/skill/matplotlib", headers=user_headers)
     assert res.status_code == 200
     body = res.json()
     assert body["origin"] == "installed"
@@ -137,11 +137,11 @@ async def test_mine_isolation(client, user_headers, admin_headers):
 async def test_hidden_item_not_found(client, admin_headers, user_headers):
     """hidden 条目对普通用户 404（不泄露存在性）。"""
     put = await client.put(
-        "/api/v1/admin/catalog/skill/pdf-extraction/policy",
+        "/api/v1/admin/catalog/skill/rdkit/policy",
         headers=admin_headers, json={"visibility": "hidden", "default_enabled": False},
     )
     assert put.status_code == 200
-    res = await client.get("/api/v1/me/capabilities/skill/pdf-extraction", headers=user_headers)
+    res = await client.get("/api/v1/me/capabilities/skill/rdkit", headers=user_headers)
     assert res.status_code == 404
 
 
@@ -160,16 +160,16 @@ async def test_revoked_installed_item_detail_readable(client, admin_headers, use
     先安装再下架——hidden 之后连安装都进不来。
     """
     install = await client.put(
-        "/api/v1/me/capabilities/skill/data-analysis",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers, json={"installed": True},
     )
     assert install.status_code == 200
     put = await client.put(
-        "/api/v1/admin/catalog/skill/data-analysis/policy",
+        "/api/v1/admin/catalog/skill/matplotlib/policy",
         headers=admin_headers, json={"visibility": "hidden", "default_enabled": False},
     )
     assert put.status_code == 200
-    res = await client.get("/api/v1/me/capabilities/skill/data-analysis", headers=user_headers)
+    res = await client.get("/api/v1/me/capabilities/skill/matplotlib", headers=user_headers)
     assert res.status_code == 200
     body = res.json()
     assert body["origin"] == "installed"
@@ -183,42 +183,42 @@ async def test_revoked_installed_item_can_be_uninstalled(client, admin_headers, 
     任何途径把该行清掉。卸载掉记录即不再豁免，详情恢复 404。
     """
     install = await client.put(
-        "/api/v1/me/capabilities/skill/data-analysis",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers, json={"installed": True},
     )
     assert install.status_code == 200
     put = await client.put(
-        "/api/v1/admin/catalog/skill/data-analysis/policy",
+        "/api/v1/admin/catalog/skill/matplotlib/policy",
         headers=admin_headers, json={"visibility": "hidden", "default_enabled": False},
     )
     assert put.status_code == 200
     res = await client.put(
-        "/api/v1/me/capabilities/skill/data-analysis",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers, json={"installed": False},
     )
     assert res.status_code == 200
     assert res.json() == {
-        "kind": "skill", "id": "data-analysis", "installed": False, "enabled": False,
+        "kind": "skill", "id": "matplotlib", "installed": False, "enabled": False,
     }
     detail = await client.get(
-        "/api/v1/me/capabilities/skill/data-analysis", headers=user_headers)
+        "/api/v1/me/capabilities/skill/matplotlib", headers=user_headers)
     assert detail.status_code == 404
 
 
 async def test_hidden_uninstalled_switch_still_not_found(client, admin_headers, user_headers):
     """hidden 且未安装：安装与卸载一律 404（卸载豁免不得放大到未安装者）。"""
     put = await client.put(
-        "/api/v1/admin/catalog/skill/pdf-extraction/policy",
+        "/api/v1/admin/catalog/skill/rdkit/policy",
         headers=admin_headers, json={"visibility": "hidden", "default_enabled": False},
     )
     assert put.status_code == 200
     uninstall = await client.put(
-        "/api/v1/me/capabilities/skill/pdf-extraction",
+        "/api/v1/me/capabilities/skill/rdkit",
         headers=user_headers, json={"installed": False},
     )
     assert uninstall.status_code == 404
     install = await client.put(
-        "/api/v1/me/capabilities/skill/pdf-extraction",
+        "/api/v1/me/capabilities/skill/rdkit",
         headers=user_headers, json={"installed": True},
     )
     assert install.status_code == 404
@@ -234,26 +234,26 @@ async def test_hidden_builtin_with_stale_install_detail_not_found(app, client,
     内置行、市场被 hidden 挡住，详情不该再豁免（旧口径只看 installed 就会放行）。
     """
     install = await client.put(
-        "/api/v1/me/capabilities/skill/data-analysis",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers, json={"installed": True},
     )
     assert install.status_code == 200
     put = await client.put(
-        "/api/v1/admin/catalog/skill/data-analysis/policy",
+        "/api/v1/admin/catalog/skill/matplotlib/policy",
         headers=admin_headers, json={"visibility": "hidden", "default_enabled": True},
     )
     assert put.status_code == 200
     # 前置确认组合成立：安装记录确实还在（否则该用例只是复读 hidden+未安装）
     assert await app.state.capability_service.installs.is_installed(
-        "u-user", "skill", "data-analysis") is True
+        "u-user", "skill", "matplotlib") is True
     assert (await client.get(
-        "/api/v1/me/capabilities/skill/data-analysis",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers)).status_code == 404
 
 
 async def test_normal_item_has_no_revoked_flag(client, user_headers):
     """正常条目不带 revoked 键（该标记只在有意义时出现）。"""
-    res = await client.get("/api/v1/me/capabilities/skill/office-doc", headers=user_headers)
+    res = await client.get("/api/v1/me/capabilities/skill/xlsx", headers=user_headers)
     assert res.status_code == 200
     assert "revoked" not in res.json()
 
@@ -261,11 +261,11 @@ async def test_normal_item_has_no_revoked_flag(client, user_headers):
 async def test_builtin_item_origin_builtin(client, admin_headers, user_headers):
     """管理员配为内置（default_enabled=True）的条目：origin='builtin' 且恒为启用态。"""
     put = await client.put(
-        "/api/v1/admin/catalog/skill/pdf-extraction/policy",
+        "/api/v1/admin/catalog/skill/rdkit/policy",
         headers=admin_headers, json={"visibility": "public", "default_enabled": True},
     )
     assert put.status_code == 200
-    res = await client.get("/api/v1/me/capabilities/skill/pdf-extraction", headers=user_headers)
+    res = await client.get("/api/v1/me/capabilities/skill/rdkit", headers=user_headers)
     assert res.status_code == 200
     body = res.json()
     assert body["origin"] == "builtin"
@@ -275,16 +275,16 @@ async def test_builtin_item_origin_builtin(client, admin_headers, user_headers):
 async def test_installed_but_disabled_item(client, user_headers):
     """已安装但停用：origin='installed' 且 enabled=False。"""
     install = await client.put(
-        "/api/v1/me/capabilities/skill/office-doc",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers, json={"installed": True},
     )
     assert install.status_code == 200
     disable = await client.put(
-        "/api/v1/me/capabilities/skill/office-doc",
+        "/api/v1/me/capabilities/skill/matplotlib",
         headers=user_headers, json={"enabled": False},
     )
     assert disable.status_code == 200
-    res = await client.get("/api/v1/me/capabilities/skill/office-doc", headers=user_headers)
+    res = await client.get("/api/v1/me/capabilities/skill/matplotlib", headers=user_headers)
     assert res.status_code == 200
     body = res.json()
     assert body["origin"] == "installed"

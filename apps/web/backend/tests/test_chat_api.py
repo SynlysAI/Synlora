@@ -1084,8 +1084,9 @@ async def test_skill_index_injected_and_tools_available(
     同时守护渐进披露契约：技能正文绝不进 system prompt。
     """
     await _bind_provider_to_asst_data(client, admin_headers)
-    # 缺省 = 非默认启用：运行期技能索引按"已安装"过滤（无管理员直通），须先安装
-    for name in ("data-analysis", "pdf-extraction"):
+    # asst-data 绑定的技能引用（matplotlib/seaborn 等分析类）需安装才进索引；
+    # EDA/xlsx 已默认启用，未安装也应在索引里
+    for name in ("matplotlib", "seaborn"):
         assert (await client.post(f"/api/v1/catalog/skill/{name}/install",
                                   json={}, headers=admin_headers)).status_code == 201
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
@@ -1097,10 +1098,11 @@ async def test_skill_index_injected_and_tools_available(
     config = captured[-1]["config"]
     prompt = config.system_prompt
     assert "# 技能" in prompt
-    assert "`data-analysis`" in prompt
-    assert "`pdf-extraction`" in prompt
+    assert "`matplotlib`" in prompt
+    assert "`seaborn`" in prompt
+    assert "`exploratory-data-analysis`" in prompt  # 默认启用：免安装即进索引
     skill = next(s for s in app.state.skill_service.list_skills()
-                 if s["name"] == "data-analysis")
+                 if s["name"] == "matplotlib")
     assert skill["description"] in prompt
 
     # 工具表：助手白名单 + 两个技能工具（无条件追加，去重后各一次）
@@ -1111,8 +1113,8 @@ async def test_skill_index_injected_and_tools_available(
 
     # 工具上下文：skill.read 按名取正文、skill.list 取描述
     extra = captured[-1]["context_extra"]
-    assert extra["skills"]["data-analysis"] == skill["content"]
-    assert extra["skill_meta"]["data-analysis"] == skill["description"]
+    assert extra["skills"]["matplotlib"] == skill["content"]
+    assert extra["skill_meta"]["matplotlib"] == skill["description"]
     # 插件配置命名空间注入（未安装插件时为空 dict）
     assert "plugins" in extra
 
@@ -1151,6 +1153,8 @@ async def test_user_owned_skill_enters_prompt_and_tool_context(
     这是"用户自建技能在对话中生效"的直接证据：索引（名+描述）进 system prompt，
     正文进 context_extra["skills"]，两处都只有带上登录用户 sub 才取得到
     （用户根 `{data_root}/users/<uid>/skills` 不在公共层/只读根里）。
+    asst-data 绑定了技能引用（索引被收窄到引用集），故发消息时点选自建技能
+    （与前端 + 面板点选同路径）。
     """
     await _bind_provider_to_asst_data(client, admin_headers)
     r = await client.post("/api/v1/me/skills", headers=admin_headers, json={
@@ -1164,7 +1168,10 @@ async def test_user_owned_skill_enters_prompt_and_tool_context(
     FakeBackend.script = [[TextDelta(text="ok"), Usage()]]
     captured = _capture_run_args(monkeypatch)
     sid = await _make_session(client, admin_headers)
-    await _chat_once(client, admin_headers, sid)
+    msg = await client.post(f"/api/v1/sessions/{sid}/messages", headers=admin_headers,
+                            json={"text": "用我的技能", "skills": ["owner-only-skill"]})
+    assert msg.status_code == 200, msg.text
+    assert parse_sse(msg.text)[-1][0] == "turn/end"
 
     prompt = captured[-1]["config"].system_prompt
     assert "`owner-only-skill`" in prompt
@@ -1240,10 +1247,15 @@ async def test_ai4ms_token_absent_when_identity_unresolved(app, client, admin_he
 
 
 async def test_requested_skills_filter_index(app, client, admin_headers, monkeypatch):
-    """chat(requested_skills=...) 只装配选中技能（索引与工具上下文同步收窄）。"""
-    provider = await _bind_provider_to_asst_data(client, admin_headers)
+    """chat(requested_skills=...) 只装配选中技能（索引与工具上下文同步收窄）。
+
+    未选专家（assistant=None）才有"requested_skills 独占收窄"语义：内置专家
+    绑定 skill_refs 后，requested 会并入专家引用集，不再是单技能收窄。
+    """
+    provider = await _make_provider(client, admin_headers)
     # 两个技能都安装，确保"未进索引"是 requested_skills 收窄的结果而非不可见
-    for name in ("data-analysis", "pdf-extraction"):
+    # （样本用深度技能；基线技能播种为内置不可安装）
+    for name in ("matplotlib", "rdkit"):
         assert (await client.post(f"/api/v1/catalog/skill/{name}/install",
                                   json={}, headers=admin_headers)).status_code == 201
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
@@ -1256,17 +1268,16 @@ async def test_requested_skills_filter_index(app, client, admin_headers, monkeyp
         name=decrypted["name"], base_url=decrypted["base_url"],
         api_key=decrypted["api_key"], model_id=decrypted["model_id"],
     )
-    assistant = await app.state.assistant_repo.get("asst-data")
     user = {"sub": "u-admin", "username": "tester-admin", "role": "admin"}
     run_id = await app.state.agent_service.chat(
-        sid, user, assistant, cfg, "选中技能",
+        sid, user, None, cfg, "选中技能",
         workspace_root=await _workspace_root(app, "u-admin"),
-        requested_skills=["data-analysis"])
+        requested_skills=["matplotlib"])
 
     prompt = captured[-1]["config"].system_prompt
-    assert "`data-analysis`" in prompt
-    assert "`pdf-extraction`" not in prompt
-    assert list(captured[-1]["context_extra"]["skills"]) == ["data-analysis"]
+    assert "`matplotlib`" in prompt
+    assert "`rdkit`" not in prompt
+    assert list(captured[-1]["context_extra"]["skills"]) == ["matplotlib"]
 
     for _ in range(100):
         run = await app.state.store.get("runs", run_id)
@@ -1453,10 +1464,10 @@ async def test_message_skills_passthrough(app, client, admin_headers, monkeypatc
     captured = _capture_chat_args(monkeypatch)
 
     r = await client.post(f"/api/v1/sessions/{sid}/messages", headers=admin_headers,
-                          json={"text": "选技能", "skills": ["data-analysis"]})
+                          json={"text": "选技能", "skills": ["rdkit"]})
     assert r.status_code == 200, r.text
     assert parse_sse(r.text)[-1][0] == "turn/end"
-    assert captured[-1]["requested_skills"] == ["data-analysis"]
+    assert captured[-1]["requested_skills"] == ["rdkit"]
 
 
 async def test_message_without_skills_defaults_none(app, client, admin_headers, monkeypatch):
