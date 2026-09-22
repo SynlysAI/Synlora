@@ -18,6 +18,7 @@ from .types import (
     EventType,
     ExtensionHooks,
     Message,
+    ResearchContextScope,
     Role,
     SessionEvent,
     ToolContext,
@@ -40,6 +41,7 @@ class RunSession:
         hooks: ExtensionHooks | None = None,
         workspace_root: Path | None = None,
         context_extra: dict[str, Any] | None = None,
+        research_context: ResearchContextScope | None = None,
     ) -> None:
         """初始化运行会话。
 
@@ -54,6 +56,7 @@ class RunSession:
             hooks: 扩展钩子（可 None）。
             workspace_root: 用户工作区根目录（文件/沙箱工具依赖；None 表示未挂载）。
             context_extra: 注入工具上下文的宿主配置，如 http_allowed_hosts。
+            research_context: Plane 签发的只读科研范围；None 表示非科研会话。
         """
         self._config = config
         self._registry = registry
@@ -65,6 +68,7 @@ class RunSession:
         self._hooks = hooks
         self._workspace_root = workspace_root
         self._context_extra = context_extra
+        self._research_context = research_context
         self._cancel = asyncio.Event()
         self._steering: asyncio.Queue[str] = asyncio.Queue()
         self._last_usage: Usage | None = None
@@ -188,6 +192,7 @@ class RunSession:
         ctx = ToolContext(
             user_id=self._user_id, run_id=self._run_id,
             workspace_root=self._workspace_root,
+            research_context=self._research_context,
             extra=dict(self._context_extra or {}),  # 副本防宿主 dict 被共享修改
         )
         aborted = False

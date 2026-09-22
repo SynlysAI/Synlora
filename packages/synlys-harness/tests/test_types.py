@@ -1,7 +1,27 @@
 """types 数据模型单测。"""
+import pytest
+from pydantic import ValidationError
+
 from synlys_harness.types import (
     EventType, Message, Role, SessionEvent, ToolCall,
 )
+from synlys_harness.types import ResearchContextScope, ToolContext
+
+
+def test_research_context_is_read_only():
+    """工具不能通过赋值扩大 Plane 签发的科研范围。"""
+    scope = ResearchContextScope(
+        context_id="ctx-1",
+        workspace_id="ws-1",
+        research_project_id="project-1",
+        chain_node_id="node-1",
+        context_hash="hash-1",
+        visibility_scope="PRIVATE",
+    )
+    context = ToolContext(user_id="u1", run_id="r1", research_context=scope)
+    assert context.research_context.research_project_id == "project-1"
+    with pytest.raises(ValidationError):
+        context.research_context = scope.model_copy(update={"research_project_id": "other-project"})
 
 
 def test_message_roundtrip():
