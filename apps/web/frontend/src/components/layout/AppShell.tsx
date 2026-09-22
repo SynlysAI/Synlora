@@ -262,6 +262,9 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
           height={32}
           className="text-[var(--sa-alias-label-primary)]"
         />
+        <span className="self-end pb-4">
+          <VersionTag />
+        </span>
       </div>
       {/* 中部：新会话/助手/会话列表 */}
       <div className="min-h-0 flex-1">
@@ -284,10 +287,6 @@ function SidebarFrame({ onOpenDrawer }: { onOpenDrawer?: () => void }) {
             </svg>
           )}
         </IconButton>
-      </div>
-      {/* 版本徽标（读 /api/health，与后端口径一致） */}
-      <div className="flex shrink-0 justify-center pb-1.5">
-        <VersionTag />
       </div>
     </div>
   )

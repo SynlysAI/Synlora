@@ -52,7 +52,7 @@ Synlora/
 │   └── frontend/                # React 19 + TS + Vite 三栏工作台（npm run build 产物由后端托管）
 ├── docs/superpowers/            # 设计文档（specs/）、实施计划（plans/）、验收报告与截图（acceptance/）
 ├── ecosystem.config.cjs         # PM2 部署配置
-└── data/                        # 运行时数据（不入库）：public/{skills,catalog}（公共层）、users/<uid>/{workspaces,sessions,skills,experts}（用户层；不选工作区的会话以 sessions/{sid}/workspace 为工作区，文件与产物跟会话走）、sqlite 库
+└── .runtime/data/               # 运行时数据（不入库）：public/{skills,catalog}（公共层）、users/<uid>/{workspaces,sessions,skills,experts}（用户层；不选工作区的会话以 sessions/{sid}/workspace 为工作区，文件与产物跟会话走）、sqlite 库
 ```
 
 ## 快速开始
@@ -107,7 +107,7 @@ pm2 logs synlys-agent
 | --- | --- | --- |
 | `STORAGE_BACKEND` | `sqlite` | 存储后端：`sqlite`（开发零依赖）或 `mongodb`（生产） |
 | `AUTH_SECRET` | 空 | 与 AI⁴MS 门户共享的 HMAC-SHA256 secret；为空时按门户规则派生，多实例部署必须显式配置同一值 |
-| `DEV_AUTH_TOKEN` | 空 | sqlite 开发模式的固定 token，登录页"开发模式进入"直连（如 `devtok`） |
+| `DEV_AUTH_TOKEN` | 空 | sqlite 开发模式的固定 token，仅本地显式启用（前端需同值配置 `VITE_DEV_TOKEN`；生产构建不显示快捷入口） |
 | `FERNET_KEY` | 空 | provider api_key 落库加密 key（Fernet）；生成方式见 `.env.example` |
 | `HTTP_ALLOWED_HOSTS` | 空 | `http.request` 工具域名白名单（逗号分隔），空则全部拒绝 |
 | `SANDBOX_MODE` | `local` | `python.run` 执行形态：`local`（本机 `-I` 子进程，事故围栏）或 `docker`（临时容器强隔离，多用户部署用） |
