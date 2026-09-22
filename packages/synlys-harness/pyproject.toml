@@ -1,6 +1,6 @@
 [project]
 name = "synlys-harness"
-version = "0.1.0"
+version = "0.2.0"
 description = "SynlysAgent 核心 Agent 运行时（纯 Python，无 Web 依赖）"
 readme = "README.md"
 requires-python = ">=3.12"
