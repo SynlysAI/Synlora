@@ -22,6 +22,7 @@ from app.api.models_api import router as models_router
 from app.api.projects_api import router as projects_router
 from app.api.sessions_api import router as sessions_router
 from app.api.skills_api import router as skills_router
+from app.api.tools_api import router as tools_router
 from app.catalog.api import router as catalog_router
 from app.catalog.items import CatalogService
 from app.catalog.loader import catalog_roots, scan_catalog
@@ -87,7 +88,12 @@ async def lifespan(app: FastAPI):
     app.state.event_repo = EventRepo(store)
     app.state.project_service = ProjectService(store, settings.data_root)
     # 用户自建专家：文件为事实源，列「我的专家」时幂等实例化进 assistants
-    app.state.expert_service = UserExpertService(store, settings.data_root)
+    app.state.expert_service = UserExpertService(settings.data_root)
+    # 一次性清理：历史版本把用户专家实例化进 assistants 集合（带 owner），
+    # 专家改为纯文件事实源后这些记录已无事实源身份，启动时整批移除
+    legacy = await UserExpertService.purge_legacy_records(store)
+    if legacy:
+        logging.info("已清理历史用户专家 assistants 记录 %s 条", legacy)
     app.state.mcp_service = McpService(store, settings.fernet_key)
     # 插件框架：扫描内置内容（专家/技能/插件） → 建技能服务 →
     # 注册已安装插件的工具与技能根（插件技能根由 plugin_service.startup()
@@ -197,6 +203,7 @@ def create_app() -> FastAPI:
     app.include_router(session_files_router)
     app.include_router(projects_router)
     app.include_router(skills_router)
+    app.include_router(tools_router)
     app.include_router(knowledge_router)
     app.include_router(plugins_router)
     app.include_router(catalog_router)

@@ -1,7 +1,6 @@
 ---
 name: exploratory-data-analysis
-description: 对数据集做系统的探索性分析：结构检查、缺失值、分布、离群点、相关性与初步可视化。用户给数据让"看看 / 分析一下 / 找找规律"时用；统计检验与建模走
-  statistical-analysis。
+description: 对数据集做系统的探索性分析：结构检查、缺失值、分布、离群点、相关性与初步可视化。用户给数据让"看看 / 分析一下 / 找找规律"时用。
 version: '1.2'
 author: K-Dense scientific-agent-skills (MIT)
 tags:

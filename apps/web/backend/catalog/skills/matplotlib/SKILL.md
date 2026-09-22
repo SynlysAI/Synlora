@@ -1,7 +1,6 @@
 ---
 name: matplotlib
-description: matplotlib 精细绘图：完全自定义每个绘图元素、多子图、导出 PNG/PDF/SVG。需要细粒度控制的图用这个；快速统计图用 seaborn，期刊出版级组图用
-  scientific-visualization。
+description: matplotlib 精细绘图：完全自定义每个绘图元素、多子图、导出 PNG/PDF/SVG。需要细粒度控制每个绘图元素时用。
 version: '1.2'
 author: K-Dense scientific-agent-skills (MIT)
 tags:

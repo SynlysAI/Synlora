@@ -95,10 +95,12 @@ class AssistantUpdateBody(BaseModel):
 
 
 async def _visible_assistants(app_state, user: dict, docs: list[dict]) -> list[dict]:
-    """按可见性过滤助手列表（普通用户视角）。
+    """按可见性过滤 assistants 集合文档（普通用户视角）。
 
-    规则：插件播种专家（有 plugin_id）跟随其插件可见性；目录内置专家按
-    expert 策略判定；其余（用户自建，builtin=False 且无 plugin_id）始终保留。
+    集合只装管理员资产（目录播种/插件播种/管理员自建）。规则：插件播种专家
+    （有 plugin_id）跟随其插件可见性；目录内置专家按 expert 策略判定；其余
+    （管理员在助手页新建的非目录助手）始终保留。用户自建专家不在此集合
+    （纯文件事实源），由 list_assistants 另行从作者文件根拼装。
 
     Args:
         app_state: app.state（取 capability_service，缺失时不过滤）。
@@ -124,14 +126,40 @@ async def _visible_assistants(app_state, user: dict, docs: list[dict]) -> list[d
             if await caps.is_visible(user["sub"], "expert", assistant_id):
                 out.append(a)
             continue
-        out.append(a)  # 用户自建助手：不属目录条目，不过滤
+        out.append(a)
     return out
+
+
+async def _own_expert_rows(app_state, user: dict) -> list[dict]:
+    """当前用户的自建专家 → 助手列表行（与助手文档同构的投影）。
+
+    Args:
+        app_state: app.state（取 expert_service，未就绪返回空）。
+        user: 当前用户 payload。
+
+    Returns:
+        投影后的专家行列表（model_name 恒为 None：不关联模型服务）。
+    """
+    svc = getattr(app_state, "expert_service", None)
+    if svc is None:
+        return []
+    return [
+        {
+            "_id": e["_id"], "name": e["name"], "avatar": e["avatar"],
+            "description": e["description"], "system_prompt": e["system_prompt"],
+            "model_provider_id": None, "tool_whitelist": e["tool_whitelist"],
+            "skill_refs": e["skill_refs"], "mcp_refs": e["mcp_refs"],
+            "suggested_prompts": e["suggested_prompts"],
+            "knowledge_base_ids": [], "builtin": False, "model_name": None,
+        }
+        for e in await svc.list_own(user["sub"])
+    ]
 
 
 @router.get("")
 async def list_assistants(request: Request, user=Depends(get_current_user),
                           repos=Depends(get_repos)) -> list[dict]:
-    """全部助手（含 builtin 标记），联查模型服务名。
+    """对当前用户可见的全部助手 = 集合管理员资产 ∪ 本人自建专家（文件）。
 
     provider 停用标 "(已停用)"，已被删除标 "(已删除)"，未关联为 None。
     普通用户视角下不可见的目录专家/插件专家被过滤，管理员不过滤。
@@ -140,6 +168,7 @@ async def list_assistants(request: Request, user=Depends(get_current_user),
     by_id = {p["_id"]: p for p in providers}
     docs = await _visible_assistants(request.app.state, user,
                                      await repos.assistant.list())
+    docs = [*docs, *await _own_expert_rows(request.app.state, user)]
     out: list[dict] = []
     for a in docs:
         item = dict(a)

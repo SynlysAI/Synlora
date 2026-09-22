@@ -85,8 +85,7 @@ doc.build([Paragraph('样品表征报告', style), Spacer(1, 12),
 - 图片插入用 `reportlab.platypus.Image('output/fig1.png', width=14*cm, height=8*cm)`，
   matplotlib 图先存 PNG。
 - 表格样式用 `TableStyle`（`GRID` 边框、`BACKGROUND` 表头底色、对齐）。
-- 更看重"从数据直出美观报告"时：先用 `docx` 技能生成 Word 交付，PDF 只在用户
-  明确要 PDF 时做。
+- 用户明确要 PDF 交付时才做 PDF；Word 交付不在本技能范围内。
 
 ## 交付约定
 

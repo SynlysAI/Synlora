@@ -146,26 +146,40 @@ def test_create_list_and_delete_my_expert(client):
                client.get("/api/v1/me/experts", headers=HEADERS).json())
 
 
-def test_my_experts_get_instantiates_missing_record(client):
-    """GET /me/experts 会把「文件在、记录不在」的自建专家补种进 assistants。
-
-    直接 POST 后断言不算数——那是 write() 自己写的记录；必须先抹掉记录，
-    才能证明 list_my_experts 里的 ensure_instantiated 真在起作用。
-    """
+def test_my_expert_shows_in_assistants_without_db_record(client):
+    """自建专家不落 assistants 集合，但助手列表会从文件根拼装出它（组装式可见）。"""
     created = client.post("/api/v1/me/experts", json=EXPERT, headers=HEADERS).json()
     expert_id = created["id"]
 
-    # 抹掉 assistants 记录，制造「文件在、记录不在」的首访态（等价于历史数据/被清理过）。
-    # 走 TestClient 的 blocking portal 调 store：与 app 同一条事件循环，避免跨 loop 用连接。
+    # 集合里没有记录（纯文件事实源）
     store = client.app.state.store
-    assert client.portal.call(store.delete, "assistants", expert_id) is True
     assert client.portal.call(store.get, "assistants", expert_id) is None
 
-    # 已抹掉 → GET 应把它补回来（证明 ensure_instantiated 生效）
+    # 助手列表（组装式）与「我的专家」都能看到它
     rows = client.get("/api/v1/me/experts", headers=HEADERS).json()
     assert any(r["id"] == expert_id for r in rows)
     assistants = client.get("/api/v1/assistants", headers=HEADERS).json()
-    assert any(a["_id"] == expert_id for a in assistants)
+    row = next(a for a in assistants if a["_id"] == expert_id)
+    assert row["builtin"] is False and row["model_name"] is None
+
+    # 删除后从列表消失
+    assert client.delete(f"/api/v1/me/experts/{expert_id}",
+                         headers=HEADERS).status_code == 200
+    assert all(a["_id"] != expert_id
+               for a in client.get("/api/v1/assistants", headers=HEADERS).json())
+
+
+def test_other_users_expert_not_in_assistants_list(client):
+    """他人自建专家不出现在助手列表（文件只在作者目录，物理隔离）。"""
+    from app.core.auth import issue_token
+
+    created = client.post("/api/v1/me/experts", json=EXPERT, headers=HEADERS).json()
+    other = issue_token({"sub": "u-other", "username": "other", "role": "admin"},
+                        client.app.state.settings)
+    assistants = client.get(
+        "/api/v1/assistants", headers={"Authorization": f"Bearer {other}"}).json()
+    # 文件根专家按请求者解析，任何人（含管理员）都看不到他人的
+    assert all(a["_id"] != created["id"] for a in assistants)
 
 
 def test_my_experts_lists_installed_builtin_with_avatar(client):

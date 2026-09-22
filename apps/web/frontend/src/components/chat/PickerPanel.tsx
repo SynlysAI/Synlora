@@ -9,8 +9,14 @@
  *
  * 本项目映射：搜索框/条目密度照本项目已有弹层（ModelPicker/WorkspacePicker 的
  * 13px 行、12px 辅助字），面板壳 token 用 `--sa-*`。
+ *
+ * 视口收窄：面板高度上限由调用方 class 给定（如 max-h-[358px]），但面板是
+ * absolute 弹在触发项旁的——一级菜单向下展开时面板从触发项顶边向下生长，
+ * 内容多时会戳出视口底部（向上展开时同理顶出上沿）。挂载后按定位父级
+ * （触发项包装层）到视口边缘的剩余空间动态压低 max-height，保证面板
+ * 始终完整可见、列表内部滚动。
  */
-import type { ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 interface PickerPanelProps {
   /** 弹出方向：up 时与触发项底边齐平向上生长（一级菜单向上弹时用）。 */
@@ -33,6 +39,12 @@ interface PickerPanelProps {
   children: ReactNode
 }
 
+/** 面板边缘与视口边缘的最小间距（px）。 */
+const VIEWPORT_MARGIN = 8
+
+/** 压低后的面板最小可用高度（px），极矮窗口下仍保证搜索行 + 几条列表可见。 */
+const MIN_PANEL_HEIGHT = 120
+
 /** 二级面板公共壳（「+」菜单内 absolute 弹出）。 */
 export default function PickerPanel({
   direction,
@@ -45,12 +57,38 @@ export default function PickerPanel({
   searchPlaceholder,
   children,
 }: PickerPanelProps) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  /** 视口剩余空间（px）；null = 未测量（首帧）或空间充足无需干预。 */
+  const [clampedHeight, setClampedHeight] = useState<number | null>(null)
+
+  // 挂载后按方向测量定位父级到视口边缘的剩余空间，小于设计上限时压低 max-height
+  useLayoutEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    // 面板 max-height 由 class 给定（无 class 时 computed 为 none，不设上限）
+    const designCap = Number.parseFloat(getComputedStyle(el).maxHeight)
+    // absolute 面板的 offsetParent 即触发项包装层（relative），其矩形即面板对齐基准
+    const parent = (el.offsetParent as HTMLElement | null) ?? el
+    const rect = parent.getBoundingClientRect()
+    const space =
+      direction === 'up'
+        ? rect.bottom - VIEWPORT_MARGIN
+        : window.innerHeight - rect.top - VIEWPORT_MARGIN
+    if (Number.isNaN(designCap) || space >= designCap) {
+      setClampedHeight(null)
+      return
+    }
+    setClampedHeight(Math.max(space, MIN_PANEL_HEIGHT))
+  }, [direction])
+
   return (
     <div
+      ref={rootRef}
       role="menu"
       aria-label={ariaLabel}
       data-testid={testId}
       className={`absolute left-[calc(100%+11px)] z-10 flex flex-col rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg ${direction === 'up' ? 'bottom-0' : 'top-0'} ${widthClass} ${maxHeightClass}`}
+      style={clampedHeight !== null ? { maxHeight: clampedHeight } : undefined}
     >
       {/* 搜索行（下划线分隔，照 jiuwen .chat-picker-panel__search） */}
       <label className="flex h-7 shrink-0 items-center gap-1.5 px-2 text-[var(--sa-alias-label-tertiary)]">

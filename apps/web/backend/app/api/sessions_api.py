@@ -21,6 +21,30 @@ from app.services.session_runtime import NoUsableProvider, resolve_session_runti
 router = APIRouter(prefix="/api/v1", tags=["sessions"])
 
 
+async def _ensure_assistant_selectable(request: Request, user: dict,
+                                       assistant_id: str, repos: Repos) -> None:
+    """校验会话可绑定的助手：本人自建专家（文件）或集合里的管理员资产。
+
+    他人自建专家不进集合、文件也只存在作者目录，天然查不到 → 统一 404
+    （不泄露存在性）。目录内置/插件专家的"需安装才可用"不在此校验
+    （与列表可见性口径解耦，历史行为是仅查存在性）。
+
+    Args:
+        request: 当前请求（取 expert_service）。
+        user: 当前用户 payload。
+        assistant_id: 待绑定的助手 id。
+        repos: repo 集中访问对象。
+
+    Raises:
+        HTTPException: 助手不存在（404）。
+    """
+    svc = getattr(request.app.state, "expert_service", None)
+    if svc is not None and await svc.get_own(user["sub"], assistant_id) is not None:
+        return
+    if await repos.assistant.get(assistant_id) is None:
+        raise HTTPException(404, "助手不存在")
+
+
 def _agent_service(request: Request) -> AgentService:
     """从 app.state 取编排服务。
 
@@ -217,8 +241,8 @@ async def create_session(body: SessionCreateBody, request: Request,
         HTTPException: 助手不存在（404）、项目不存在或非本人（404）、
             model_provider_id 非法（422）。
     """
-    if body.assistant_id and await repos.assistant.get(body.assistant_id) is None:
-        raise HTTPException(404, "助手不存在")
+    if body.assistant_id:
+        await _ensure_assistant_selectable(request, user, body.assistant_id, repos)
     # 绑定项目须属本人且存在：否则会话带着他人的 project_id 落库（运行时虽会回落
     # 到本人项目、不会串目录，但脏数据会让前端按它渲染出不属于该用户的项目）
     if body.project_id and await request.app.state.project_service.get(
@@ -276,8 +300,7 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
     if "assistant_id" in body.model_fields_set:
         aid = body.assistant_id
         if aid:
-            if await repos.assistant.get(aid) is None:
-                raise HTTPException(404, "助手不存在")
+            await _ensure_assistant_selectable(request, user, aid, repos)
             fields["assistant_id"] = aid
         else:
             fields["assistant_id"] = None
@@ -394,7 +417,7 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     try:
         runtime = await resolve_session_runtime(
             request.app.state.settings, request.app.state.project_service,
-            repos, doc, user)
+            repos, doc, user, expert_service=request.app.state.expert_service)
     except NoUsableProvider as exc:
         raise HTTPException(422, str(exc)) from exc
     assistant = runtime.assistant

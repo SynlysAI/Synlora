@@ -1,6 +1,6 @@
 ---
 name: seaborn
-description: seaborn 统计绘图：分布、分类比较、回归关系、热图与分面，快速出高质量统计图。需要精细到每个元素的自定义时用 matplotlib。
+description: seaborn 统计绘图：分布、分类比较、回归关系、热图与分面，快速出高质量统计图。
 version: '1.3'
 author: K-Dense scientific-agent-skills (MIT)
 tags:
