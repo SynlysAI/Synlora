@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回，终态在右侧运行信息展示，不自动创建聊天回复）。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
 
-- 版本：1.0.0（正式版）
+- 版本：1.3.0（正式版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
