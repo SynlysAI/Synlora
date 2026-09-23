@@ -3,14 +3,17 @@
  *
  * 列表：avatar/名称/描述/内置徽标/关联模型名/操作（编辑、删除——内置禁用）；
  * 新建/编辑模态表单：name、avatar、description、system_prompt、
- * 模型选择（当前 enabled 的模型服务）、工具白名单多选（全选/全清）。
+ * 模型选择（当前 enabled 的模型服务）、工具白名单多选（全选/全清）、
+ * 技能/MCP/知识库绑定多选（MCP 勾选卡片与能力中心 ExpertEditor 同款）。
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { api } from '@/api/client'
 import type { Assistant, CatalogItem, ModelProvider } from '@/types'
 import { TOOL_LABELS } from '@/components/chat/toolLabels'
+import { Selection } from '@/components/catalog/Selection'
 import { toast } from '@/stores/toasts'
 import { useAdminStore } from '@/stores/admin'
+import { useMyCapabilitiesStore } from '@/stores/myCapabilities'
 import { CatalogPolicySwitches, FormError, GrayBadge, Modal } from './shared'
 import { errorText, inputClass, labelClass, primaryButtonClass, secondaryButtonClass } from './form'
 
@@ -101,6 +104,9 @@ function AssistantFormModal({
   // 插件技能只随会话启用插件生效（不进助手绑定候选），与技能管理页同口径过滤
   const skills = useAdminStore((state) => state.skills).filter((s) => s.source !== 'plugin')
   const loadSkills = useAdminStore((state) => state.loadSkills)
+  // MCP 勾选候选：管理员自己接入的连接（/me/mcps，与能力中心同口径）
+  const mcps = useMyCapabilitiesStore((state) => state.mcps)
+  const loadMcps = useMyCapabilitiesStore((state) => state.loadMcps)
 
   useEffect(() => {
     let cancelled = false
@@ -123,7 +129,8 @@ function AssistantFormModal({
 
   useEffect(() => {
     loadSkills().catch(() => undefined)
-  }, [loadSkills])
+    loadMcps().catch(() => undefined)
+  }, [loadSkills, loadMcps])
 
   /** 工具勾选切换。 */
   const toggleTool = (tool: string, checked: boolean) => {
@@ -144,6 +151,26 @@ function AssistantFormModal({
         : f.knowledgeBaseIds.filter((k) => k !== id),
     }))
   }
+
+  /** MCP 勾选切换。 */
+  const toggleMcp = (id: string) => {
+    setForm((f) => ({
+      ...f,
+      mcpRefs: f.mcpRefs.includes(id)
+        ? f.mcpRefs.filter((m) => m !== id)
+        : [...f.mcpRefs, id],
+    }))
+  }
+
+  // MCP 勾选候选：已启用的连接 + 已绑定但当前账号不可见的 ID（原样保留、可取消勾选清除）
+  const enabledMcps = mcps.filter((item) => item.enabled)
+  const enabledMcpIds = new Set(enabledMcps.map((item) => item.id))
+  const mcpItems = [
+    ...enabledMcps.map((item) => ({ id: item.id, label: item.name, note: item.url })),
+    ...form.mcpRefs
+      .filter((id) => !enabledMcpIds.has(id))
+      .map((id) => ({ id, label: id, note: '当前账号不可见（保留原引用）' })),
+  ]
 
   /** 提交：新建 POST / 编辑 PATCH（全字段提交，白名单按勾选原样提交，保留清单外已存工具名）。 */
   const handleSubmit = async (e: FormEvent) => {
@@ -320,24 +347,18 @@ function AssistantFormModal({
           )}
         </div>
 
-        <label className={labelClass}>
-          MCP 引用
-          <input
-            type="text"
-            value={form.mcpRefs.join(', ')}
-            onChange={(event) =>
-              setForm((current) => ({
-                ...current,
-                mcpRefs: event.target.value.split(',').map((item) => item.trim()).filter(Boolean),
-              }))
-            }
-            placeholder="逗号分隔 MCP ID，例如 literature-server"
-            className={inputClass}
+        <div className="flex flex-col gap-1.5">
+          <Selection
+            title="MCP 接入"
+            items={mcpItems}
+            selected={form.mcpRefs}
+            onToggle={toggleMcp}
+            empty="还没有启用的 MCP，请先在扩展中心接入"
           />
           <span className="text-xs text-[var(--sa-alias-label-caption)]">
             这里只保存 MCP ID，不读取或保存凭证；运行时按当前用户可访问的 MCP 连接解析。
           </span>
-        </label>
+        </div>
 
         {/* 知识库绑定（WeKnora）：knowledge.search 工具的检索范围 */}
         <div className={labelClass}>
