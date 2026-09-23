@@ -206,6 +206,7 @@ class MessageIn(BaseModel):
     text: str
     skills: list[str] | None = None
     attachments: list[AttachmentIn] | None = None
+    research_context: ResearchContextMetadata | None = None
 
     @field_validator("text")
     @classmethod
@@ -427,6 +428,19 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             并发超限（429）。
     """
     doc = await _own_session(sid, user, repos)
+    if doc.get("research_context"):
+        metadata = body.research_context or ResearchContextMetadata.model_validate(doc["research_context"])
+        context_token = request.headers.get("X-Research-Context-Token", "")
+        if not context_token:
+            raise HTTPException(401, "缺少科研上下文令牌")
+        try:
+            await request.app.state.research_context_adapter.validate(
+                token=context_token, expected=metadata)
+        except ResearchContextError as exc:
+            raise HTTPException(exc.status_code, exc.message) from exc
+        doc["research_context"] = metadata.model_dump(mode="json")
+        if body.research_context is not None:
+            await repos.session.update(sid, {"research_context": doc["research_context"]})
     # 助手 / 模型 / 工作根 / 归属统一由 session_runtime 解析；
     # 服务层抛领域异常，这里映射成对外 422
     try:

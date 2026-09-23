@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     weknora_api_key: str = ""
     plane_base_url: str = ""
     plane_api_token: str = ""
+    plane_service_token: str = ""
     plane_request_timeout_seconds: float = 3.0
     assistant_web_search_endpoint: str = ""
     assistant_web_search_api_key: str = ""

@@ -75,6 +75,14 @@ _LOGGER = logging.getLogger(__name__)
 # 工具注册表收口在 app.services.tool_registry（与 assistants_api 共用同一实例）
 
 
+def apply_research_tool_policy(tool_names: list[str], research_context: dict | None) -> list[str]:
+    """按 agent-context.v2 的 Plane allowed_tools 取防御性交集。"""
+    if not research_context or research_context.get("schema_version") != "agent-context.v2":
+        return tool_names
+    allowed = set(research_context.get("allowed_tools") or [])
+    return [name for name in tool_names if name in allowed]
+
+
 class ActiveRun:
     """一次进行中的对话运行（queue 供 SSE 消费，done 标记收尾完成）。"""
 
@@ -465,6 +473,7 @@ class AgentService:
                 all_plugin_tools=all_plugin_tools,
                 visible_plugin_tools=visible_plugin_tools,
             )
+            tool_names = apply_research_tool_policy(tool_names, research_context)
             # 图片阅读双重门控：模型多模态 +（助手未限白名单或白名单显式包含）
             if provider_cfg.multimodal and (not whitelist or "file.read_image" in whitelist):
                 tool_names = list(dict.fromkeys([*tool_names, "file.read_image"]))
@@ -530,7 +539,9 @@ class AgentService:
                 "weknora_base_url": self._settings.weknora_base_url,
                 "weknora_api_key": self._settings.weknora_api_key,
                 "knowledge_base_ids": list(
-                    (assistant or {}).get("knowledge_base_ids") or []),
+                    research_context.get("allowed_knowledge_base_ids")
+                    if research_context and research_context.get("allowed_knowledge_base_ids")
+                    else (assistant or {}).get("knowledge_base_ids") or []),
                 # 联网搜索（SearXNG）：地址空 = 未启用，web.search 工具报明确错误
                 "web_search_endpoint": self._settings.assistant_web_search_endpoint,
                 "web_search_api_key": self._settings.assistant_web_search_api_key,

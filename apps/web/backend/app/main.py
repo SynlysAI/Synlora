@@ -20,6 +20,7 @@ from app.api.me_api import router as me_router
 from app.api.mcp_api import router as mcp_router
 from app.api.models_api import router as models_router
 from app.api.projects_api import router as projects_router
+from app.api.research_api import router as research_router
 from app.api.sessions_api import router as sessions_router
 from app.api.skills_api import router as skills_router
 from app.api.tools_api import router as tools_router
@@ -212,6 +213,7 @@ def create_app() -> FastAPI:
     app.include_router(project_files_router)
     app.include_router(session_files_router)
     app.include_router(projects_router)
+    app.include_router(research_router)
     app.include_router(skills_router)
     app.include_router(tools_router)
     app.include_router(knowledge_router)

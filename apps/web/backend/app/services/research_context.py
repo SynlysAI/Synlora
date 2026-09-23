@@ -6,13 +6,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ResearchContextMetadata(BaseModel):
     """Metadata persisted on a Synlora session; never contains a token."""
 
-    schema_version: str = "agent-context.v1"
+    schema_version: str = "agent-context.v2"
     workspace_id: str
     workspace_slug: str
     research_project_id: str
@@ -21,6 +21,19 @@ class ResearchContextMetadata(BaseModel):
     context_hash: str
     visibility_scope: str
     expires_at: datetime
+    allowed_knowledge_base_ids: list[str] = Field(default_factory=list)
+    allowed_file_ids: list[str] = Field(default_factory=list)
+    allowed_plugins: list[str] = Field(default_factory=list)
+    allowed_tools: list[str] = Field(default_factory=list)
+    policy_id: str = ""
+    policy_hash: str = ""
+
+    @model_validator(mode="after")
+    def validate_v2_scope(self) -> "ResearchContextMetadata":
+        """v2 必须携带可执行的工具白名单。"""
+        if self.schema_version == "agent-context.v2" and not self.allowed_tools:
+            raise ValueError("agent-context.v2 requires allowed_tools")
+        return self
 
 
 class ResearchContextError(Exception):
@@ -92,6 +105,12 @@ class ResearchContextAdapter:
             "research_project_id": expected.research_project_id,
             "chain_node_id": expected.chain_node_id,
             "visibility_scope": expected.visibility_scope,
+            "allowed_knowledge_base_ids": expected.allowed_knowledge_base_ids,
+            "allowed_file_ids": expected.allowed_file_ids,
+            "allowed_plugins": expected.allowed_plugins,
+            "allowed_tools": expected.allowed_tools,
+            "policy_id": expected.policy_id,
+            "policy_hash": expected.policy_hash,
         }
         actual_values = {
             "context_id": actual_context.get("context_id"),
@@ -100,6 +119,12 @@ class ResearchContextAdapter:
             "research_project_id": actual_scope.get("project_id"),
             "chain_node_id": actual_context.get("chain_node_id"),
             "visibility_scope": actual_context.get("visibility_scope"),
+            "allowed_knowledge_base_ids": actual_context.get("allowed_knowledge_base_ids") or [],
+            "allowed_file_ids": actual_context.get("allowed_file_ids") or [],
+            "allowed_plugins": actual_context.get("allowed_plugins") or [],
+            "allowed_tools": actual_context.get("allowed_tools") or [],
+            "policy_id": actual_context.get("policy_id") or "",
+            "policy_hash": actual_context.get("policy_hash") or "",
         }
         if expected_values != actual_values:
             raise ResearchContextError(403, "Research context scope mismatch")
