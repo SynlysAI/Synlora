@@ -98,7 +98,8 @@ function AssistantFormModal({
   const [kbError, setKbError] = useState('')
   /** 工具名清单（实取 /api/v1/tools；拉取失败回落 TOOL_LABELS 键，标签见 toolLabels.ts）。 */
   const [toolNames, setToolNames] = useState<string[]>(() => Object.keys(TOOL_LABELS))
-  const skills = useAdminStore((state) => state.skills)
+  // 插件技能只随会话启用插件生效（不进助手绑定候选），与技能管理页同口径过滤
+  const skills = useAdminStore((state) => state.skills).filter((s) => s.source !== 'plugin')
   const loadSkills = useAdminStore((state) => state.loadSkills)
 
   useEffect(() => {
