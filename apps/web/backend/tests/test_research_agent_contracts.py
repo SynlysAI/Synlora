@@ -59,6 +59,67 @@ def test_v2_context_tool_policy_intersects_defensively():
     assert apply_research_tool_policy(selected, None) == selected
 
 
+def test_v2_context_plugin_policy_intersects_defensively():
+    """Plane allowed_plugins 是会话插件开关的硬上界。"""
+    from app.services.agent_service import apply_research_plugin_policy
+
+    context = {
+        "schema_version": "agent-context.v2",
+        "allowed_plugins": ["plugin-a"],
+    }
+    assert apply_research_plugin_policy(["plugin-a", "plugin-b"], context) == ["plugin-a"]
+    assert apply_research_plugin_policy(["plugin-a", "plugin-b"], None) == ["plugin-a", "plugin-b"]
+
+
+async def test_research_session_rejects_plugin_scope_expansion(app, client, user_headers, monkeypatch):
+    """科研会话创建和更新都不能启用 Plane Context 未授权插件。"""
+    from tests.test_research_context import _metadata
+
+    metadata = _metadata(allowed_plugins=["plugin-allowed"])
+
+    async def fake_validate(**_kwargs):
+        return None
+
+    async def fake_exists(_kind, _item_id):
+        return True
+
+    monkeypatch.setattr(app.state.research_context_adapter, "validate", fake_validate)
+    monkeypatch.setattr(app.state.capability_service, "exists", fake_exists)
+
+    denied_create = await client.post(
+        "/api/v1/sessions",
+        headers={**user_headers, "X-Research-Context-Token": "opaque"},
+        json={
+            "enabled_plugins": ["plugin-denied"],
+            "research_context": metadata.model_dump(mode="json"),
+        },
+    )
+    assert denied_create.status_code == 403, denied_create.text
+
+    created = await client.post(
+        "/api/v1/sessions",
+        headers={**user_headers, "X-Research-Context-Token": "opaque"},
+        json={"research_context": metadata.model_dump(mode="json")},
+    )
+    assert created.status_code == 201, created.text
+    sid = created.json()["_id"]
+
+    denied_update = await client.patch(
+        f"/api/v1/sessions/{sid}",
+        headers=user_headers,
+        json={"enabled_plugins": ["plugin-denied"]},
+    )
+    assert denied_update.status_code == 403, denied_update.text
+
+    allowed_update = await client.patch(
+        f"/api/v1/sessions/{sid}",
+        headers=user_headers,
+        json={"enabled_plugins": ["plugin-allowed"]},
+    )
+    assert allowed_update.status_code == 200, allowed_update.text
+    assert allowed_update.json()["enabled_plugins"] == ["plugin-allowed"]
+
+
 async def test_research_message_requires_context_token_each_turn(app, client, user_headers, monkeypatch):
     """每轮消息必须重新携带 Context token，旧会话不能自动续权。"""
     from tests.test_research_context import _metadata

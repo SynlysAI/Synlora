@@ -190,6 +190,21 @@ async def _validate_plugin_ids(request: Request, plugin_ids: list[str]) -> None:
             raise HTTPException(404, f"插件不存在: {pid}")
 
 
+def _validate_research_plugin_scope(plugin_ids: list[str], metadata: ResearchContextMetadata) -> None:
+    """确保科研会话插件不超出 Plane Context 授权范围。
+
+    Args:
+        plugin_ids: 请求启用的会话插件 ID。
+        metadata: Plane 签发的 agent-context.v2 元数据。
+
+    Raises:
+        HTTPException: 任一插件不在 ``allowed_plugins`` 内时返回 403。
+    """
+    invalid = sorted(set(plugin_ids) - set(metadata.allowed_plugins or []))
+    if invalid:
+        raise HTTPException(403, f"科研上下文未授权插件: {', '.join(invalid)}")
+
+
 class AttachmentIn(BaseModel):
     """随消息发送的附件引用（file_id 指向已上传到工作区的文件记录）。"""
 
@@ -253,8 +268,6 @@ async def create_session(body: SessionCreateBody, request: Request,
         raise HTTPException(404, "项目不存在")
     if body.model_provider_id:
         await _validate_provider(body.model_provider_id, repos)
-    if body.enabled_plugins is not None:
-        await _validate_plugin_ids(request, body.enabled_plugins)
     if body.research_context is not None:
         context_token = request.headers.get("X-Research-Context-Token", "")
         if not context_token:
@@ -264,6 +277,10 @@ async def create_session(body: SessionCreateBody, request: Request,
                 token=context_token, expected=body.research_context)
         except ResearchContextError as exc:
             raise HTTPException(exc.status_code, exc.message) from exc
+    if body.enabled_plugins is not None:
+        await _validate_plugin_ids(request, body.enabled_plugins)
+        if body.research_context is not None:
+            _validate_research_plugin_scope(body.enabled_plugins, body.research_context)
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
@@ -330,6 +347,12 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
     if "enabled_plugins" in body.model_fields_set:
         if body.enabled_plugins is not None:
             await _validate_plugin_ids(request, body.enabled_plugins)
+            research_context = doc.get("research_context")
+            if research_context is not None:
+                _validate_research_plugin_scope(
+                    body.enabled_plugins,
+                    ResearchContextMetadata.model_validate(research_context),
+                )
         # 显式 null 与空列表同义：本会话不启用任何插件（默认全关）
         fields["enabled_plugins"] = body.enabled_plugins
     return await repos.session.update(doc["_id"], fields)
