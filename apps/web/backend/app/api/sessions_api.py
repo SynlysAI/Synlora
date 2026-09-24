@@ -482,6 +482,46 @@ async def send_message(sid: str, body: MessageIn, request: Request,
     return EventSourceResponse(sse_gen())
 
 
+@router.get("/sessions/{sid}/events")
+async def subscribe_session(sid: str, request: Request,
+                            user=Depends(get_current_user),
+                            repos=Depends(get_repos)) -> EventSourceResponse:
+    """订阅会话的全部后续事件（会话页常驻，含任务唤醒轮与瞬态流）。
+
+    与 POST /messages 的 per-run 流互补：run 结束后 SSE 已收尾，任务完成
+    唤醒自动续跑的轮次经本端点推给打开中的会话页。事件格式与 per-run 流
+    完全一致（event=事件类型、data=JSON、id=seq），前端按 seq 去重后可
+    与既有处理共用。
+
+    Args:
+        sid: 会话 id。
+        request: 当前请求（取 agent_service）。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+
+    Returns:
+        SSE 事件流响应（断连自动注销订阅，历史事件经 GET /sessions/{sid}/events 拉取）。
+
+    Raises:
+        HTTPException: 会话不存在或非本人（404）。
+    """
+    await _own_session(sid, user, repos)
+    service = _agent_service(request)
+    queue = service.subscribe_session_events(sid)
+
+    async def sse_gen():
+        """消费会话订阅队列直至客户端断连（finally 注销防队列泄漏）。"""
+        try:
+            while True:
+                ev = await queue.get()
+                yield {"event": ev.type.value, "data": ev.model_dump_json(),
+                       "id": str(ev.seq)}
+        finally:
+            service.unsubscribe_session_events(sid, queue)
+
+    return EventSourceResponse(sse_gen())
+
+
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request,
                      user=Depends(get_current_user),

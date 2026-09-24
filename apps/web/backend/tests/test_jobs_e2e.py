@@ -25,16 +25,16 @@ async def session_id(app):
     return doc["_id"]
 
 
-async def test_submit_poll_updates_job_without_waking_agent(
+async def test_submit_poll_wakes_agent_on_terminal(
     app, session_id, monkeypatch,
 ):
-    """外部任务进入终态后只更新任务文档，不自动唤醒 Agent。"""
+    """外部任务进入终态后唤醒所属会话：chat 以 notice=True 续跑一轮。"""
     started_runs: list[tuple[tuple, dict]] = []
 
     async def chat(*args, **kwargs) -> str:
-        """记录意外触发的新一轮对话。"""
+        """记录唤醒触发的新一轮对话。"""
         started_runs.append((args, kwargs))
-        return "unexpected-run"
+        return "wake-run"
 
     monkeypatch.setattr(app.state.agent_service, "chat", chat)
     # 连接器可在运行期注册（registry 与 ToolRegistry 同为可变注册表）
@@ -48,7 +48,40 @@ async def test_submit_poll_updates_job_without_waking_agent(
         ctx_extra=_submission_extra(session_id))
     assert result.ok is True
 
-    # 两轮 tick：第一轮 queued（保持 pending），第二轮 done（写入终态）
+    # 两轮 tick：第一轮 queued（保持 pending），第二轮 done（写入终态并唤醒）
+    await app.state.job_poller.tick()
+    await app.state.job_poller.tick()
+
+    doc = await service.get(result.data["job_id"])
+    assert doc["status"] == "completed"
+    assert len(started_runs) == 1
+    args, kwargs = started_runs[0]
+    assert args[0] == session_id and args[1] == {"sub": "u-user"}
+    assert kwargs.get("notice") is True
+    assert "[系统通知]" in args[4] and "端到端" in args[4]
+
+
+async def test_wakeup_disabled_skips_agent(app, session_id, monkeypatch):
+    """唤醒关闭（hook 未接线）时任务终态只更新文档，不触发新对话。"""
+    started_runs: list[tuple[tuple, dict]] = []
+
+    async def chat(*args, **kwargs) -> str:
+        """记录意外触发的新一轮对话。"""
+        started_runs.append((args, kwargs))
+        return "unexpected-run"
+
+    monkeypatch.setattr(app.state.agent_service, "chat", chat)
+    monkeypatch.setattr(app.state.job_service, "_wakeup_hook", None)
+    app.state.job_connectors.register(
+        make_fake_connector("k2", plugin_id="p1", script=["queued", "done"]),
+        status_map=FAKE_MAP)
+    service = app.state.job_service
+    result = await service.handle(
+        {"action": "submit", "kind": "k2", "params": {}, "label": "关闭唤醒"},
+        user={"sub": "u-user"}, session_id=session_id,
+        ctx_extra=_submission_extra(session_id))
+    assert result.ok is True
+
     await app.state.job_poller.tick()
     await app.state.job_poller.tick()
 

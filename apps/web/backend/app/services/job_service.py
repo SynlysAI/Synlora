@@ -106,6 +106,8 @@ class JobService:
         self._settings = settings
         self._sandbox_runner = sandbox_runner
         self._workspace_guard = workspace_guard
+        # 任务完成唤醒回调（AgentService.notify_job_finished；None = 未接线不唤醒）
+        self._wakeup_hook = None
         # 每任务的串行锁（防并发 refresh 重复推进状态）；按任务数增长，
         # 进程内小对象，任务总量可控故不回收（回收会引出"旧锁 vs 新锁"的并发窗口）
         self._job_locks: dict[str, asyncio.Lock] = {}
@@ -113,6 +115,39 @@ class JobService:
     def set_sandbox_runner(self, runner: Any) -> None:
         """注入平台沙箱后台运行器。"""
         self._sandbox_runner = runner
+
+    def set_wakeup_hook(self, hook) -> None:
+        """注入任务完成唤醒回调（None = 关闭唤醒）。
+
+        Args:
+            hook: 异步回调（签名 async def(doc: dict)），任务推进到
+                COMPLETED/FAILED 终态后以任务文档调用；取消不唤醒。
+                回调异常只告警，不影响任务终态落库。
+        """
+        self._wakeup_hook = hook
+
+    async def _fire_wakeup(self, doc: dict | None) -> None:
+        """终态落库后触发会话唤醒（非终态/未接线/取消路径静默跳过）。"""
+        if (doc is None or self._wakeup_hook is None
+                or doc.get("status") not in (
+                    JobStatus.COMPLETED.value, JobStatus.FAILED.value)):
+            return
+        try:
+            await self._wakeup_hook(doc)
+        except Exception:  # noqa: BLE001 唤醒失败不影响任务终态
+            _LOGGER.warning("任务完成唤醒失败 job=%s", doc.get("_id"), exc_info=True)
+
+    @staticmethod
+    def _wakeup_text(doc: dict) -> str:
+        """构造注入会话的唤醒文本（[系统通知] 前缀自说明 + 渲染摘要尾部）。"""
+        label = str(doc.get("label") or doc.get("kind") or doc.get("_id", ""))
+        verdict = ("已完成" if doc.get("status") == JobStatus.COMPLETED.value else "失败")
+        summary = JobService._render(doc)
+        return (
+            f"[系统通知] 后台任务「{label}」{verdict}。以下是任务详情，请查看结果并"
+            f"继续后续工作（结果与你此前计划不符时，如实向用户说明）：\n\n"
+            f"{summary[:2000]}"
+        )
 
     # ---------- 查询 ----------
 
@@ -462,6 +497,7 @@ class JobService:
         cancelled: bool = False,
     ) -> None:
         """在任务锁内收敛平台任务终态。"""
+        updated: dict | None = None
         async with self._lock_for(job_id):
             doc = await self._repo.get(job_id)
             if doc is None or is_terminal(doc.get("status")):
@@ -477,7 +513,7 @@ class JobService:
             else:
                 status = JobStatus.FAILED
                 error_code = "timeout" if timed_out else (result.error or "nonzero_exit")
-            await self._repo.update(job_id, {
+            updated = await self._repo.update(job_id, {
                 "status": status.value,
                 "result": result.content[-65_536:],
                 "exit_code": exit_code,
@@ -488,6 +524,8 @@ class JobService:
                 "ended_at": time.time(),
                 "cancel_requested": False,
             })
+        # 锁外触发唤醒：COMPLETED/FAILED 唤醒会话续跑，CANCELLED 不打扰
+        await self._fire_wakeup(updated)
     async def describe(self, job_id: str, *, user_id: str,
                        refresh: bool = False) -> ToolResult:
         """查单个任务（可选先同步刷新一次状态，让用户看到最新进度）。
@@ -611,6 +649,7 @@ class JobService:
                 "error": f"任务类型已不可用: {doc.get('kind')}",
                 "ended_at": time.time(),
             })
+            await self._fire_wakeup(failed)
             return failed
         ctx = await self._ctx_for(str(doc.get("user_id", "")),
                                   registered.connector.plugin_id,
@@ -658,6 +697,9 @@ class JobService:
                 str(doc.get("external_id", "")), ctx)
             if reason:
                 updated = await self._repo.update(doc["_id"], {"error": reason})
+        if is_terminal(mapped):
+            # 终态推进完成后触发会话唤醒（回调不回碰任务锁，异常只告警）
+            await self._fire_wakeup(updated)
         return updated
 
     async def render_list(self, session_id: str, *, user_id: str) -> ToolResult:

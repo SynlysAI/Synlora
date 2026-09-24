@@ -208,14 +208,18 @@ async def test_take_queued_turn_after_final_answer():
     session = _session(backend)
     task = asyncio.create_task(_collect(session, "第一问"))
     await asyncio.sleep(0.02)
-    session.steer("收尾后来的一句")  # 本轮已无下一个 step，插话留队列
+    session.steer("收尾后来的一句", metadata={"notice": True})  # 本轮已无下一个 step，插话留队列
     events = await task
     assert EventType.TURN_END in [e.type for e in events]
-    assert session.take_queued_turn() == "收尾后来的一句"
-    # 宿主续跑：插话作为下一轮正式输入，LLM 可见
-    await _collect(session, "收尾后来的一句")
+    assert session.take_queued_turn() == ("收尾后来的一句", {"notice": True})
+    # 宿主续跑：插话作为下一轮正式输入（元数据经 input_metadata 透传进 payload）
+    events2 = [ev async for ev in session.run(
+        "收尾后来的一句", input_metadata={"notice": True})]
     assert any(m.role.value == "user" and m.content == "收尾后来的一句"
                for m in backend.calls[1])
+    notice_events = [e for e in events2
+                     if e.type is EventType.USER_MESSAGE and e.payload.get("notice")]
+    assert notice_events, "续跑轮 user/message 应携带插话元数据"
     assert session.take_queued_turn() is None
 
 

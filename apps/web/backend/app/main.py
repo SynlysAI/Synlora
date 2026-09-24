@@ -52,6 +52,7 @@ from app.services.job_poller import JobPoller
 from app.services.job_access import WorkspaceJobGuard
 from app.services.sandbox_job_runner import SandboxJobRunner
 from app.services.job_service import JobService
+from app.services.wakeup import make_run_context_resolver
 from app.services.mcp_service import McpService
 from app.services.project_service import ProjectService
 from app.services.research_context import PlaneResearchClient, ResearchContextAdapter
@@ -152,8 +153,9 @@ async def lifespan(app: FastAPI):
         ai4ms_identity=app.state.ai4ms_identity,
         mcp_service=app.state.mcp_service)
     # 后台任务：任务服务 → 轮询器。连接器注册表在 PluginService 之前已建
-    # （插件在其挂载时注册连接器）。任务终态只写 Job 文档，由运行信息面板
-    # 或 job.status/job.list 主动读取，不自动发起新的 Agent run。
+    # （插件在其挂载时注册连接器）。任务终态写 Job 文档供运行信息面板与
+    # job.status/job.list 读取；job_wakeup_enabled 时终态（成功/失败）额外
+    # 唤醒所属会话续跑（见 agent_service.notify_job_finished）。
     # repo 聚合：唯一构造点，deps.get_repos 复用本对象。
     app.state.repos = Repos(
         provider=app.state.provider_repo, assistant=app.state.assistant_repo,
@@ -179,6 +181,13 @@ async def lifespan(app: FastAPI):
     else:
         app.state.sandbox_job_runner = None
     app.state.agent_service.set_job_service(app.state.job_service)
+    # 任务完成唤醒：终态（成功/失败）回调 + 运行装配解析（settings 可整体关闭）
+    if settings.job_wakeup_enabled:
+        app.state.job_service.set_wakeup_hook(
+            app.state.agent_service.notify_job_finished)
+        app.state.agent_service.set_run_context_resolver(make_run_context_resolver(
+            settings, app.state.project_service, app.state.repos,
+            expert_service=app.state.expert_service))
     app.state.job_poller = JobPoller(app.state.job_service)
     await app.state.job_poller.start()
     await seed_experts(store, index.experts)

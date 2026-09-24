@@ -66,7 +66,7 @@ class RunSession:
         self._workspace_root = workspace_root
         self._context_extra = context_extra
         self._cancel = asyncio.Event()
-        self._steering: asyncio.Queue[str] = asyncio.Queue()
+        self._steering: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
         self._last_usage: Usage | None = None
         self._llm_failed = False
         # 本轮待注入的图片附件（pi 式瞬态：file.read_image 结果，下一次 LLM 调用
@@ -88,33 +88,42 @@ class RunSession:
         """请求中止（下一个检查点生效：step 开始或流消费结束）。"""
         self._cancel.set()
 
-    def steer(self, text: str) -> None:
+    def steer(self, text: str, metadata: dict[str, Any] | None = None) -> None:
         """中途插话：注入下一个 step 开头的 user 消息。
 
         Args:
             text: 插话文本。
+            metadata: 宿主附加元数据（并入 user/message payload，如任务完成
+                唤醒的 notice 标记）；不得覆盖 text/steering。
         """
-        self._steering.put_nowait(text)
+        extra = {k: v for k, v in (metadata or {}).items()
+                 if k not in ("text", "steering")}
+        self._steering.put_nowait((text, extra))
 
-    def take_queued_turn(self) -> str | None:
+    def take_queued_turn(self) -> tuple[str, dict[str, Any]] | None:
         """turn 结束后兜底：取走队列中未被消费的插话（转为下一轮输入）。
 
         模型输出最终回答时已无下一个 step，期间入队的插话不会被 step 边界
         drain 消费——由宿主在 run() 耗尽后调用本方法决定去向：turn 正常
-        结束且队列非空返回拼接文本（多条插话以换行合并），宿主据此自动续跑
-        下一轮；取消/LLM 失败路径的残留插话直接丢弃（返回 None）。
+        结束且队列非空返回拼接文本（多条插话以换行合并）与其合并元数据
+        （后入覆盖先入，供续跑轮 run(input_metadata=...) 透传 notice 等
+        标记），宿主据此自动续跑下一轮；取消/LLM 失败路径的残留插话直接
+        丢弃（返回 None）。
 
         Returns:
-            下一轮用户输入文本；无需续跑时为 None。
+            (下一轮用户输入文本, 合并元数据)；无需续跑时为 None。
         """
         if self._cancel.is_set() or self._llm_failed:
             while not self._steering.empty():
                 self._steering.get_nowait()
             return None
         pending: list[str] = []
+        merged: dict[str, Any] = {}
         while not self._steering.empty():
-            pending.append(self._steering.get_nowait())
-        return "\n".join(pending) if pending else None
+            text, meta = self._steering.get_nowait()
+            pending.append(text)
+            merged.update(meta)
+        return ("\n".join(pending), merged) if pending else None
 
     async def _emit(self, type_: EventType, payload: dict) -> SessionEvent:
         """追加事件到日志并返回。
@@ -199,9 +208,10 @@ class RunSession:
                     break
                 # steering 注入：drain 插话队列，下一次 LLM 调用即可看到
                 while not self._steering.empty():
-                    steer_text = await self._steering.get()
+                    steer_text, steer_meta = await self._steering.get()
                     yield await self._emit(
-                        EventType.USER_MESSAGE, {"text": steer_text, "steering": True},
+                        EventType.USER_MESSAGE,
+                        {"text": steer_text, "steering": True, **steer_meta},
                     )
 
                 # 历史按需压缩（超阈值时早期历史摘要为一条消息，见 compaction.py）

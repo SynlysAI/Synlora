@@ -61,6 +61,7 @@ from app.services.skill_service import SkillService
 from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGISTRY
 
 MAX_RUNS_PER_USER = 2  # 每用户并发运行上限（超出 API 层转 429）
+MAX_WAKE_CHAIN = 3  # 连续无用户输入的唤醒轮数上限（防"提交→唤醒→再提交"自激；用户发言清零）
 
 # 抢占后等待 run 收尾的上限（秒）：解掉 future + 置旗标后正常应在毫秒级收尾，
 # 给 5s 只是防"收尾路径自身有问题"时把抢占方一起拖住
@@ -131,6 +132,12 @@ class AgentService:
         self._executor: CodeExecutor | None = None
         # 后台任务服务（装配阶段经 set_job_service 注入；None 时 job.* 工具报不可用）
         self._job_service: Any = None
+        # 任务完成唤醒：运行装配解析回调（main 接线注入；None 时空闲会话不唤醒）
+        self._run_context_resolver: Any = None
+        # 连续唤醒链计数（session_id → 无用户输入参与的连续唤醒轮数；用户发言清零）
+        self._wake_chain: dict[str, int] = {}
+        # 会话级事件订阅（session_id → 订阅者队列集合，前端常驻订阅用）
+        self._session_subs: dict[str, set[asyncio.Queue]] = {}
 
     async def _code_executor(self) -> CodeExecutor:
         """解析（一次）沙箱执行器并缓存。
@@ -239,7 +246,8 @@ class AgentService:
                    attachments: list[dict] | None = None,
                    file_ownership: dict | None = None,
                    enabled_plugins: list[str] | None = None,
-                   research_context: dict | None = None) -> str:
+                   research_context: dict | None = None,
+                   notice: bool = False) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
         装配收口：平台默认段 + 专家 persona（可选）+ 技能渐进披露（索引进
@@ -269,6 +277,9 @@ class AgentService:
                 内置工具不受影响。
             research_context: Plane 签发的只读科研范围（会话创建时已校验），
                 经 ctx.extra 透传给工具；None 表示普通 Synlora 会话。
+            notice: 本轮为任务完成唤醒（非用户输入）：user/message payload 带
+                kind=job_completed（前端渲染为居中提示条），跳过唤醒链清零
+                （链计数由 notify_job_finished 维护），其余装配与用户消息一致。
         Returns:
             run_id。
 
@@ -280,6 +291,9 @@ class AgentService:
         # 绝不兜底成字面量目录名——那会让多个用户共用 users/anonymous/ 且与
         # DB 里记录的 user_id 不一致
         user_sub = str(user["sub"])
+        # 真实用户输入清零唤醒链（notice 轮保持：连续唤醒计数只在用户回来时复位）
+        if not notice:
+            self._wake_chain.pop(session_id, None)
         # 会话级互斥：同会话两个并发 run 会各自 seed 同一份历史快照、从相同
         # seq 起号，DB _id=f"{sid}:{seq}" 碰撞写入被 db_sink 静默吞掉 → 事件
         # 拼接错乱/丢失，必须前置拒绝。但停在 ask 上的轮可先让位给新的用户
@@ -302,6 +316,7 @@ class AgentService:
                 event_repo=self._event_repo,
                 jsonl_path=self._jsonl_path(session_id, user_sub),
                 queue=active.queue,
+                broadcast=lambda ev: self._broadcast_session_event(session_id, ev),
             ))
 
             # 扩展钩子挂载（可观测性：turn 生命周期 + 工具事件审计日志）
@@ -590,9 +605,10 @@ class AgentService:
                 context_extra=ctx_extra_snapshot,
             )
             active.session = session
+            notice_meta = {"kind": "job_completed"} if notice else None
             t = asyncio.create_task(
                 self._drive(run_id, session, text, user["sub"], session_id,
-                            attachments=attachments))
+                            attachments=attachments, notice_meta=notice_meta))
             self._bg.add(t)
             t.add_done_callback(self._bg.discard)
         except Exception:
@@ -606,7 +622,8 @@ class AgentService:
 
     async def _drive(self, run_id: str, session: RunSession, text: str,
                       user_id: str, session_id: str,
-                      attachments: list[dict] | None = None) -> None:
+                      attachments: list[dict] | None = None,
+                      notice_meta: dict | None = None) -> None:
         """后台驱动 run 至完成并落盘终态（独立于 SSE 消费者，断连不中断）。
 
         Args:
@@ -616,6 +633,8 @@ class AgentService:
             user_id: 用户 sub。
             session_id: 会话 id。
             attachments: 随消息发送的附件元数据（None/空 = 无附件）。
+            notice_meta: 唤醒轮的 user/message payload 附加元数据
+                （kind=job_completed，前端渲染居中提示条）；None = 普通用户消息。
         """
         try:
             await self._store.insert("runs", {
@@ -626,22 +645,25 @@ class AgentService:
             pass  # run 记录失败不阻断对话流（并发限制会暂时失效，属存储故障降级）
         final_status = "completed"
         try:
-            pending_text, pending_attachments = text, attachments
+            pending_text, pending_meta, pending_attachments = text, notice_meta, attachments
             while True:
                 stream = session.run(
                     pending_text,
                     attachments=pending_attachments,
+                    input_metadata=pending_meta,
                 )
                 async with contextlib.aclosing(stream):
                     async for _event in stream:
                         pass  # 事件已由 sinks 持久化并入队
                 # 插话兜底：turn 正常结束但队列残留插话（模型收尾窗口入队、
                 # 无下一个 step 可消费）→ 转为下一轮用户输入自动续跑，防静默
-                # 丢失；取消/LLM 失败路径 take_queued_turn 内部已丢弃返回 None
-                pending_text = session.take_queued_turn()
-                pending_attachments = None
-                if pending_text is None:
+                # 丢失（插话携带的元数据随 take_queued_turn 合并续传）；
+                # 取消/LLM 失败路径 take_queued_turn 内部已丢弃返回 None
+                leftover = session.take_queued_turn()
+                if leftover is None:
                     break
+                pending_text, pending_meta = leftover[0], leftover[1] or None
+                pending_attachments = None
         except Exception:
             final_status = "failed"
         # harness 取消旗标（未暴露公共 API，接入契约确认可读）：用户显式 cancel 优先于异常归类
@@ -671,6 +693,107 @@ class AgentService:
             service: JobService 实例（提供 handle() 分发）。
         """
         self._job_service = service
+
+    def set_run_context_resolver(self, resolver: Any) -> None:
+        """注入运行装配解析回调（任务完成唤醒起新轮时取会话装配）。
+
+        Args:
+            resolver: 异步回调 async def(session_id, user_id) -> dict | None，
+                返回 chat 所需装配（user/assistant/provider_cfg/workspace_root/
+                ownership/enabled_plugins/research_context）；会话不存在、
+                非本人或模型不可用时返回 None（放弃唤醒）。
+        """
+        self._run_context_resolver = resolver
+
+    async def notify_job_finished(self, doc: dict) -> None:
+        """job 终态唤醒会话（job_service 注入的 wakeup 回调）。
+
+        双时点语义：会话有活跃 run → steer 注入（模型下个 step 边界可见，
+        收尾窗口入队则由 take_queued_turn 兜底转下一轮）；空闲 → 经
+        resolver 取装配自动起新一轮。防自激：连续无用户输入的唤醒轮数
+        达上限后不再自动唤醒（任务终态仍在 jobs 库，模型下轮可见）。
+
+        Args:
+            doc: 任务终态文档（含 session_id/user_id/status/label）。
+        """
+        session_id = str(doc.get("session_id") or "")
+        if not session_id:
+            return
+        from app.services.job_service import JobService
+
+        text = JobService._wakeup_text(doc)
+        # 前端既定契约：user/message 的 kind=job_completed 渲染为居中提示条
+        # （唤醒正文是给模型的指令，对用户只回固定文案，见 UserMessage.systemWake）
+        meta = {"kind": "job_completed"}
+        # 时点一：活跃 run → 插话语义注入（任一活跃 run 均落到同一事件流）
+        for run_id in list(self._active_by_session.get(session_id) or ()):
+            active = self._runs.get(run_id)
+            if active is not None and active.session is not None:
+                active.session.steer(text, metadata=meta)
+                return
+        # 时点二：空闲会话 → 防自激上限检查后起新轮
+        chain = self._wake_chain.get(session_id, 0)
+        if chain >= MAX_WAKE_CHAIN:
+            _LOGGER.info("会话 %s 连续唤醒达上限（%d），任务 %s 终态仅落库",
+                         session_id, chain, doc.get("_id"))
+            return
+        if self._run_context_resolver is None:
+            return
+        try:
+            ctx = await self._run_context_resolver(session_id, str(doc.get("user_id") or ""))
+        except Exception:
+            _LOGGER.warning("唤醒装配解析失败 session=%s job=%s",
+                            session_id, doc.get("_id"), exc_info=True)
+            return
+        if ctx is None:
+            return
+        self._wake_chain[session_id] = chain + 1
+        try:
+            await self.chat(
+                session_id, ctx["user"], ctx["assistant"], ctx["provider_cfg"], text,
+                workspace_root=ctx["workspace_root"],
+                file_ownership=ctx.get("ownership"),
+                enabled_plugins=ctx.get("enabled_plugins"),
+                research_context=ctx.get("research_context"),
+                notice=True,
+            )
+        except TooManyRuns:
+            # 竞态窗口内用户消息先行占位：用户优先，放弃本次唤醒并回退计数
+            self._wake_chain[session_id] = chain
+            _LOGGER.info("唤醒让位用户消息 session=%s job=%s", session_id, doc.get("_id"))
+        except Exception:
+            self._wake_chain[session_id] = chain
+            _LOGGER.warning("唤醒续跑失败 session=%s job=%s",
+                            session_id, doc.get("_id"), exc_info=True)
+
+    def subscribe_session_events(self, session_id: str) -> asyncio.Queue:
+        """注册会话级事件订阅者（前端常驻 SSE 端点用，含瞬态事件）。
+
+        Args:
+            session_id: 会话 id。
+
+        Returns:
+            该订阅者的内存队列（SessionEvent 对象，断连后须 unsubscribe）。
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        self._session_subs.setdefault(session_id, set()).add(queue)
+        return queue
+
+    def unsubscribe_session_events(self, session_id: str, queue: asyncio.Queue) -> None:
+        """注销会话级订阅者（SSE 断连/会话页关闭时调用，防队列泄漏）。"""
+        subs = self._session_subs.get(session_id)
+        if subs is not None:
+            subs.discard(queue)
+            if not subs:
+                self._session_subs.pop(session_id, None)
+
+    def _broadcast_session_event(self, session_id: str, event) -> None:
+        """把事件扇出到该会话的全部常驻订阅者（无订阅者零开销）。"""
+        for queue in list(self._session_subs.get(session_id) or ()):
+            try:
+                queue.put_nowait(event)
+            except Exception:
+                pass  # 单个订阅者故障不影响其余订阅与事件落盘
 
     def _yieldable(self, run_id: str) -> bool:
         """该 run 是否可让位给新的用户消息。

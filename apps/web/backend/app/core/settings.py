@@ -46,6 +46,9 @@ class Settings(BaseSettings):
         sandbox_job_default_timeout_s: 后台沙箱任务默认超时秒数。
         sandbox_job_max_timeout_s: 后台沙箱任务最大超时秒数。
         sandbox_deployment_id: Docker 执行资源所属部署标识；空时按 data_root 派生。
+        job_wakeup_enabled: 后台任务完成（成功/失败）后自动唤醒所属会话续跑
+            （活跃轮走插话注入、空闲轮自动起新一轮；取消不唤醒；连续无用户
+            输入的唤醒轮有上限防自激）。
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -80,6 +83,7 @@ class Settings(BaseSettings):
     sandbox_job_default_timeout_s: float = 1800.0
     sandbox_job_max_timeout_s: float = 7200.0
     sandbox_deployment_id: str = ""
+    job_wakeup_enabled: bool = True
 
     @model_validator(mode="after")
     def validate_sandbox_job_timeouts(self) -> "Settings":
