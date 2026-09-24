@@ -200,7 +200,7 @@ class PlaneResearchClient:
                 response = await client.post(
                     url,
                     json=payload,
-                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    headers={"X-API-Key": self._api_token},
                 )
         except httpx.HTTPError as exc:
             raise ResearchContextError(503, "Plane event write-back is unavailable") from exc

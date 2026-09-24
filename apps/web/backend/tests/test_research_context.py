@@ -99,6 +99,7 @@ async def test_plane_event_client_uses_backend_token_and_idempotency():
     captured = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        captured["api_key"] = request.headers.get("X-API-Key")
         captured["authorization"] = request.headers.get("Authorization")
         captured["json"] = json.loads(request.content)
         return httpx.Response(201, json={"event_id": "event-1"})
@@ -114,7 +115,8 @@ async def test_plane_event_client_uses_backend_token_and_idempotency():
         transport=httpx.MockTransport(handler),
     )
     assert result == {"event_id": "event-1"}
-    assert captured["authorization"] == "Bearer service-token"
+    assert captured["api_key"] == "service-token"
+    assert captured["authorization"] is None
     assert captured["json"]["request_id"] == "request-1"
 
 
