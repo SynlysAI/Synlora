@@ -237,8 +237,10 @@ class DockerCodeExecutor:
 
     每次执行一个临时容器：workspace 单目录挂载 /workspace（rw，其余
     文件系统为容器私有层）、断网（network_disabled）、内存/CPU/进程数
-    限额、镜像默认非 root 用户、跑完即删。代码经挂载的工作区传入，
-    不进 argv（无长度与转义问题）、不经 stdin（无管道时序问题）。
+    限额、非 root 用户（Linux 下动态对齐宿主工作区属主 uid/gid，保证
+    容器内对挂载目录的写权限与宿主后端一致）、跑完即删。代码经挂载的
+    工作区传入，不进 argv（无长度与转义问题）、不经 stdin（无管道时序
+    问题）。
 
     docker-py 为可选依赖，懒加载：local 模式下零开销。
     """
@@ -259,7 +261,8 @@ class DockerCodeExecutor:
             mem_limit: 单容器内存上限（Docker 记法，如 "512m"）。
             cpus: 单容器 CPU 上限（核数）。
             pids_limit: 单容器进程数上限（fork 炸弹围栏）。
-            container_user: 容器内运行用户（空 = 镜像默认，镜像内置非 root）。
+            container_user: 容器内运行用户（"uid[:gid]"，空 = Linux 下动态
+                对齐宿主工作区属主；对齐不可用时用镜像默认非 root 用户）。
             deployment_id: 宿主提供的部署命名空间标识。
         """
         self.sandbox = "docker"
@@ -272,6 +275,42 @@ class DockerCodeExecutor:
             r"[^a-zA-Z0-9_.-]", "-", deployment_id
         )[:63] or "default"
         self._client = None
+
+    @staticmethod
+    def _resolve_user_param(
+        configured_user: str | None,
+        owner: tuple[int, int] | None,
+    ) -> str | None:
+        """合成容器 user 参数（显式配置优先，其次对齐宿主工作区属主）。
+
+        Linux bind mount 原样保留宿主目录的属主与权限位：镜像默认用户
+        （uid 10000）与宿主属主不一致时，容器内对 /workspace 无写权限
+        （mode=rw 只是挂载层标志，POSIX 权限才是最终判定）。对齐属主后
+        容器进程对挂载目录的权限与宿主后端完全一致。owner 为 None 表示
+        平台不支持属主对齐（Windows Docker Desktop 文件共享宽松，镜像
+        默认用户即可写）；属主为 root 时不向容器传 root（维持非 root
+        纪律），回退镜像默认用户。
+
+        Args:
+            configured_user: 显式配置的容器用户（container_user），非空优先。
+            owner: 宿主工作区属主 (uid, gid)；None 表示不做属主对齐。
+
+        Returns:
+            Docker user 参数（"uid:gid"）或 None（用镜像默认用户）。
+        """
+        if configured_user:
+            return configured_user
+        if owner is None or owner[0] == 0:
+            return None
+        return f"{owner[0]}:{owner[1]}"
+
+    @staticmethod
+    def _workspace_owner(workspace_root: Path) -> tuple[int, int] | None:
+        """读取宿主工作区属主 (uid, gid)（Windows stat 无 uid 语义，返回 None）。"""
+        if sys.platform == "win32":
+            return None
+        stat = workspace_root.stat()
+        return stat.st_uid, stat.st_gid
 
     def _docker_client(self):
         """懒加载 docker 客户端（long timeout：wait 长阻塞由 asyncio 侧控时）。"""
@@ -346,6 +385,9 @@ class DockerCodeExecutor:
                 type=LogConfig.types.JSON,
                 config={"max-size": "10m", "max-file": "1"},
             )
+        user = self._resolve_user_param(
+            self._user, self._workspace_owner(request.workspace_root),
+        )
         container = self._docker_client().containers.create(
             image=self.image,
             command=list(request.argv),
@@ -356,7 +398,7 @@ class DockerCodeExecutor:
             mem_limit=self._mem_limit,
             nano_cpus=self._nano_cpus,
             pids_limit=self._pids_limit,
-            user=self._user,
+            user=user,
             labels=labels,
             log_config=log_config,
         )
@@ -686,7 +728,9 @@ def resolve_executor(
         mem_limit: 单容器内存上限。
         cpus: 单容器 CPU 上限。
         pids_limit: 单容器进程数上限。
-        container_user: 容器内运行用户（空 = 镜像默认）。
+        container_user: 容器内运行用户（"uid[:gid]"，空 = Linux 下动态
+            对齐宿主工作区属主，保证容器内可写 /workspace；Windows 或
+            宿主属主为 root 时用镜像默认非 root 用户）。
         deployment_id: Docker 容器标签使用的部署命名空间。
 
     Returns:

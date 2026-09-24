@@ -1,5 +1,6 @@
 """python.run 沙箱执行器单测。"""
 import asyncio
+import sys
 import time
 from pathlib import Path, PurePosixPath
 
@@ -210,6 +211,34 @@ def test_resolve_docker_ok(monkeypatch):
     executor, note = resolve_executor("docker")
     assert executor.sandbox == "docker"
     assert note == "docker"
+
+
+def test_resolve_user_param_prefers_explicit_config():
+    """显式配置的容器用户优先于属主对齐。"""
+    result = DockerCodeExecutor._resolve_user_param("1000:1000", (1001, 1001))
+    assert result == "1000:1000"
+    assert DockerCodeExecutor._resolve_user_param("2000", (0, 0)) == "2000"
+
+
+def test_resolve_user_param_aligns_workspace_owner():
+    """未配置时对齐宿主工作区属主（Linux bind mount 写权限对齐）。"""
+    assert DockerCodeExecutor._resolve_user_param(None, (1001, 1001)) == "1001:1001"
+
+
+def test_resolve_user_param_falls_back_when_root_or_unknown():
+    """属主为 root 或未知（None）时回退镜像默认非 root 用户。"""
+    assert DockerCodeExecutor._resolve_user_param(None, (0, 0)) is None
+    assert DockerCodeExecutor._resolve_user_param(None, None) is None
+
+
+def test_workspace_owner_platform_semantics(tmp_path):
+    """Windows 不做属主对齐（Docker Desktop 文件共享宽松）；Linux 返回属主。"""
+    owner = DockerCodeExecutor._workspace_owner(tmp_path)
+    if sys.platform == "win32":
+        assert owner is None
+    else:
+        stat = tmp_path.stat()
+        assert owner == (stat.st_uid, stat.st_gid)
 
 
 async def test_python_run_uses_injected_executor(tmp_path):

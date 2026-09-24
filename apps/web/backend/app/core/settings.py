@@ -39,7 +39,10 @@ class Settings(BaseSettings):
         sandbox_strict: docker 模式不可用时拒绝执行（fail-closed）而非回退本机
             （回退时事件带 sandbox=local-weak 标记）。多用户/公网部署建议开启。
         sandbox_mem_limit / sandbox_cpus / sandbox_pids_limit: 单容器资源限额。
-        sandbox_docker_user: 容器内运行用户（空 = 镜像默认非 root 用户）。
+        sandbox_docker_user: 容器内运行用户 "uid[:gid]"（空 = Linux 下动态对齐
+            宿主工作区属主，保证容器内可写 /workspace；Windows 或宿主属主为
+            root 时用镜像默认非 root 用户——后端以 root 运行的部署建议显式
+            配置本项或改后端非 root 运行，否则容器内写工作区会被权限拒绝）。
         sandbox_job_default_timeout_s: 后台沙箱任务默认超时秒数。
         sandbox_job_max_timeout_s: 后台沙箱任务最大超时秒数。
         sandbox_deployment_id: Docker 执行资源所属部署标识；空时按 data_root 派生。
