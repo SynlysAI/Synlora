@@ -28,6 +28,28 @@ DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_MAX_OUTPUT_BYTES = 65_536
 
 
+def _write_spill(raw: bytes, workspace_root: Path) -> str | None:
+    """超限输出全文落工作区 tmp/spill/，返回工作区相对路径（posix 风格）。
+
+    写盘失败（磁盘满/权限等）返回 None，静默退回纯截断，不影响主结果。
+
+    Args:
+        raw: 合并后的 stdout+stderr 完整原始字节。
+        workspace_root: 宿主侧工作区根（spill 落其 tmp/spill/ 子目录）。
+
+    Returns:
+        相对路径（如 "tmp/spill/spill-1a2b3c4d.txt"）；失败返回 None。
+    """
+    try:
+        spill_dir = workspace_root / "tmp" / "spill"
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        name = f"spill-{uuid.uuid4().hex[:8]}.txt"
+        (spill_dir / name).write_bytes(raw)
+        return (Path("tmp") / "spill" / name).as_posix()
+    except OSError:
+        return None
+
+
 def _format_output(
     raw: bytes,
     *,
@@ -37,11 +59,14 @@ def _format_output(
     max_output_bytes: int,
     sandbox: str,
     extra_data: dict | None = None,
+    workspace_root: Path | None = None,
 ) -> ToolResult:
-    """统一输出装配：utf-8 解码 + 截断 + 超时/正常两态 ToolResult。
+    """统一输出装配：utf-8 解码 + 截断 + spill 落盘 + 超时/正常两态 ToolResult。
 
     按字符数截断是保守界：UTF-8 下字符数 ≤ 字节数，故字符截断不超过
-    字节上限；截断标志按原始字节判定。
+    字节上限；截断标志按原始字节判定。超限且给了 workspace_root 时，
+    原始输出全文落 tmp/spill/（DSH spillStore 口径），提示模型用
+    file.read 分段读回——截断不再等于丢失。
 
     Args:
         raw: 合并后的 stdout+stderr 原始字节。
@@ -51,25 +76,39 @@ def _format_output(
         max_output_bytes: 输出字节上限。
         sandbox: 执行器标记（写入 data 供事件观测）。
         extra_data: 追加进 data 的执行器私有字段。
+        workspace_root: 工作区根；超限时把全文 spill 到其 tmp/spill/
+            （None = 不落盘，纯截断）。
 
     Returns:
-        装配好的 ToolResult。
+        装配好的 ToolResult（超限时 data 可能带 spill_path）。
     """
     text = raw.decode("utf-8", errors="replace")
     truncated = len(raw) > max_output_bytes
+    spill_path = None
+    spill_note = ""
     if truncated:
         text = text[:max_output_bytes]
+        if workspace_root is not None:
+            spill_path = _write_spill(raw, workspace_root)
+        if spill_path:
+            spill_note = (
+                f"\n（输出超过 {max_output_bytes} 字节已截断；原始输出 "
+                f"{len(raw)} 字节 / 约 {raw.count(b'\\n')} 行已保存到 "
+                f"{spill_path}，需要完整内容时用 file.read 分段读取）"
+            )
     data = {"exit_code": exit_code, "timed_out": timed_out, "sandbox": sandbox, **(extra_data or {})}
+    if spill_path:
+        data["spill_path"] = spill_path
     if timed_out:
         return ToolResult(
             ok=False,
-            content=f"执行超时（>{timeout_s}s），进程已终止。\n部分输出:\n{text}",
+            content=f"执行超时（>{timeout_s}s），进程已终止。\n部分输出:\n{text}" + spill_note,
             error="timeout",
             data=data,
         )
     return ToolResult(
         ok=exit_code == 0,
-        content=text or "(无输出)",
+        content=(text or "(无输出)") + spill_note,
         truncated=truncated,
         data=data,
     )
@@ -193,6 +232,7 @@ class LocalCodeExecutor:
             exit_code=proc.returncode,
             max_output_bytes=normalized.max_output_bytes,
             sandbox=self.sandbox,
+            workspace_root=normalized.workspace_root,
         )
 
     async def cleanup_execution(self, execution_id: str) -> bool:
@@ -529,6 +569,7 @@ class DockerCodeExecutor:
             max_output_bytes=normalized.max_output_bytes,
             sandbox=self.sandbox,
             extra_data={"container": name},
+            workspace_root=normalized.workspace_root,
         )
 
     async def cleanup_execution(self, execution_id: str) -> bool:

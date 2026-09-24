@@ -115,12 +115,14 @@ async def test_cancel_cleans_container(workspace):
 
 
 async def test_output_truncation(workspace):
-    """输出超限截断（与本地执行器同语义）。"""
+    """输出超限截断 + 全文 spill 落工作区（与本地执行器同语义）。"""
     r = await EXECUTOR.run(
         "print('x' * 5000)", cwd=workspace / "tmp", timeout_s=60,
         max_output_bytes=1000,
     )
-    assert r.truncated and len(r.content) == 1000
+    assert r.truncated and r.content.startswith("x" * 1000)
+    spill = r.data.get("spill_path")
+    assert spill and (workspace / spill).read_bytes() == b"x" * 5000 + b"\n"
 
 
 async def test_execute_shell_with_readonly_resource(workspace, tmp_path):

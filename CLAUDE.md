@@ -42,6 +42,7 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 ## 关键架构约定
 
 - 事件流是唯一事实源：所有进入 LLM 上下文的内容都先落 session 事件；`derive_messages()` 投影；瞬态事件（llm/delta、reasoning/delta）只推 SSE 不落盘
+- 沙箱输出协议（`_format_output` 统一装配）：超限（缺省 64KB）截断 + 原始输出全文 spill 到 `workspace/tmp/spill/spill-*.txt`（相对路径随结果回传，模型用 `file.read` 分段读回；写盘失败静默退回纯截断）；job 异步日志路径只保尾部（LogConfig 10m 约束），spill 不承诺完整
 - harness 不 import FastAPI；web 只是宿主；接入契约见 `docs/superpowers/plans/2026-09-10-synlysagent-02-web-backend.md` 文首 10 条
 - 认证与 AI⁴MS 门户逐字兼容（HMAC token + `ai4ms.users`，`#token=` 跳转）
 - python.run 执行器抽象（`tools/sandbox.py`）：local（-I 隔离/环境白名单/超时/截断，事故围栏）与 docker（临时容器：workspace 单目录挂载 /workspace、断网、资源限额、非 root、跑完即删）两实现；容器 user 动态对齐宿主工作区属主 uid/gid（Linux bind mount 保留宿主权限位，不对齐则容器内写不了工作区；显式 `SANDBOX_DOCKER_USER` 优先，Windows/root 属主回退镜像默认 10000）；宿主经 `ctx.extra.code_executor` 注入、`resolve_executor()` 探测解析（不可用时 strict 拒绝或回退 local-weak 标记）；镜像构建见 `docker/sandbox/`

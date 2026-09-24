@@ -9,6 +9,7 @@ import pytest
 from synlys_harness.tools.sandbox import (
     DockerCodeExecutor,
     FailingExecutor,
+    LocalCodeExecutor,
     resolve_executor,
     run_python,
 )
@@ -148,7 +149,35 @@ async def test_utf8_output(tmp_path):
 async def test_output_truncation(tmp_path):
     """输出超过上限被截断（按字符截断，不再对 ASCII 过度 4 倍截断）。"""
     r = await run_python("print('x' * 5000)", cwd=tmp_path, timeout_s=10, max_output_bytes=1000)
-    assert r.truncated and len(r.content) == 1000
+    assert r.truncated and r.content.startswith("x" * 1000)
+    assert r.data["spill_path"].startswith("tmp/spill/")
+
+
+async def test_oversized_output_spills_to_workspace(tmp_path):
+    """超限输出全文落工作区 tmp/spill/，结果带相对路径与读回提示。"""
+    ws = tmp_path / "ws"
+    (ws / "tmp").mkdir(parents=True)
+    executor = LocalCodeExecutor()
+
+    r = await executor.execute(ExecutionRequest(
+        argv=("python", "-I", "-X", "utf8", "-c", "print('x' * 5000)"),
+        workspace_root=ws, cwd=".", timeout_s=60, max_output_bytes=1000,
+    ))
+
+    assert r.truncated
+    spill = r.data.get("spill_path")
+    assert spill and spill.startswith("tmp/spill/spill-") and spill.endswith(".txt")
+    assert spill in r.content and "file.read" in r.content
+    saved = (ws / spill).read_bytes()
+    # Windows 本地子进程会把换行翻译为 \r\n，spill 忠实保存原始字节
+    assert saved.rstrip(b"\r\n") == b"x" * 5000
+
+    # 未超限：不产生 spill，提示不出现
+    r2 = await executor.execute(ExecutionRequest(
+        argv=("python", "-I", "-X", "utf8", "-c", "print('hi')"),
+        workspace_root=ws, cwd=".", timeout_s=60, max_output_bytes=1000,
+    ))
+    assert r2.ok and "spill_path" not in r2.data and "tmp/spill" not in r2.content
 
 
 async def test_isolated_env(tmp_path, monkeypatch):
@@ -253,6 +282,10 @@ async def test_python_run_uses_injected_executor(tmp_path):
             self.sandbox = "marker"
 
         async def run(self, code, cwd, timeout_s=60.0, max_output_bytes=65_536):
+            from synlys_harness.types import ToolResult
+            return ToolResult(ok=True, content="injected", data={"sandbox": self.sandbox})
+
+        async def execute(self, request):
             from synlys_harness.types import ToolResult
             return ToolResult(ok=True, content="injected", data={"sandbox": self.sandbox})
 
