@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回，终态在右侧运行信息展示，不自动创建聊天回复）。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
 
-- 版本：1.0.0（正式版）
+- 版本：1.3.0（正式版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -164,7 +164,8 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 
 - **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 URL hash 提取 token 放入 `Authorization: Bearer` 请求头，后端用 `AUTH_SECRET` 校验。
 - **账号打通**：`STORAGE_BACKEND=mongodb` 时，登录直连 MongoDB 的 `ai4ms.users` 集合校验用户名/密码（PBKDF2-SHA256，格式与门户兼容）并签发同格式 token；sqlite 模式使用本地 `local_users`（开发用）。
-- **Plane 科研上下文**：建会话可携带 `X-Research-Context-Token`（短期 Context 校验），校验通过后 scope metadata 落库并以只读 `ResearchContextScope` 注入 Agent 运行，会话事件经回写 client 同步回 Plane；opaque token 本身不落库。
+- **Plane 科研上下文**：建会话和每轮消息都必须携带 `X-Research-Context-Token`（`agent-context.v2`），校验通过后 scope metadata 落库并以只读 `ResearchContextScope` 注入 Agent 运行；`allowed_tools` 与注册表 / 专家白名单 / 插件可见性取防御性交集，opaque token 本身不落库。
+- **Plane delegated identity / capability**：Plane BFF 可用 `PLANE_SERVICE_TOKEN` 调 `/api/v1/research/delegated-token` 换取短效用户 token，并用 `/api/v1/research/capabilities` 获取只读 `capability-manifest.v1` 投影；运行事件继续通过 `after_seq` 游标和回写 client 同步回 Plane。
 
 ## 测试
 

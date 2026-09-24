@@ -23,6 +23,12 @@ def _metadata(**overrides) -> ResearchContextMetadata:
         "context_hash": "hash-1",
         "visibility_scope": "PRIVATE",
         "expires_at": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+        "allowed_knowledge_base_ids": ["kb-1"],
+        "allowed_file_ids": ["file-1"],
+        "allowed_plugins": [],
+        "allowed_tools": ["knowledge.search", "file.read"],
+        "policy_id": "policy-1",
+        "policy_hash": "policy-hash",
     }
     payload.update(overrides)
     return ResearchContextMetadata.model_validate(payload)
@@ -38,6 +44,12 @@ def _plane_response(metadata: ResearchContextMetadata) -> dict:
             "chain_node_id": metadata.chain_node_id,
             "visibility_scope": metadata.visibility_scope,
             "expires_at": metadata.expires_at.isoformat(),
+            "allowed_knowledge_base_ids": metadata.allowed_knowledge_base_ids,
+            "allowed_file_ids": metadata.allowed_file_ids,
+            "allowed_plugins": metadata.allowed_plugins,
+            "allowed_tools": metadata.allowed_tools,
+            "policy_id": metadata.policy_id,
+            "policy_hash": metadata.policy_hash,
         },
     }
 

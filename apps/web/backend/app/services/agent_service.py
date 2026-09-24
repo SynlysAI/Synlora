@@ -76,6 +76,30 @@ _LOGGER = logging.getLogger(__name__)
 # 工具注册表收口在 app.services.tool_registry（与 assistants_api 共用同一实例）
 
 
+def apply_research_tool_policy(tool_names: list[str], research_context: dict | None) -> list[str]:
+    """按 agent-context.v2 的 Plane allowed_tools 取防御性交集。"""
+    if not research_context or research_context.get("schema_version") != "agent-context.v2":
+        return tool_names
+    allowed = set(research_context.get("allowed_tools") or [])
+    return [name for name in tool_names if name in allowed]
+
+
+def apply_research_plugin_policy(plugin_ids: list[str], research_context: dict | None) -> list[str]:
+    """按 agent-context.v2 的 Plane allowed_plugins 收紧会话插件开关。
+
+    Args:
+        plugin_ids: 会话请求启用的插件 ID。
+        research_context: Plane 签发的科研上下文元数据。
+
+    Returns:
+        同时被会话请求和 Plane Context 授权的插件 ID。
+    """
+    if not research_context or research_context.get("schema_version") != "agent-context.v2":
+        return plugin_ids
+    allowed = set(research_context.get("allowed_plugins") or [])
+    return [plugin_id for plugin_id in plugin_ids if plugin_id in allowed]
+
+
 class ActiveRun:
     """一次进行中的对话运行（queue 供 SSE 消费，done 标记收尾完成）。"""
 
@@ -351,7 +375,9 @@ class AgentService:
             # context_extra（渐进披露，由 skill.read 按需取）
             # 会话级插件开关（默认关）：未启用的插件其技能也不进索引——技能描述
             # 是提示词的一部分，"工具被挡但技能还暴露"等于半开状态
-            active_plugins = set(enabled_plugins or [])
+            active_plugins = set(
+                apply_research_plugin_policy(list(enabled_plugins or []), research_context)
+            )
             all_skills = self._skill_service.resolve_skills(user_id=user_sub)
             effective_plugins = set(active_plugins)
             hidden_skills: set[str] = set()
@@ -480,6 +506,7 @@ class AgentService:
                 all_plugin_tools=all_plugin_tools,
                 visible_plugin_tools=visible_plugin_tools,
             )
+            tool_names = apply_research_tool_policy(tool_names, research_context)
             # 图片阅读双重门控：模型多模态 +（助手未限白名单或白名单显式包含）
             if provider_cfg.multimodal and (not whitelist or "file.read_image" in whitelist):
                 tool_names = list(dict.fromkeys([*tool_names, "file.read_image"]))
@@ -545,7 +572,9 @@ class AgentService:
                 "weknora_base_url": self._settings.weknora_base_url,
                 "weknora_api_key": self._settings.weknora_api_key,
                 "knowledge_base_ids": list(
-                    (assistant or {}).get("knowledge_base_ids") or []),
+                    research_context.get("allowed_knowledge_base_ids")
+                    if research_context and research_context.get("allowed_knowledge_base_ids")
+                    else (assistant or {}).get("knowledge_base_ids") or []),
                 # 联网搜索（SearXNG）：地址空 = 未启用，web.search 工具报明确错误
                 "web_search_endpoint": self._settings.assistant_web_search_endpoint,
                 "web_search_api_key": self._settings.assistant_web_search_api_key,
