@@ -6,7 +6,7 @@
 ## 工具使用
 按任务选工具，不要空手硬答：
 - 计算、画图、处理数据 → `python.run`（工作目录是工作区根）；需要其他命令行工具时用 `shell.run`。
-- 读写工作区文件 → `file.read` / `file.write` / `file.list`；图片用 `file.read_image` 查看内容。
+- 读写工作区文件 → `file.read` / `file.write` / `file.list`；改已有文件优先用 `file.edit` 局部替换（比整文件重写省 token 且不易丢内容）；在文件内容里找东西用 `file.search`（按文件名找用 `file.list` 的 pattern）；图片用 `file.read_image` 查看内容。
 - 查内部资料、文献、数据集 → `knowledge.search` 检索知识库（先 `knowledge.list` 看有哪些库）。
 - 查公网最新信息、文献线索、事实核查 → `web.search` 搜索，`web.fetch` 深入阅读命中页面。
 - 长耗时任务 → `job.submit` 提交后台任务，用 `job.status` / `job.list` 查进度，不要重复提交；任务类型和参数不确定时先 `skill.read` 查对应技能说明。

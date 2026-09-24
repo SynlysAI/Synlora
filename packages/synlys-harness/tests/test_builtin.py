@@ -5,7 +5,8 @@ from synlys_harness.tools.registry import ToolRegistry
 from synlys_harness.types import ToolContext, ToolResult
 
 EXPECTED = [
-    "file.read", "file.write", "file.list", "python.run", "shell.run", "file.read_image",
+    "file.read", "file.write", "file.edit", "file.list", "file.search",
+    "python.run", "shell.run", "file.read_image",
     "web.fetch", "http.request",
     "ask_user", "file.send", "skill.list", "skill.read",
     "job.submit", "job.status", "job.list", "job.cancel",
@@ -101,6 +102,96 @@ async def test_file_list(tmp_path):
     (tmp_path / "sub" / "y.txt").write_text("2")
     r = await pipe.run("file.list", ctx, {"path": "."})
     assert r.ok and "x.csv" in r.content and "sub/y.txt" in r.content
+
+
+async def test_file_list_pattern(tmp_path):
+    """file.list 通配过滤：匹配相对路径、无命中给空提示。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path)
+    (tmp_path / "output").mkdir()
+    (tmp_path / "output" / "a.png").write_bytes(b"x")
+    (tmp_path / "output" / "b.csv").write_text("1", encoding="utf-8")
+    (tmp_path / "c.csv").write_text("2", encoding="utf-8")
+    r = await pipe.run("file.list", ctx, {"pattern": "*.csv"})
+    assert r.ok and sorted(r.data["files"]) == ["c.csv", "output/b.csv"]
+    r2 = await pipe.run("file.list", ctx, {"pattern": "output/*.png"})
+    assert r2.ok and r2.data["files"] == ["output/a.png"]
+    r3 = await pipe.run("file.list", ctx, {"pattern": "*.md"})
+    assert r3.ok and r3.data["total"] == 0 and "无匹配" in r3.content
+
+
+async def test_file_edit_single_and_replace_all(tmp_path):
+    """file.edit：唯一匹配替换 + all=true 全替换 + 行号反馈。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path)
+    await pipe.run("file.write", ctx, {"path": "s.py", "content": "a = 1\nb = 2\na = 1\n"})
+    r = await pipe.run("file.edit", ctx, {"path": "s.py",
+                                          "edits": [{"old": "b = 2", "new": "b = 20"}]})
+    assert r.ok and r.data["edits"] == 1 and "第 2 行" in r.content
+    assert (tmp_path / "s.py").read_text(encoding="utf-8") == "a = 1\nb = 20\na = 1\n"
+    r2 = await pipe.run("file.edit", ctx, {"path": "s.py",
+                                           "edits": [{"old": "a = 1", "new": "a = 9", "all": True}]})
+    assert r2.ok and "全部出现" in r2.content
+    assert (tmp_path / "s.py").read_text(encoding="utf-8") == "a = 9\nb = 20\na = 9\n"
+
+
+async def test_file_edit_rejections_and_atomicity(tmp_path):
+    """file.edit：不唯一/未找到/相同片段拒绝；任一失败整体不写盘。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path)
+    await pipe.run("file.write", ctx, {"path": "s.txt", "content": "alpha beta\n"})
+    r = await pipe.run("file.edit", ctx, {"path": "s.txt",
+                                          "edits": [{"old": "a", "new": "z"}]})
+    assert not r.ok and r.error == "old_not_unique" and "3 次" in r.content
+    r2 = await pipe.run("file.edit", ctx, {"path": "s.txt",
+                                           "edits": [{"old": "gamma", "new": "x"}]})
+    assert not r2.ok and r2.error == "old_not_found"
+    r3 = await pipe.run("file.edit", ctx, {"path": "s.txt",
+                                           "edits": [{"old": "alpha", "new": "alpha"}]})
+    assert not r3.ok
+    r4 = await pipe.run("file.edit", ctx, {"path": "s.txt", "edits": [
+        {"old": "alpha", "new": "ALPHA"}, {"old": "nope", "new": "x"}]})
+    assert not r4.ok and r4.error == "old_not_found"
+    assert (tmp_path / "s.txt").read_text(encoding="utf-8") == "alpha beta\n"
+    r5 = await pipe.run("file.edit", ctx, {"path": "missing.txt",
+                                           "edits": [{"old": "a", "new": "b"}]})
+    assert not r5.ok and r5.error == "not_found"
+
+
+async def test_file_edit_overlap_conflict_keeps_original(tmp_path):
+    """file.edit：edits 区域重叠导致应用失败时不写盘（all-or-nothing）。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path)
+    await pipe.run("file.write", ctx, {"path": "o.txt", "content": "abcdef\n"})
+    r = await pipe.run("file.edit", ctx, {"path": "o.txt", "edits": [
+        {"old": "abcd", "new": "x"}, {"old": "cde", "new": "y"}]})
+    assert not r.ok and r.error == "overlap_conflict"
+    assert (tmp_path / "o.txt").read_text(encoding="utf-8") == "abcdef\n"
+
+
+async def test_file_search_matches_and_filters(tmp_path):
+    """file.search：命中格式、大小写、glob 过滤、二进制跳过、正则校验。"""
+    pipe = _setup()
+    ctx = _ctx(tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "a.py").write_text("hello world\nfoo\n", encoding="utf-8")
+    (tmp_path / "sub" / "b.py").write_text("HELLO again\n", encoding="utf-8")
+    (tmp_path / "data.csv").write_text("hello,1\n", encoding="utf-8")
+    (tmp_path / "blob.bin").write_bytes(b"hello\x00world")
+    r = await pipe.run("file.search", ctx, {"pattern": "hello"})
+    assert r.ok and r.data["files_scanned"] == 3 and r.data["skipped_binary"] == 1
+    assert "a.py:1: hello world" in r.content and "data.csv:1: hello,1" in r.content
+    assert "HELLO" not in r.content
+    r2 = await pipe.run("file.search", ctx, {"pattern": "hello", "ignore_case": True})
+    assert "sub/b.py:1: HELLO again" in r2.content
+    r3 = await pipe.run("file.search", ctx, {"pattern": "hello", "glob": "*.py"})
+    assert "data.csv" not in r3.content and "a.py:1" in r3.content
+    r4 = await pipe.run("file.search", ctx, {"pattern": "("})
+    assert not r4.ok and r4.error == "invalid_regex"
+    r5 = await pipe.run("file.search", ctx, {"pattern": r"hel\w+o"})
+    assert r5.ok and r5.data["total"] == 2  # a.py 与 data.csv（大小写敏感）
+    r6 = await pipe.run("file.search", ctx, {"pattern": "zzz"})
+    assert r6.ok and r6.data["total"] == 0 and "无命中" in r6.content
 
 
 async def test_python_run_tool(tmp_path):

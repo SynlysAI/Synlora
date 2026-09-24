@@ -42,9 +42,10 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 ## 关键架构约定
 
 - 事件流是唯一事实源：所有进入 LLM 上下文的内容都先落 session 事件；`derive_messages()` 投影；瞬态事件（llm/delta、reasoning/delta）只推 SSE 不落盘
+- 沙箱输出协议（`_format_output` 统一装配）：超限（缺省 64KB）截断 + 原始输出全文 spill 到 `workspace/tmp/spill/spill-*.txt`（相对路径随结果回传，模型用 `file.read` 分段读回；写盘失败静默退回纯截断）；job 异步日志路径只保尾部（LogConfig 10m 约束），spill 不承诺完整
 - harness 不 import FastAPI；web 只是宿主；接入契约见 `docs/superpowers/plans/2026-09-10-synlysagent-02-web-backend.md` 文首 10 条
 - 认证与 AI⁴MS 门户逐字兼容（HMAC token + `ai4ms.users`，`#token=` 跳转）
-- python.run 执行器抽象（`tools/sandbox.py`）：local（-I 隔离/环境白名单/超时/截断，事故围栏）与 docker（临时容器：workspace 单目录挂载 /workspace、断网、资源限额、非 root、跑完即删）两实现；宿主经 `ctx.extra.code_executor` 注入、`resolve_executor()` 探测解析（不可用时 strict 拒绝或回退 local-weak 标记）；镜像构建见 `docker/sandbox/`
+- python.run 执行器抽象（`tools/sandbox.py`）：local（-I 隔离/环境白名单/超时/截断，事故围栏）与 docker（临时容器：workspace 单目录挂载 /workspace、断网、资源限额、非 root、跑完即删）两实现；容器 user 动态对齐宿主工作区属主 uid/gid（Linux bind mount 保留宿主权限位，不对齐则容器内写不了工作区；显式 `SANDBOX_DOCKER_USER` 优先，Windows/root 属主回退镜像默认 10000）；宿主经 `ctx.extra.code_executor` 注入、`resolve_executor()` 探测解析（不可用时 strict 拒绝或回退 local-weak 标记）；镜像构建见 `docker/sandbox/`
 - 一切皆插件：子平台接入 = `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板）；宿主通用框架 `app/plugins/`（loader 扫描 + config_store 加密落库 + PluginService 编排 + api 管理端点）；插件配置经管理页填写落库（不进 settings.py/.env），运行期按命名空间注入 `ctx.extra["plugins"]`；插件技能经 SkillService 额外技能根提供；新增插件不改主框架与 harness
 - 内置内容统一在宿主 `apps/web/backend/catalog/`，按类型分目录（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`），**位置即类型、加目录即扩展**，由 `app/catalog/loader.py::scan_catalog` 一次扫入；**harness 零内容（内容归宿主、机制归 harness）**；`catalog/skills` 是只读技能根，`{data_dir}/public/skills` 是可写公共层（同名公共层优先）；`catalog/` 是数据目录非 Python 包，非 editable 部署须与 `app/` 同级同放
 - 运行数据按用户分层：`{data_dir}/public/{skills,catalog}`（公共层）+ `{data_dir}/users/<uid>/{workspaces,sessions,skills,experts}`（用户层）；内置内容始终单一来源（repo 的 `catalog/`），用户"安装"只写记录不复制文件；会话工作根：绑定项目 = 项目目录，未绑定（不选工作区，project_id=null）= `sessions/{sid}/workspace`（files/output/tmp 同构，python.run cwd/沙箱挂载/上传落点都在会话工作区，`events.jsonl` 在会话根、与模型和文件树视野隔离，删除会话整目录移除；**发消息不回落活跃项目**、失效绑定清为 null）
@@ -52,6 +53,7 @@ docs/superpowers/          # 设计文档（specs）/ 实施计划（plans）/ �
 - 用户安装后可启用/停用（`user_capabilities.enabled`，停用优先于默认启用）；用户可自建技能与专家（落各自 `users/<uid>/`，技能同名全局唯一），内置条目不可编辑（想定制请自建换名）；用户侧能力中心为「市场 / 我的」两栏（`/capabilities`）：市场装/卸/启停，我的子页签过滤 + 自建技能/专家增删改（改造计划 `docs/superpowers/plans/2026-09-15-synlysagent-11-capability-center-ui.md` 已全部完成）
 - 工具强制审批：`Permission.ASK_USER` 在管线 pre-execute 打断，宿主 `approval_handler` 复用 ask/user 事件与 answer 回路，fail-closed（SpecLabOS 类工具声明即生效）
 - 插话（steering）双语义：模型还有 step 则下个边界注入本轮；turn 正常结束时残留插话经 `take_queued_turn()` 自动转为下一轮续跑（取消/失败路径丢弃）
+- 任务完成唤醒（job wakeup，`JOB_WAKEUP_ENABLED` 默认开）：job 终态（成功/失败，取消除外）经 `finish_sandbox`/`_refresh_locked` 的 `_fire_wakeup` 回调 `AgentService.notify_job_finished`——会话有活跃 run 走 `steer(text, metadata)` 插话注入（收尾窗口入队经 `take_queued_turn()` 返回 (文本, 合并元数据) 续传），空闲经 `wakeup.make_run_context_resolver` 重放装配自动起新一轮（`chat(notice=True)` → `_drive(input_metadata)`，唤醒文本 `[系统通知]` 前缀 + `_render` 摘要尾部 2000 字，投影给模型全文）；**用户侧呈现**：user/message payload 带 `kind=job_completed`（steering 插话路径同样携带），前端 `systemWake` 分流渲染居中提示条（固定文案，不显示唤醒正文）；防自激 = 连续无用户输入的唤醒轮上限（`MAX_WAKE_CHAIN=3`，用户发言清零，达上限仅落库不续跑）；前端上屏走既有 5s 增量轮询（会话页打开期间），常驻实时通道 `GET /sessions/{sid}/events`（经 `event_bridge` broadcast 扇出，含瞬态）已备供后续打字机增强
 - 插件会话级开关（**默认全关**）：会话文档 `enabled_plugins`（null/[] = 本会话不启用任何插件；列表 = 只启用这些，切换即 PATCH 落库刷新不丢），`+ 号 → 插件` 面板切换（草稿态暂存 sessions store、随建会话写入）；chat 装配按它收窄插件**工具、配置注入、技能索引**，未启用插件的播种专家按未选处理（persona 不注入），与用户级可见集取**交集**（勾选不能放大可见性，内置工具不受影响；「内置」插件在会话级同样默认关——它保证的是用户级可用与不可卸载，非会话自动加载）；技能字典带 `source/plugin` 标记供过滤（技能管理页滤 plugin 来源，统一在插件页查看附属技能/专家/工具）
 - 运行时（ActiveRun/SSE 队列/ask future）为单进程内存态：uvicorn 必须 workers=1 单实例部署，多副本会破坏 steer/answer/cancel
 

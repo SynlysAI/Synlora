@@ -175,3 +175,78 @@ async def test_admit_run_gives_up_after_bounded_wait(agent_service, session_doc,
     active.session = _NeverEnds()
     with pytest.raises(TooManyRuns):
         await service._admit_run(sid)  # noqa: SLF001
+
+
+# ---------- 任务完成唤醒（job wakeup） ----------
+
+
+async def test_notify_job_finished_steers_active_run(agent_service, session_doc):
+    """会话有活跃 run 时通知走插话注入（不起新轮，复用 steering 回路）。"""
+    service, sid = agent_service, session_doc["_id"]
+    active = _register_run(service, sid, "busy-wake")
+    steered: list[tuple[str, dict]] = []
+
+    def fake_steer(text: str, metadata: dict | None = None) -> None:
+        """记录插话文本与元数据。"""
+        steered.append((text, metadata or {}))
+
+    active.session = SimpleNamespace(steer=fake_steer)
+
+    await service.notify_job_finished({
+        "session_id": sid, "user_id": "u1", "status": "completed",
+        "label": "谱图预测", "_id": "job-1"})
+
+    assert len(steered) == 1
+    text, meta = steered[0]
+    assert text.startswith("[系统通知]") and "谱图预测" in text
+    assert meta.get("kind") == "job_completed"
+
+
+async def test_notify_job_finished_wakes_idle_then_caps(agent_service, session_doc):
+    """空闲会话自动起新轮（notice=True）；连续达上限后静默放弃；清零后恢复。"""
+    from pathlib import Path
+
+    from app.services.agent_service import MAX_WAKE_CHAIN
+
+    service, sid = agent_service, session_doc["_id"]
+    calls: list[tuple[tuple, dict]] = []
+
+    async def chat(*args, **kwargs) -> str:
+        """记录唤醒轮。"""
+        calls.append((args, kwargs))
+        return "wake-run"
+
+    service.chat = chat  # 实例级替换：绕开真实装配，只验证唤醒调度
+    ctx = {"user": {"sub": "u1"}, "assistant": None, "provider_cfg": object(),
+           "workspace_root": Path("."), "ownership": None}
+
+    async def resolver(session_id, user_id):
+        """固定装配。"""
+        return ctx if (session_id, user_id) == (sid, "u1") else None
+
+    service.set_run_context_resolver(resolver)
+
+    for _ in range(MAX_WAKE_CHAIN):
+        await service.notify_job_finished(
+            {"session_id": sid, "user_id": "u1", "status": "completed", "_id": "job-x"})
+    assert len(calls) == MAX_WAKE_CHAIN
+    assert all(kwargs.get("notice") is True for _, kwargs in calls)
+
+    # 达上限：任务终态仅落库，不再起新轮
+    await service.notify_job_finished(
+        {"session_id": sid, "user_id": "u1", "status": "completed", "_id": "job-x"})
+    assert len(calls) == MAX_WAKE_CHAIN
+
+    # 用户发言清零（chat(notice=False) 路径）后恢复唤醒
+    service._wake_chain.pop(sid, None)  # noqa: SLF001
+    await service.notify_job_finished(
+        {"session_id": sid, "user_id": "u1", "status": "completed", "_id": "job-x"})
+    assert len(calls) == MAX_WAKE_CHAIN + 1
+
+
+async def test_notify_job_finished_without_resolver_is_silent(
+        agent_service, session_doc):
+    """未接 resolver（唤醒装配缺失）时空闲通知静默放弃，不抛异常。"""
+    service, sid = agent_service, session_doc["_id"]
+    await service.notify_job_finished(
+        {"session_id": sid, "user_id": "u1", "status": "failed", "_id": "job-x"})

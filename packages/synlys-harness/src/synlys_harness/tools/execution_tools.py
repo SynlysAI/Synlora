@@ -24,6 +24,7 @@ def _resources(ctx: ToolContext) -> tuple[Any, ...]:
     description=(
         "在用户沙箱中执行 Python 代码（隔离模式，可读写沙箱文件，输出受限）。"
         "默认工作目录为工作区根：files/ 是上传与交付文件，output/ 放产物，tmp/ 放临时文件。"
+        "输出超限会自动截断，全文存 tmp/spill/（结果里带路径，可用 file.read 回读）。"
     ),
     parameters={"type": "object", "properties": {
         "code": {"type": "string", "description": "要执行的 Python 源码"},
@@ -42,26 +43,27 @@ async def python_run(ctx: ToolContext, args: dict) -> ToolResult:
             content="当前执行器不支持技能资源挂载",
             error="executor_capability_missing",
         )
-    if resources:
-        result = await executor.execute(ExecutionRequest(
-            argv=("python", "-I", "-X", "utf8", "-c", args["code"]),
-            workspace_root=ctx.workspace_root,
-            cwd=".",
-            resources=resources,
-            timeout_s=PYTHON_TIMEOUT_S,
-            max_output_bytes=MAX_OUTPUT_BYTES,
-        ))
-    else:
-        result = await executor.run(
-            args["code"], cwd=ctx.workspace_root, timeout_s=PYTHON_TIMEOUT_S,
-        )
+    # 统一走 execute（cwd="."）：容器/子进程工作目录即工作区根，
+    # 与 shell.run 及技能资源挂载路径一致（run() 入口的 cwd.parent
+    # 语义会把挂载根错位到会话根）。
+    result = await executor.execute(ExecutionRequest(
+        argv=("python", "-I", "-X", "utf8", "-c", args["code"]),
+        workspace_root=ctx.workspace_root,
+        cwd=".",
+        resources=resources,
+        timeout_s=PYTHON_TIMEOUT_S,
+        max_output_bytes=MAX_OUTPUT_BYTES,
+    ))
     result.data["cwd"] = str(ctx.workspace_root)
     return result
 
 
 @tool(
     name="shell.run",
-    description="在临时 Docker 沙箱内执行一次 Bash 命令；每次调用互相独立。",
+    description=(
+        "在临时 Docker 沙箱内执行一次 Bash 命令；每次调用互相独立。"
+        "输出超限会自动截断，全文存 tmp/spill/（结果里带路径，可用 file.read 回读）。"
+    ),
     parameters={"type": "object", "properties": {
         "command": {"type": "string", "description": "非空 Bash 命令"},
         "cwd": {"type": "string", "default": ".",

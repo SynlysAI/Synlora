@@ -4,9 +4,9 @@
 
 类 Claude/DeepSeek Harness 的科研智能体 Web 平台：三栏对话工作台，通过对话形式使用各助手（谱图解析、高分子研发、数据分析、文件处理等），每个用户拥有独立沙箱（文件工作区 + 受限 Python 执行），管理员可在页面上配置模型与助手。作为 AI⁴MS 生态的独立子平台部署，现有 AI⁴MS 能力后续通过 Tool Registry 接入。
 
-平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）。后台长任务走统一 Job 注册表（提交即返回，终态在右侧运行信息展示，不自动创建聊天回复）。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
+平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）、**文件工作台**（`file.read/write/edit/list/search`：局部精确替换与内容搜索宿主直跑，零沙箱开销）。后台长任务走统一 Job 注册表（提交即返回、终态在右侧运行信息展示；**任务完成自动唤醒所属会话续跑**——对话进行中不打断，空闲时助手自动汇总结果，连续唤醒有上限防自激）。沙箱输出超限自动 **spill** 全文落工作区 `tmp/spill/`，模型可分段读回，截断不再等于丢失。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
 
-- 版本：1.0.0（正式版）
+- 版本：1.4.0（正式版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -120,7 +120,7 @@ pm2 logs synlys-agent
 
 ### 插件机制（AI⁴MS 子平台接入）
 
-一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。配置字段按 `scope` 分层：`"scope": "admin"` 为管理员公共配置（管理后台填写，用户侧不透出、不可写，插件全量 admin 字段时用户安装**不出配置表单一键装**，管理员未配置则调用时 fail-closed 报错），缺省为用户可填（安装时/详情页编辑，个人层优先于公共兜底）。已接入插件：`spec_agent`（核磁预测三件套 + 五类谱图异步解析）、`poly_agent`（Poly_Agent 高分子垂类预测五件套：聚酰亚胺 Tg / 氟基电解质配方 / Raman 光谱解析 / 共聚竞聚率拟合 / 硅键谱图集成）、`sciverse`（科技文献检索），各自动播种对应专家，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。配置字段按 `scope` 分层：`"scope": "admin"` 为管理员公共配置（管理后台填写，用户侧不透出、不可写，插件全量 admin 字段时用户安装**不出配置表单一键装**，管理员未配置则调用时 fail-closed 报错），缺省为用户可填（安装时/详情页编辑，个人层优先于公共兜底）。已接入插件：`spec_agent`（核磁预测三件套 + 五类谱图异步解析）、`poly_agent`（Poly_Agent 高分子垂类预测五件套：聚酰亚胺 Tg / 氟基电解质配方 / Raman 光谱解析 / 共聚竞聚率拟合 / 硅键谱图集成）、`sciverse`（科技文献检索）、`ars`（学术研究全流程技能套件：深度研究/综述/证据核验、学术论文写作、多视角同行评审、端到端流水线），各自动播种对应专家，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 能力目录与统一扩展中心（市场）
 
@@ -150,7 +150,7 @@ pm2 logs synlys-agent
 
 ### Docker 沙箱（多用户/云部署）
 
-`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器断网、非 root、资源受限、每次调用后删除。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
+`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器断网、非 root、资源受限、每次调用后删除，运行用户动态对齐宿主工作区属主（Linux bind mount 权限对齐，保证容器内可写工作区；`SANDBOX_DOCKER_USER` 可显式覆盖）。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
 
 ```bash
 docker build -t synlora-sandbox:latest docker/sandbox/
@@ -164,7 +164,8 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 
 - **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 URL hash 提取 token 放入 `Authorization: Bearer` 请求头，后端用 `AUTH_SECRET` 校验。
 - **账号打通**：`STORAGE_BACKEND=mongodb` 时，登录直连 MongoDB 的 `ai4ms.users` 集合校验用户名/密码（PBKDF2-SHA256，格式与门户兼容）并签发同格式 token；sqlite 模式使用本地 `local_users`（开发用）。
-- **Plane 科研上下文**：建会话可携带 `X-Research-Context-Token`（短期 Context 校验），校验通过后 scope metadata 落库并以只读 `ResearchContextScope` 注入 Agent 运行，会话事件经回写 client 同步回 Plane；opaque token 本身不落库。
+- **Plane 科研上下文**：建会话和每轮消息都必须携带 `X-Research-Context-Token`（`agent-context.v2`），校验通过后 scope metadata 落库并以只读 `ResearchContextScope` 注入 Agent 运行；`allowed_tools` 与注册表 / 专家白名单 / 插件可见性取防御性交集，opaque token 本身不落库。
+- **Plane delegated identity / capability**：Plane BFF 可用 `PLANE_SERVICE_TOKEN` 调 `/api/v1/research/delegated-token` 换取短效用户 token，并用 `/api/v1/research/capabilities` 获取只读 `capability-manifest.v1` 投影；运行事件继续通过 `after_seq` 游标和回写 client 同步回 Plane。
 
 ## 测试
 

@@ -28,6 +28,28 @@ DEFAULT_TIMEOUT_S = 60.0
 DEFAULT_MAX_OUTPUT_BYTES = 65_536
 
 
+def _write_spill(raw: bytes, workspace_root: Path) -> str | None:
+    """超限输出全文落工作区 tmp/spill/，返回工作区相对路径（posix 风格）。
+
+    写盘失败（磁盘满/权限等）返回 None，静默退回纯截断，不影响主结果。
+
+    Args:
+        raw: 合并后的 stdout+stderr 完整原始字节。
+        workspace_root: 宿主侧工作区根（spill 落其 tmp/spill/ 子目录）。
+
+    Returns:
+        相对路径（如 "tmp/spill/spill-1a2b3c4d.txt"）；失败返回 None。
+    """
+    try:
+        spill_dir = workspace_root / "tmp" / "spill"
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        name = f"spill-{uuid.uuid4().hex[:8]}.txt"
+        (spill_dir / name).write_bytes(raw)
+        return (Path("tmp") / "spill" / name).as_posix()
+    except OSError:
+        return None
+
+
 def _format_output(
     raw: bytes,
     *,
@@ -37,11 +59,14 @@ def _format_output(
     max_output_bytes: int,
     sandbox: str,
     extra_data: dict | None = None,
+    workspace_root: Path | None = None,
 ) -> ToolResult:
-    """统一输出装配：utf-8 解码 + 截断 + 超时/正常两态 ToolResult。
+    """统一输出装配：utf-8 解码 + 截断 + spill 落盘 + 超时/正常两态 ToolResult。
 
     按字符数截断是保守界：UTF-8 下字符数 ≤ 字节数，故字符截断不超过
-    字节上限；截断标志按原始字节判定。
+    字节上限；截断标志按原始字节判定。超限且给了 workspace_root 时，
+    原始输出全文落 tmp/spill/（DSH spillStore 口径），提示模型用
+    file.read 分段读回——截断不再等于丢失。
 
     Args:
         raw: 合并后的 stdout+stderr 原始字节。
@@ -51,25 +76,39 @@ def _format_output(
         max_output_bytes: 输出字节上限。
         sandbox: 执行器标记（写入 data 供事件观测）。
         extra_data: 追加进 data 的执行器私有字段。
+        workspace_root: 工作区根；超限时把全文 spill 到其 tmp/spill/
+            （None = 不落盘，纯截断）。
 
     Returns:
-        装配好的 ToolResult。
+        装配好的 ToolResult（超限时 data 可能带 spill_path）。
     """
     text = raw.decode("utf-8", errors="replace")
     truncated = len(raw) > max_output_bytes
+    spill_path = None
+    spill_note = ""
     if truncated:
         text = text[:max_output_bytes]
+        if workspace_root is not None:
+            spill_path = _write_spill(raw, workspace_root)
+        if spill_path:
+            spill_note = (
+                f"\n（输出超过 {max_output_bytes} 字节已截断；原始输出 "
+                f"{len(raw)} 字节 / 约 {raw.count(b'\\n')} 行已保存到 "
+                f"{spill_path}，需要完整内容时用 file.read 分段读取）"
+            )
     data = {"exit_code": exit_code, "timed_out": timed_out, "sandbox": sandbox, **(extra_data or {})}
+    if spill_path:
+        data["spill_path"] = spill_path
     if timed_out:
         return ToolResult(
             ok=False,
-            content=f"执行超时（>{timeout_s}s），进程已终止。\n部分输出:\n{text}",
+            content=f"执行超时（>{timeout_s}s），进程已终止。\n部分输出:\n{text}" + spill_note,
             error="timeout",
             data=data,
         )
     return ToolResult(
         ok=exit_code == 0,
-        content=text or "(无输出)",
+        content=(text or "(无输出)") + spill_note,
         truncated=truncated,
         data=data,
     )
@@ -193,6 +232,7 @@ class LocalCodeExecutor:
             exit_code=proc.returncode,
             max_output_bytes=normalized.max_output_bytes,
             sandbox=self.sandbox,
+            workspace_root=normalized.workspace_root,
         )
 
     async def cleanup_execution(self, execution_id: str) -> bool:
@@ -237,8 +277,10 @@ class DockerCodeExecutor:
 
     每次执行一个临时容器：workspace 单目录挂载 /workspace（rw，其余
     文件系统为容器私有层）、断网（network_disabled）、内存/CPU/进程数
-    限额、镜像默认非 root 用户、跑完即删。代码经挂载的工作区传入，
-    不进 argv（无长度与转义问题）、不经 stdin（无管道时序问题）。
+    限额、非 root 用户（Linux 下动态对齐宿主工作区属主 uid/gid，保证
+    容器内对挂载目录的写权限与宿主后端一致）、跑完即删。代码经挂载的
+    工作区传入，不进 argv（无长度与转义问题）、不经 stdin（无管道时序
+    问题）。
 
     docker-py 为可选依赖，懒加载：local 模式下零开销。
     """
@@ -259,7 +301,8 @@ class DockerCodeExecutor:
             mem_limit: 单容器内存上限（Docker 记法，如 "512m"）。
             cpus: 单容器 CPU 上限（核数）。
             pids_limit: 单容器进程数上限（fork 炸弹围栏）。
-            container_user: 容器内运行用户（空 = 镜像默认，镜像内置非 root）。
+            container_user: 容器内运行用户（"uid[:gid]"，空 = Linux 下动态
+                对齐宿主工作区属主；对齐不可用时用镜像默认非 root 用户）。
             deployment_id: 宿主提供的部署命名空间标识。
         """
         self.sandbox = "docker"
@@ -272,6 +315,42 @@ class DockerCodeExecutor:
             r"[^a-zA-Z0-9_.-]", "-", deployment_id
         )[:63] or "default"
         self._client = None
+
+    @staticmethod
+    def _resolve_user_param(
+        configured_user: str | None,
+        owner: tuple[int, int] | None,
+    ) -> str | None:
+        """合成容器 user 参数（显式配置优先，其次对齐宿主工作区属主）。
+
+        Linux bind mount 原样保留宿主目录的属主与权限位：镜像默认用户
+        （uid 10000）与宿主属主不一致时，容器内对 /workspace 无写权限
+        （mode=rw 只是挂载层标志，POSIX 权限才是最终判定）。对齐属主后
+        容器进程对挂载目录的权限与宿主后端完全一致。owner 为 None 表示
+        平台不支持属主对齐（Windows Docker Desktop 文件共享宽松，镜像
+        默认用户即可写）；属主为 root 时不向容器传 root（维持非 root
+        纪律），回退镜像默认用户。
+
+        Args:
+            configured_user: 显式配置的容器用户（container_user），非空优先。
+            owner: 宿主工作区属主 (uid, gid)；None 表示不做属主对齐。
+
+        Returns:
+            Docker user 参数（"uid:gid"）或 None（用镜像默认用户）。
+        """
+        if configured_user:
+            return configured_user
+        if owner is None or owner[0] == 0:
+            return None
+        return f"{owner[0]}:{owner[1]}"
+
+    @staticmethod
+    def _workspace_owner(workspace_root: Path) -> tuple[int, int] | None:
+        """读取宿主工作区属主 (uid, gid)（Windows stat 无 uid 语义，返回 None）。"""
+        if sys.platform == "win32":
+            return None
+        stat = workspace_root.stat()
+        return stat.st_uid, stat.st_gid
 
     def _docker_client(self):
         """懒加载 docker 客户端（long timeout：wait 长阻塞由 asyncio 侧控时）。"""
@@ -346,6 +425,9 @@ class DockerCodeExecutor:
                 type=LogConfig.types.JSON,
                 config={"max-size": "10m", "max-file": "1"},
             )
+        user = self._resolve_user_param(
+            self._user, self._workspace_owner(request.workspace_root),
+        )
         container = self._docker_client().containers.create(
             image=self.image,
             command=list(request.argv),
@@ -356,7 +438,7 @@ class DockerCodeExecutor:
             mem_limit=self._mem_limit,
             nano_cpus=self._nano_cpus,
             pids_limit=self._pids_limit,
-            user=self._user,
+            user=user,
             labels=labels,
             log_config=log_config,
         )
@@ -487,6 +569,7 @@ class DockerCodeExecutor:
             max_output_bytes=normalized.max_output_bytes,
             sandbox=self.sandbox,
             extra_data={"container": name},
+            workspace_root=normalized.workspace_root,
         )
 
     async def cleanup_execution(self, execution_id: str) -> bool:
@@ -686,7 +769,9 @@ def resolve_executor(
         mem_limit: 单容器内存上限。
         cpus: 单容器 CPU 上限。
         pids_limit: 单容器进程数上限。
-        container_user: 容器内运行用户（空 = 镜像默认）。
+        container_user: 容器内运行用户（"uid[:gid]"，空 = Linux 下动态
+            对齐宿主工作区属主，保证容器内可写 /workspace；Windows 或
+            宿主属主为 root 时用镜像默认非 root 用户）。
         deployment_id: Docker 容器标签使用的部署命名空间。
 
     Returns:

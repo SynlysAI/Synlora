@@ -1054,6 +1054,11 @@ async def test_system_prompt_contains_platform_sections_and_persona(
 
     观察方式：包 agent_service 模块内的 RunSession，断言其 config.system_prompt。
     """
+    try:
+        import docker
+        docker.from_env().version()
+    except Exception as exc:
+        pytest.skip(f"Docker sandbox unavailable; /workspace prompt assertion skipped: {exc}")
     await _bind_provider_to_asst_data(client, admin_headers)
     monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
     FakeBackend.script = [[TextDelta(text="ok"), Usage()]]

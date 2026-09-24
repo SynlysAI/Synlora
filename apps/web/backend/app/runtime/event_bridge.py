@@ -16,6 +16,7 @@ def make_event_sinks(
     event_repo: Any,
     jsonl_path: Path,
     queue,
+    broadcast=None,
 ) -> list:
     """构造保持既有吞错与瞬态过滤语义的事件 sinks。
 
@@ -25,6 +26,8 @@ def make_event_sinks(
         event_repo: 会话事件仓储。
         jsonl_path: JSONL 审计副本路径。
         queue: SSE 内存队列。
+        broadcast: 会话级扇出回调（可选，签名 (SessionEvent) -> None）：
+            与 queue 同语义投递（含瞬态事件），供前端常驻订阅端点使用。
 
     Returns:
         可传给 EventLog 的异步 sink 列表。
@@ -51,5 +54,10 @@ def make_event_sinks(
             queue.put_nowait(event)
         except Exception:
             pass
+        if broadcast is not None:
+            try:
+                broadcast(event)
+            except Exception:
+                pass
 
     return [jsonl_sink, db_sink]

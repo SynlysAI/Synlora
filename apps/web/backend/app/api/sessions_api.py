@@ -190,6 +190,21 @@ async def _validate_plugin_ids(request: Request, plugin_ids: list[str]) -> None:
             raise HTTPException(404, f"插件不存在: {pid}")
 
 
+def _validate_research_plugin_scope(plugin_ids: list[str], metadata: ResearchContextMetadata) -> None:
+    """确保科研会话插件不超出 Plane Context 授权范围。
+
+    Args:
+        plugin_ids: 请求启用的会话插件 ID。
+        metadata: Plane 签发的 agent-context.v2 元数据。
+
+    Raises:
+        HTTPException: 任一插件不在 ``allowed_plugins`` 内时返回 403。
+    """
+    invalid = sorted(set(plugin_ids) - set(metadata.allowed_plugins or []))
+    if invalid:
+        raise HTTPException(403, f"科研上下文未授权插件: {', '.join(invalid)}")
+
+
 class AttachmentIn(BaseModel):
     """随消息发送的附件引用（file_id 指向已上传到工作区的文件记录）。"""
 
@@ -206,6 +221,7 @@ class MessageIn(BaseModel):
     text: str
     skills: list[str] | None = None
     attachments: list[AttachmentIn] | None = None
+    research_context: ResearchContextMetadata | None = None
 
     @field_validator("text")
     @classmethod
@@ -252,8 +268,6 @@ async def create_session(body: SessionCreateBody, request: Request,
         raise HTTPException(404, "项目不存在")
     if body.model_provider_id:
         await _validate_provider(body.model_provider_id, repos)
-    if body.enabled_plugins is not None:
-        await _validate_plugin_ids(request, body.enabled_plugins)
     if body.research_context is not None:
         context_token = request.headers.get("X-Research-Context-Token", "")
         if not context_token:
@@ -263,6 +277,10 @@ async def create_session(body: SessionCreateBody, request: Request,
                 token=context_token, expected=body.research_context)
         except ResearchContextError as exc:
             raise HTTPException(exc.status_code, exc.message) from exc
+    if body.enabled_plugins is not None:
+        await _validate_plugin_ids(request, body.enabled_plugins)
+        if body.research_context is not None:
+            _validate_research_plugin_scope(body.enabled_plugins, body.research_context)
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
@@ -329,6 +347,12 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
     if "enabled_plugins" in body.model_fields_set:
         if body.enabled_plugins is not None:
             await _validate_plugin_ids(request, body.enabled_plugins)
+            research_context = doc.get("research_context")
+            if research_context is not None:
+                _validate_research_plugin_scope(
+                    body.enabled_plugins,
+                    ResearchContextMetadata.model_validate(research_context),
+                )
         # 显式 null 与空列表同义：本会话不启用任何插件（默认全关）
         fields["enabled_plugins"] = body.enabled_plugins
     return await repos.session.update(doc["_id"], fields)
@@ -427,6 +451,19 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             并发超限（429）。
     """
     doc = await _own_session(sid, user, repos)
+    if doc.get("research_context"):
+        metadata = body.research_context or ResearchContextMetadata.model_validate(doc["research_context"])
+        context_token = request.headers.get("X-Research-Context-Token", "")
+        if not context_token:
+            raise HTTPException(401, "缺少科研上下文令牌")
+        try:
+            await request.app.state.research_context_adapter.validate(
+                token=context_token, expected=metadata)
+        except ResearchContextError as exc:
+            raise HTTPException(exc.status_code, exc.message) from exc
+        doc["research_context"] = metadata.model_dump(mode="json")
+        if body.research_context is not None:
+            await repos.session.update(sid, {"research_context": doc["research_context"]})
     # 助手 / 模型 / 工作根 / 归属统一由 session_runtime 解析；
     # 服务层抛领域异常，这里映射成对外 422
     try:
@@ -478,6 +515,46 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             if ev is None:
                 break
             yield {"event": ev.type.value, "data": ev.model_dump_json(), "id": str(ev.seq)}
+
+    return EventSourceResponse(sse_gen())
+
+
+@router.get("/sessions/{sid}/events")
+async def subscribe_session(sid: str, request: Request,
+                            user=Depends(get_current_user),
+                            repos=Depends(get_repos)) -> EventSourceResponse:
+    """订阅会话的全部后续事件（会话页常驻，含任务唤醒轮与瞬态流）。
+
+    与 POST /messages 的 per-run 流互补：run 结束后 SSE 已收尾，任务完成
+    唤醒自动续跑的轮次经本端点推给打开中的会话页。事件格式与 per-run 流
+    完全一致（event=事件类型、data=JSON、id=seq），前端按 seq 去重后可
+    与既有处理共用。
+
+    Args:
+        sid: 会话 id。
+        request: 当前请求（取 agent_service）。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+
+    Returns:
+        SSE 事件流响应（断连自动注销订阅，历史事件经 GET /sessions/{sid}/events 拉取）。
+
+    Raises:
+        HTTPException: 会话不存在或非本人（404）。
+    """
+    await _own_session(sid, user, repos)
+    service = _agent_service(request)
+    queue = service.subscribe_session_events(sid)
+
+    async def sse_gen():
+        """消费会话订阅队列直至客户端断连（finally 注销防队列泄漏）。"""
+        try:
+            while True:
+                ev = await queue.get()
+                yield {"event": ev.type.value, "data": ev.model_dump_json(),
+                       "id": str(ev.seq)}
+        finally:
+            service.unsubscribe_session_events(sid, queue)
 
     return EventSourceResponse(sse_gen())
 
