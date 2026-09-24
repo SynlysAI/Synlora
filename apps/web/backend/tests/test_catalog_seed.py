@@ -126,7 +126,8 @@ async def test_seeded_experts_are_builtin_and_have_whitelist(store):
     research = await store.get("assistants", "asst-research")
     assert research["builtin"] is True
     assert sorted(research["tool_whitelist"]) == sorted([
-        "file.read", "file.write", "file.list", "python.run", "shell.run",
+        "file.read", "file.write", "file.edit", "file.list", "file.search",
+        "python.run", "shell.run",
         "knowledge.list", "knowledge.search", "http.request", "skill.list",
         "skill.read", "ask_user", "file.send", "job.submit", "job.status",
         "job.list", "job.cancel",

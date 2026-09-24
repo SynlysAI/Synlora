@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urljoin, urlparse
@@ -124,11 +125,132 @@ async def file_write(ctx: ToolContext, args: dict) -> ToolResult:
     return ToolResult(ok=True, content=f"已写入 {args['path']}（{len(args['content'])} 字符）")
 
 
+def _edit_preview(fragment: str, limit: int = 60) -> str:
+    """压缩编辑片段用于结果预览（单行化 + 截断）。"""
+    flattened = " ".join(fragment.split())
+    suffix = "…" if len(flattened) > limit else ""
+    return flattened[:limit] + suffix
+
+
+@tool(
+    name="file.edit",
+    description=(
+        "对工作区已有文件做精确局部替换（比整文件重写省 token 且不易丢内容）。"
+        "传 edits 数组（每项 old/new，可选 all=true 替换全部出现）：每个 old 都在"
+        "原始文件内容中定位，默认要求全文唯一匹配，否则报错——不唯一时扩大 old "
+        "范围带上下文，或确认要全改时设 all=true。old 与 new 相同、old 为空均拒绝；"
+        "任一 edit 定位失败则整个调用不写盘（all-or-nothing）。新建文件用 file.write。"
+    ),
+    parameters={"type": "object", "properties": {
+        "path": {"type": "string", "description": "相对工作区根的已有文件路径"},
+        "edits": {
+            "type": "array",
+            "description": "按顺序应用的编辑列表",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "old": {"type": "string", "description": "要替换的原文片段（保持原文精确匹配，含缩进）"},
+                    "new": {"type": "string", "description": "替换后的内容"},
+                    "all": {"type": "boolean", "default": False,
+                            "description": "替换全部出现位置（默认要求唯一匹配）"},
+                },
+                "required": ["old", "new"],
+            },
+        },
+    }, "required": ["path", "edits"]},
+    timeout_s=10,
+)
+async def file_edit(ctx: ToolContext, args: dict) -> ToolResult:
+    """精确局部替换（pi edit 语义：全部对照原始文件定位，all-or-nothing 落盘）。"""
+    if ctx.workspace_root is None:
+        return _no_workspace()
+    path = _safe_path(ctx.workspace_root, args["path"])
+    if path is None:
+        return ToolResult(ok=False, content="路径越界", error="path_escape")
+    if not path.is_file():
+        return ToolResult(ok=False, content=f"文件不存在: {args['path']}（新建文件用 file.write）",
+                          error="not_found")
+    edits = args.get("edits")
+    if not isinstance(edits, list) or not edits:
+        return ToolResult(ok=False, content="edits 必须是非空数组", error="invalid_arguments")
+    try:
+        original = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return ToolResult(ok=False, content="文件不是 UTF-8 文本，无法编辑", error="not_text")
+    except OSError as exc:
+        return ToolResult(ok=False, content=f"读取失败: {exc}", error="io_error")
+
+    # 阶段一：全部 edit 在原文上定位校验（唯一性/存在性），任何失败整体拒绝。
+    located: list[tuple[dict, int]] = []  # (edit, 行号 1 基，取首次出现)
+    for index, edit in enumerate(edits, 1):
+        if not isinstance(edit, dict):
+            return ToolResult(ok=False, content=f"第 {index} 项 edit 不是对象", error="invalid_arguments")
+        old, new = edit.get("old"), edit.get("new")
+        if not isinstance(old, str) or not isinstance(new, str):
+            return ToolResult(ok=False, content=f"第 {index} 项 edit 的 old/new 必须是字符串",
+                              error="invalid_arguments")
+        if not old:
+            return ToolResult(ok=False, content=f"第 {index} 项 edit 的 old 为空", error="invalid_arguments")
+        if old == new:
+            return ToolResult(ok=False, content=f"第 {index} 项 edit 的 old 与 new 相同",
+                              error="invalid_arguments")
+        count = original.count(old)
+        if count == 0:
+            return ToolResult(
+                ok=False,
+                content=(f"第 {index} 项 edit 的 old 未在文件中找到: "
+                         f"“{_edit_preview(old)}”；请先用 file.read 核对原文（含缩进与空白）"),
+                error="old_not_found",
+            )
+        replace_all = bool(edit.get("all"))
+        if count > 1 and not replace_all:
+            return ToolResult(
+                ok=False,
+                content=(f"第 {index} 项 edit 的 old 出现 {count} 次，不唯一: "
+                         f"“{_edit_preview(old)}”；扩大 old 带上上下文，或确认全改时加 all=true"),
+                error="old_not_unique",
+            )
+        line_no = original.count("\n", 0, original.index(old)) + 1
+        located.append((edit, line_no))
+
+    # 阶段二：校验全过后顺序应用；edits 互相重叠导致后续定位失效时整体放弃。
+    content = original
+    for edit, _ in located:
+        old, new = edit["old"], edit["new"]
+        if old not in content:
+            return ToolResult(
+                ok=False,
+                content=(f"edit 之间区域重叠导致应用失败，未写盘: "
+                         f"“{_edit_preview(old)}”；请合并为一次调用或缩小各 old 范围"),
+                error="overlap_conflict",
+            )
+        content = content.replace(old, new) if edit.get("all") else content.replace(old, new, 1)
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        return ToolResult(ok=False, content=f"写入失败: {exc}", error="io_error")
+
+    summary = [f"已对 {args['path']} 应用 {len(located)} 处编辑："]
+    for index, (edit, line_no) in enumerate(located, 1):
+        occurrences = "（全部出现）" if edit.get("all") else ""
+        summary.append(
+            f"[{index}] 第 {line_no} 行{occurrences}: "
+            f"“{_edit_preview(edit['old'], 40)}” → “{_edit_preview(edit['new'], 40)}”"
+        )
+    return ToolResult(ok=True, content="\n".join(summary),
+                      data={"path": args["path"], "edits": len(located)})
+
+
 @tool(
     name="file.list",
-    description="列出用户工作区指定目录下的文件（递归相对路径，默认前 500 项）",
+    description=(
+        "列出用户工作区指定目录下的文件（递归相对路径，默认前 500 项）。"
+        "可传 pattern 按文件名通配过滤（如 *.csv、output/*.png）。"
+    ),
     parameters={"type": "object", "properties": {
         "path": {"type": "string", "description": "相对路径，默认 '.'"},
+        "pattern": {"type": "string",
+                    "description": "通配符过滤（fnmatch 语法，匹配相对路径），可选"},
         "max_entries": {"type": "integer", "default": 500, "description": "返回条数上限（≤2000）"},
     }},
     timeout_s=10,
@@ -147,13 +269,124 @@ async def file_list(ctx: ToolContext, args: dict) -> ToolResult:
         p.relative_to(ctx.workspace_root.resolve()).as_posix()
         for p in base.rglob("*") if p.is_file()
     ]
+    pattern = str(args.get("pattern") or "").strip()
+    if pattern:
+        files = [f for f in files if fnmatch(f, pattern)]
     total = len(files)
     shown = files[:max_entries]
-    content = "\n".join(shown) or "(空目录)"
+    content = "\n".join(shown) or "(无匹配文件)"
     if total > max_entries:
-        content += f"\n（共 {total} 个文件，仅列出前 {max_entries} 个；缩小 path 范围或调大 max_entries）"
+        content += f"\n（共 {total} 个文件，仅列出前 {max_entries} 个；缩小 path/pattern 范围或调大 max_entries）"
     return ToolResult(ok=True, content=content,
                       data={"files": shown, "total": total, "truncated": total > max_entries})
+
+
+# file.search 单文件扫描上限：超过则跳过（大文件内容搜索交给 python.run 分块处理）
+_SEARCH_MAX_FILE_BYTES = 10 * 1024 * 1024
+# file.search 单行预览截断（保持结果紧凑）
+_SEARCH_LINE_PREVIEW = 200
+
+
+@tool(
+    name="file.search",
+    description=(
+        "在工作区文件内容中搜索（grep 语义，Python 正则语法），返回 "
+        "“相对路径:行号:该行内容”。默认搜当前目录全部文本文件，可用 glob "
+        "过滤文件名（如 *.csv、*.py）、ignore_case 忽略大小写。"
+        "找文件名用 file.list 的 pattern；单文件超 10MB 或二进制会被跳过并在结果注明。"
+    ),
+    parameters={"type": "object", "properties": {
+        "pattern": {"type": "string", "description": "搜索内容（Python 正则）"},
+        "path": {"type": "string", "description": "起始目录（相对路径，默认 '.'）"},
+        "glob": {"type": "string", "description": "文件名通配过滤（如 '*.py'），可选"},
+        "ignore_case": {"type": "boolean", "default": False, "description": "忽略大小写"},
+        "max_results": {"type": "integer", "default": 200,
+                        "description": "返回命中条数上限（≤1000）"},
+    }, "required": ["pattern"]},
+    timeout_s=30,
+)
+async def file_search(ctx: ToolContext, args: dict) -> ToolResult:
+    """工作区内容搜索（宿主侧直跑：不进沙箱，无冷启动开销）。"""
+    if ctx.workspace_root is None:
+        return _no_workspace()
+    base = _safe_path(ctx.workspace_root, args.get("path", "."))
+    if base is None:
+        return ToolResult(ok=False, content="路径越界", error="path_escape")
+    if not base.exists():
+        return ToolResult(ok=False, content=f"目录不存在: {args.get('path')}", error="not_found")
+    try:
+        regex = re.compile(
+            str(args["pattern"]),
+            re.IGNORECASE if args.get("ignore_case") else 0,
+        )
+    except re.error as exc:
+        return ToolResult(ok=False, content=f"正则无效: {exc}", error="invalid_regex")
+    max_results = max(1, min(int(args.get("max_results", 200)), 1000))
+    name_filter = str(args.get("glob") or "").strip()
+
+    matches: list[str] = []
+    total = 0
+    files_scanned = 0
+    skipped_large = 0
+    skipped_binary = 0
+    for file_path in sorted(base.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel = file_path.relative_to(ctx.workspace_root.resolve()).as_posix()
+        if name_filter and not fnmatch(file_path.name, name_filter):
+            continue
+        try:
+            if file_path.stat().st_size > _SEARCH_MAX_FILE_BYTES:
+                skipped_large += 1
+                continue
+            raw = file_path.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in raw:  # NUL 字节即视为二进制（ripgrep 同款口径）
+            skipped_binary += 1
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            skipped_binary += 1
+            continue
+        files_scanned += 1
+        for line_no, line in enumerate(text.splitlines(), 1):
+            if regex.search(line):
+                total += 1
+                if len(matches) < max_results:
+                    preview = line.strip()
+                    if len(preview) > _SEARCH_LINE_PREVIEW:
+                        preview = preview[:_SEARCH_LINE_PREVIEW] + "…"
+                    matches.append(f"{rel}:{line_no}: {preview}")
+    if not matches:
+        note = "（无命中）"
+        if files_scanned == 0:
+            note = "（未扫描任何文本文件）"
+        return ToolResult(ok=True, content=note,
+                          data={"matches": [], "total": 0, "truncated": False,
+                                "files_scanned": files_scanned,
+                                "skipped_large": skipped_large,
+                                "skipped_binary": skipped_binary})
+    content = "\n".join(matches)
+    notes = []
+    if total > max_results:
+        notes.append(f"共 {total} 处命中，仅显示前 {max_results} 处；收窄 glob/path 或调大 max_results")
+    skipped = []
+    if skipped_large:
+        skipped.append(f"{skipped_large} 个超 10MB 文件（用 python.run 分块处理）")
+    if skipped_binary:
+        skipped.append(f"{skipped_binary} 个二进制文件")
+    if skipped:
+        notes.append("跳过：" + "、".join(skipped))
+    if notes:
+        content += "\n（" + "；".join(notes) + "）"
+    return ToolResult(ok=True, content=content,
+                      data={"matches": matches, "total": total,
+                            "truncated": total > max_results,
+                            "files_scanned": files_scanned,
+                            "skipped_large": skipped_large,
+                            "skipped_binary": skipped_binary})
 
 
 # read_image 允许的图片类型（后缀 → MIME；模型侧通常支持这四种）
@@ -727,7 +960,8 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
         registry: 目标注册表。
     """
     for fn in (
-        file_read, file_write, file_list, python_run, shell_run, file_read_image,
+        file_read, file_write, file_edit, file_list, file_search,
+        python_run, shell_run, file_read_image,
         web_fetch, http_request,
         ask_user, file_send, skill_list, skill_read,
         job_submit, job_status, job_list, job_cancel,
