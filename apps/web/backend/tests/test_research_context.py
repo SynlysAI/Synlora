@@ -29,6 +29,9 @@ def _metadata(**overrides) -> ResearchContextMetadata:
         "allowed_tools": ["knowledge.search", "file.read"],
         "policy_id": "policy-1",
         "policy_hash": "policy-hash",
+        "scope_kind": "OWNER",
+        "scope_source": "chain_owner",
+        "policy_version": "research-agent-policy.v1",
     }
     payload.update(overrides)
     return ResearchContextMetadata.model_validate(payload)
@@ -50,6 +53,9 @@ def _plane_response(metadata: ResearchContextMetadata) -> dict:
             "allowed_tools": metadata.allowed_tools,
             "policy_id": metadata.policy_id,
             "policy_hash": metadata.policy_hash,
+            "scope_kind": metadata.scope_kind,
+            "scope_source": metadata.scope_source,
+            "policy_version": metadata.policy_version,
         },
     }
 

@@ -59,6 +59,33 @@ def test_v2_context_tool_policy_intersects_defensively():
     assert apply_research_tool_policy(selected, None) == selected
 
 
+def test_review_context_preserves_scope_metadata_and_read_only_tools():
+    """REVIEW scope is carried through Context metadata and excludes write tools."""
+    from app.services.research_context import ResearchContextMetadata
+    from app.services.agent_service import apply_research_tool_policy
+
+    metadata = ResearchContextMetadata.model_validate(
+        {
+            "workspace_id": "workspace-1",
+            "workspace_slug": "pi-lab",
+            "research_project_id": "project-1",
+            "chain_node_id": "node-1",
+            "context_id": "context-1",
+            "context_hash": "hash-1",
+            "visibility_scope": "UNIT",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "allowed_tools": ["knowledge.search", "knowledge.list", "file.read"],
+            "scope_kind": "REVIEW",
+            "scope_source": "direct_advisor_or_main_pi",
+            "policy_version": "research-agent-policy.v1",
+        }
+    )
+    assert metadata.scope_kind == "REVIEW"
+    assert "file.write" not in apply_research_tool_policy(
+        ["knowledge.search", "file.read", "file.write"], metadata.model_dump()
+    )
+
+
 def test_v2_context_plugin_policy_intersects_defensively():
     """Plane allowed_plugins 是会话插件开关的硬上界。"""
     from app.services.agent_service import apply_research_plugin_policy
