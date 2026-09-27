@@ -200,6 +200,9 @@ async def lifespan(app: FastAPI):
     await app.state.job_poller.stop()
     if app.state.sandbox_job_runner is not None:
         await app.state.sandbox_job_runner.shutdown()
+    # 公共 stdio MCP 子进程统一清理（无则空操作）
+    if getattr(app.state, "mcp_service", None) is not None:
+        await app.state.mcp_service.aclose()
     await store.close()
 
 

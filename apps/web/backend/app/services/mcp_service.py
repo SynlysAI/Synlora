@@ -1,6 +1,7 @@
 """用户级 Streamable HTTP MCP 连接、工具发现与远程调用。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -12,6 +13,7 @@ import httpx
 from cryptography.fernet import InvalidToken
 
 from app.core.crypto import decrypt_key, encrypt_key
+from app.services.mcp_stdio import connect_stdio
 
 MCP_COLLECTION = "mcp_connections"
 MCP_PROTOCOL_VERSION = "2026-07-28"
@@ -45,6 +47,9 @@ class McpService:
             lambda: httpx.AsyncClient(timeout=httpx.Timeout(30.0)))
         self._catalog_mcps = catalog_mcps or (lambda: {})
         self._public_status: dict[str, dict] = {}
+        # stdio 子进程缓存（{mcp_id: StdioMcpClient}）与单飞锁（防并发重复 spawn）
+        self._stdio_clients: dict[str, Any] = {}
+        self._stdio_locks: dict[str, asyncio.Lock] = {}
 
     async def list_for_user(self, user_id: str) -> list[dict]:
         """列出用户的 MCP 连接，不回传任何密钥明文。"""
@@ -221,8 +226,48 @@ class McpService:
             "status": "unchecked", "last_error": "", "tool_count": 0, "checked_at": None,
         })
 
+    async def _stdio_request(self, mcp_id: str, method: str, params: dict) -> dict:
+        """对公共 stdio MCP 发请求：懒 spawn + 单飞锁 + 失败销毁（下次重建）。
+
+        Args:
+            mcp_id: MCP id。
+            method: JSON-RPC 方法名。
+            params: 参数。
+
+        Raises:
+            KeyError: 公共条目不存在。
+            RuntimeError: 连接或协议失败。
+        """
+        pkg = self._public_pkg(mcp_id)
+        if pkg.transport != "stdio":
+            raise RuntimeError(f"MCP {mcp_id} 不是 stdio transport")
+        lock = self._stdio_locks.setdefault(mcp_id, asyncio.Lock())
+        async with lock:
+            client = self._stdio_clients.get(mcp_id)
+            if client is None or not client.alive:
+                if client is not None:
+                    await client.close()
+                client = await connect_stdio(pkg)
+                self._stdio_clients[mcp_id] = client
+            try:
+                return await client.request(method, params)
+            except Exception:
+                # 死连接就地销毁：下次调用走重建，不再等一轮超时
+                await client.close()
+                self._stdio_clients.pop(mcp_id, None)
+                raise
+
+    async def aclose(self) -> None:
+        """应用退出清理：关闭全部 stdio 子进程。"""
+        for client in list(self._stdio_clients.values()):
+            try:
+                await client.close()
+            except Exception:
+                pass
+        self._stdio_clients.clear()
+
     async def discover_public_tools(self, mcp_id: str) -> list[dict]:
-        """连接公共 MCP 并读取工具列表（http 走无状态短连接；stdio 由 stdio 客户端处理）。
+        """连接公共 MCP 并读取工具列表（http 走无状态短连接；stdio 走子进程客户端）。
 
         Raises:
             KeyError: 公共条目不存在。
@@ -230,8 +275,9 @@ class McpService:
         """
         pkg = self._public_pkg(mcp_id)
         if pkg.transport == "stdio":
-            raise RuntimeError("stdio transport 由专用客户端处理")
-        result = await self._request(self._public_config(pkg), "tools/list", {})
+            result = await self._stdio_request(mcp_id, "tools/list", {})
+        else:
+            result = await self._request(self._public_config(pkg), "tools/list", {})
         return [self._normalize_tool(item)
                 for item in result.get("tools") or [] if isinstance(item, dict)]
 
