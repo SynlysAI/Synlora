@@ -195,6 +195,81 @@ class McpService:
         """注入公共 MCP 目录提供者（main 装配期回调，晚于构造）。"""
         self._catalog_mcps = provider
 
+    async def resolve_runtime_mcps(self, user_id: str, mcp_ids: list[str],
+                                   visible_catalog_ids: "set[str]") -> list[dict]:
+        """解析本轮要附加的 MCP 集合（自建优先、公共按可见性、失败跳过）。
+
+        对每个 id（去重）：用户自建文档存在即遮蔽公共同名条目（停用则整体
+        跳过，不回落）；否则公共条目须在 visible_catalog_ids 内才使用。
+        连接失败/无工具的条目静默跳过（专家 mcp_refs 与会话勾选共用此口径）。
+
+        Args:
+            user_id: 用户 sub。
+            mcp_ids: 本轮引用的 MCP id（会话勾选 ∪ 专家 mcp_refs）。
+            visible_catalog_ids: 该用户可见的公共 MCP id 集合
+                （CapabilityService.visible_ids(user, "mcp")）。
+
+        Returns:
+            连接列表，每项 {id, name, source, transport, tools}。
+        """
+        out: list[dict] = []
+        for mcp_id in dict.fromkeys(str(i) for i in mcp_ids if i):
+            doc = await self._store.get(MCP_COLLECTION, mcp_doc_id(user_id, mcp_id))
+            if doc is not None and doc.get("user_id") == user_id:
+                # 自建存在即遮蔽公共同名条目；停用整体跳过
+                if doc.get("enabled") is not True:
+                    continue
+                try:
+                    config = await self.resolved(user_id, mcp_id)
+                    tools = list(config.get("tools") or [])
+                    if not tools:
+                        tools = await self.discover_tools(user_id, mcp_id, persist=True)
+                except Exception:
+                    continue
+                out.append({"id": mcp_id, "name": config["name"],
+                            "source": "user", "transport": "streamable-http",
+                            "tools": tools})
+                continue
+            pkg = self._catalog_mcps().get(mcp_id)
+            if pkg is None or mcp_id not in visible_catalog_ids:
+                continue
+            try:
+                tools = await self.discover_public_tools(mcp_id)
+            except Exception:
+                continue
+            out.append({"id": mcp_id, "name": pkg.name, "source": "catalog",
+                        "transport": pkg.transport, "tools": tools})
+        return out
+
+    async def call_runtime_tool(self, user_id: str, source: str, mcp_id: str,
+                                tool_name: str, arguments: dict) -> dict:
+        """按来源分发一次远程工具调用。
+
+        Args:
+            user_id: 用户 sub（自建来源用于取配置）。
+            source: "user" | "catalog"（resolve_runtime_mcps 返回值）。
+            mcp_id: MCP id。
+            tool_name: 远程工具名。
+            arguments: 工具参数。
+
+        Returns:
+            MCP tools/call 的原始 result（content/isError）。
+
+        Raises:
+            KeyError: 条目不存在。
+            RuntimeError: 连接或协议失败。
+        """
+        if source == "user":
+            return await self.call_tool(user_id, mcp_id, tool_name, arguments)
+        pkg = self._public_pkg(mcp_id)
+        if pkg.transport == "stdio":
+            return await self._stdio_request(
+                mcp_id, "tools/call",
+                {"name": tool_name, "arguments": arguments})
+        return await self._request(
+            self._public_config(pkg), "tools/call",
+            {"name": tool_name, "arguments": arguments})
+
     def _public_pkg(self, mcp_id: str) -> Any:
         """取公共 MCP 包。
 
