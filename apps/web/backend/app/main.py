@@ -140,6 +140,9 @@ async def lifespan(app: FastAPI):
         installs=UserCapabilityRepo(store),
         tool_names_by_plugin=app.state.plugin_service.tool_names_by_plugin,
     )
+    # 公共 MCP 目录：经能力服务的 catalog 实时取（管理端写入后的热重载也走它）
+    app.state.mcp_service.set_catalog_provider(
+        lambda: app.state.capability_service.catalog.mcps)
     # 暴露给目录 API 与运行期（插件配置校验取 schema、用户维度解析配置）
     app.state.plugin_config_store = plugin_config_store
     app.state.plugin_packages = index.plugins
