@@ -589,9 +589,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 不带这个字段后端会 422「未指定模型服务」；插件开关同带（null = 未选过）
         const modelProviderId = useSessionsStore.getState().draftModelProviderId
         const enabledPlugins = useSessionsStore.getState().draftEnabledPlugins
+        const enabledMcp = useSessionsStore.getState().draftEnabledMcp
         const session = await useSessionsStore.getState().create(
           assistant?._id ?? null,
-          { projectId, modelProviderId, ...(enabledPlugins ? { enabledPlugins } : {}) },
+          { projectId, modelProviderId,
+            ...(enabledPlugins ? { enabledPlugins } : {}),
+            ...(enabledMcp ? { enabledMcp } : {}) },
         )
         // 新会话必然没有历史事件，直接置绑定态——**不要**走 loadHistory：
         // 它的 set({messages: ...}) 发生在 await 之后，会把下面刚写进去的
