@@ -270,6 +270,7 @@ class AgentService:
                    attachments: list[dict] | None = None,
                    file_ownership: dict | None = None,
                    enabled_plugins: list[str] | None = None,
+                   enabled_mcp: list[str] | None = None,
                    research_context: dict | None = None,
                    notice: bool = False) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
@@ -299,6 +300,9 @@ class AgentService:
                 在本轮生效——工具、配置注入、技能索引按它收窄，未启用插件的
                 播种专家按未选处理。None 与空列表同为"未启用任何插件"；
                 内置工具不受影响。
+            enabled_mcp: 会话级 MCP 附加（默认不附加）：与专家 mcp_refs 取
+                并集后按用户可见性解析（自建优先），工具注册进本轮注册表；
+                None 与空列表同为"不附加任何 MCP"。
             research_context: Plane 签发的只读科研范围（会话创建时已校验），
                 经 ctx.extra 透传给工具；None 表示普通 Synlora 会话。
             notice: 本轮为任务完成唤醒（非用户输入）：user/message payload 带
@@ -783,6 +787,7 @@ class AgentService:
                 workspace_root=ctx["workspace_root"],
                 file_ownership=ctx.get("ownership"),
                 enabled_plugins=ctx.get("enabled_plugins"),
+                enabled_mcp=ctx.get("enabled_mcp"),
                 research_context=ctx.get("research_context"),
                 notice=True,
             )

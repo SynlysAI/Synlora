@@ -147,6 +147,8 @@ class SessionCreateBody(BaseModel):
     enabled_plugins 为会话级插件开关（**默认全关**，照 jiuwen「+ 扩展面板」）：
     缺省 None 与空列表同为"本会话不启用任何插件"；列表 = 只启用这些插件的
     工具、配置、技能与播种专家。开关切换即 PATCH 落库，刷新不丢。
+    enabled_mcp 为会话级 MCP 附加（语义同 enabled_plugins）：缺省 None 与空
+    列表同为"本会话不附加任何 MCP"；列表 = 附加这些（用户自建 ∪ 可见公共）。
     """
 
     assistant_id: str | None = None
@@ -154,6 +156,7 @@ class SessionCreateBody(BaseModel):
     model_provider_id: str | None = None
     project_id: str | None = None
     enabled_plugins: list[str] | None = None
+    enabled_mcp: list[str] | None = None
     research_context: ResearchContextMetadata | None = None
 
 
@@ -172,6 +175,7 @@ class SessionUpdateBody(BaseModel):
     model_provider_id: str | None = None
     assistant_id: str | None = None
     enabled_plugins: list[str] | None = None
+    enabled_mcp: list[str] | None = None
 
 
 async def _validate_plugin_ids(request: Request, plugin_ids: list[str]) -> None:
@@ -203,6 +207,30 @@ def _validate_research_plugin_scope(plugin_ids: list[str], metadata: ResearchCon
     invalid = sorted(set(plugin_ids) - set(metadata.allowed_plugins or []))
     if invalid:
         raise HTTPException(403, f"科研上下文未授权插件: {', '.join(invalid)}")
+
+
+async def _validate_mcp_ids(request: Request, user_id: str, mcp_ids: list[str]) -> None:
+    """校验会话级 MCP 附加里的 id 可用（勾选不能放大可见性）。
+
+    每个 id 必须是：本人自建 MCP（存在即校验通过，启用与否运行期再判），
+    或对该用户可见的公共 MCP（内置或已装且启用）。
+
+    Args:
+        request: FastAPI 请求（取 MCP 与能力服务）。
+        user_id: 用户 sub。
+        mcp_ids: MCP id 列表。
+
+    Raises:
+        HTTPException: 任一 id 不可用（404，不泄露存在性）。
+    """
+    mcp_service = getattr(request.app.state, "mcp_service", None)
+    capability = getattr(request.app.state, "capability_service", None)
+    for mcp_id in mcp_ids:
+        if mcp_service is not None and await mcp_service.get(user_id, mcp_id):
+            continue
+        if capability is not None and await capability.is_visible(user_id, "mcp", mcp_id):
+            continue
+        raise HTTPException(404, f"MCP 不存在或不可用: {mcp_id}")
 
 
 class AttachmentIn(BaseModel):
@@ -281,6 +309,8 @@ async def create_session(body: SessionCreateBody, request: Request,
         await _validate_plugin_ids(request, body.enabled_plugins)
         if body.research_context is not None:
             _validate_research_plugin_scope(body.enabled_plugins, body.research_context)
+    if body.enabled_mcp is not None:
+        await _validate_mcp_ids(request, user["sub"], body.enabled_mcp)
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
@@ -290,6 +320,7 @@ async def create_session(body: SessionCreateBody, request: Request,
         "model_provider_id": body.model_provider_id,
         "project_id": body.project_id,
         "enabled_plugins": body.enabled_plugins,
+        "enabled_mcp": body.enabled_mcp,
         "research_context": (
             body.research_context.model_dump(mode="json")
             if body.research_context is not None else None
@@ -355,6 +386,11 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
                 )
         # 显式 null 与空列表同义：本会话不启用任何插件（默认全关）
         fields["enabled_plugins"] = body.enabled_plugins
+    if "enabled_mcp" in body.model_fields_set:
+        if body.enabled_mcp is not None:
+            await _validate_mcp_ids(request, user["sub"], body.enabled_mcp)
+        # 显式 null 与空列表同义：本会话不附加任何 MCP
+        fields["enabled_mcp"] = body.enabled_mcp
     return await repos.session.update(doc["_id"], fields)
 
 
@@ -494,6 +530,7 @@ async def send_message(sid: str, body: MessageIn, request: Request,
                                     attachments=attachments_meta,
                                     file_ownership=ownership,
                                     enabled_plugins=doc.get("enabled_plugins"),
+                                    enabled_mcp=doc.get("enabled_mcp"),
                                     research_context=doc.get("research_context"))
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
