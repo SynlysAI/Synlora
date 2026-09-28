@@ -341,6 +341,30 @@ class McpService:
                 pass
         self._stdio_clients.clear()
 
+    async def invalidate_public_cache(
+            self, mcp_ids: set[str] | None = None) -> None:
+        """丢弃公共 MCP 的进程缓存与探测状态（配置变更后必须重建才生效）。
+
+        stdio 客户端的 command/env/args 在 spawn 时固化，改了公共 MCP 配置
+        而沿用旧子进程等于改动不生效；探测状态同步作废（等下次测试连接重写，
+        免得管理页显示的是旧配置的连接结果）。
+
+        Args:
+            mcp_ids: 要失效的 id 集合；None 表示全部失效。
+        """
+        targets = (
+            set(self._stdio_clients) | set(self._public_status)
+            if mcp_ids is None else set(mcp_ids)
+        )
+        for mcp_id in targets:
+            client = self._stdio_clients.pop(mcp_id, None)
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+            self._public_status.pop(mcp_id, None)
+
     async def discover_public_tools(self, mcp_id: str) -> list[dict]:
         """连接公共 MCP 并读取工具列表（http 走无状态短连接；stdio 走子进程客户端）。
 

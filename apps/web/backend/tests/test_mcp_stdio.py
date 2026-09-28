@@ -120,3 +120,31 @@ async def test_stdio_inflight_death_destroys_and_raises(server_script):
     tools = await service.discover_public_tools("fake")
     assert tools[0]["name"] == "echo"
     await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalidate_public_cache_clears_stdio_and_status(server_script):
+    """catalog 热重载后配置可能已变：进程缓存与状态缓存一并清理。"""
+
+    class _Store:
+        async def get(self, *_a, **_k):
+            return None
+
+    service = McpService(_Store(), "",
+                         catalog_mcps=lambda: {"fake": _pkg(server_script)})
+    # 状态缓存按设计只由 test_public_connection 写入（discover_public_tools
+    # 是运行期装配路径，不碰它）
+    await service.test_public_connection("fake")
+    assert "fake" in service._stdio_clients
+    assert service.public_status("fake")["status"] == "connected"
+    # 全清
+    await service.invalidate_public_cache()
+    assert "fake" not in service._stdio_clients
+    assert service.public_status("fake")["status"] == "unchecked"
+    # 定向清理：不影响其他 id
+    await service.discover_public_tools("fake")
+    await service.invalidate_public_cache({"nope"})
+    assert "fake" in service._stdio_clients
+    await service.invalidate_public_cache({"fake"})
+    assert "fake" not in service._stdio_clients
+    await service.aclose()

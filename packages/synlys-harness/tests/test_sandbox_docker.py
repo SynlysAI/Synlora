@@ -12,6 +12,7 @@
 - 正常执行：产物落 workspace（bind mount 生效）、输出截断
 """
 import asyncio
+import json
 import time
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -151,27 +152,41 @@ async def test_execute_shell_with_readonly_resource(workspace, tmp_path):
     assert (workspace / "output.txt").read_text(encoding="utf-8").strip() == "output"
 
 
-async def test_product_csv_skill_script_is_readonly_and_writes_output(workspace):
-    """产品 CSV 脚本可执行，技能包只读，摘要写入工作区。"""
+async def test_product_skill_assets_readable_and_writes_output(workspace):
+    """真实技能包只读挂载：资产可读可导入、产物落工作区、写技能包被拒。
+
+    夹具改用 catalog 现存技能（原 data-analysis 技能及其 scripts/ 已随技能
+    重组移除）。覆盖点不变：只读挂载可用、bind mount 回写生效、非 root 写
+    技能包失败——以「读 SKILL.md + 导入其 assets 下的 python 模块」替代原
+    CSV 脚本。
+    """
     repo_root = Path(__file__).resolve().parents[3]
-    skill = repo_root / "apps" / "web" / "backend" / "catalog" / "skills" / "data-analysis"
-    (workspace / "files").mkdir(exist_ok=True)
+    skill = (
+        repo_root / "apps" / "web" / "backend" / "catalog" / "skills"
+        / "scientific-visualization"
+    )
+    assert skill.is_dir(), f"夹具技能不存在: {skill}"
     (workspace / "output").mkdir(exist_ok=True)
-    (workspace / "files" / "data.csv").write_text(
-        "name,value\na,1\nb,2\n", encoding="utf-8"
+    script = (
+        "import json, sys;"
+        "sys.path.insert(0, '/skills/scientific-visualization/assets');"
+        "import color_palettes as cp;"
+        "md = open('/skills/scientific-visualization/SKILL.md',"
+        " encoding='utf-8').read();"
+        "json.dump({'palette_count': len(cp.OKABE_ITO),"
+        " 'skill_md_chars': len(md)},"
+        " open('/workspace/output/summary.json', 'w'))"
     )
     request = ExecutionRequest(
         argv=(
             "/bin/bash", "--noprofile", "--norc", "-c",
-            "python /skills/data-analysis/scripts/summarize_csv.py "
-            "--input /workspace/files/data.csv "
-            "--output /workspace/output/summary.json; "
-            "echo bad > /skills/data-analysis/forbidden.txt",
+            f"python -c \"{script}\"; "
+            "echo bad > /skills/scientific-visualization/forbidden.txt",
         ),
         workspace_root=workspace,
         cwd="tmp",
         resources=(ReadOnlyResource(
-            skill.resolve(), PurePosixPath("/skills/data-analysis")),),
+            skill.resolve(), PurePosixPath("/skills/scientific-visualization")),),
         timeout_s=60,
     )
 
@@ -179,6 +194,7 @@ async def test_product_csv_skill_script_is_readonly_and_writes_output(workspace)
 
     assert not result.ok
     assert not (skill / "forbidden.txt").exists()
-    summary = (workspace / "output" / "summary.json").read_text(encoding="utf-8")
-    assert '"columns": [' in summary
-    assert '"row_count": 2' in summary
+    summary = json.loads(
+        (workspace / "output" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["palette_count"] == 8  # Okabe-Ito 配色数
+    assert summary["skill_md_chars"] > 0

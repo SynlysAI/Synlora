@@ -35,11 +35,16 @@ async def _reload_catalog(request: Request) -> None:
     """重扫 catalog 并替换能力服务的目录视图（公共 MCP 写入即生效）。
 
     只重建 CatalogService（mcp 条目消费方均经它取数）；插件/专家包对象
-    不受 mcp 写入影响，维持原引用。
+    不受 mcp 写入影响，维持原引用。另需丢弃 MCP 服务的进程缓存：stdio
+    客户端的 command/env/args 在 spawn 时固化，不清缓存则旧子进程继续跑，
+    改动看似不生效。
     """
     settings = request.app.state.settings
     index = scan_catalog(catalog_roots(settings))
     request.app.state.capability_service.catalog = CatalogService(index=index)
+    mcp_service = getattr(request.app.state, "mcp_service", None)
+    if mcp_service is not None:
+        await mcp_service.invalidate_public_cache()
 
 
 def _manifest_row(request: Request, pkg: Any) -> dict:
