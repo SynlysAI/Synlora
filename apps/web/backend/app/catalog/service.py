@@ -258,6 +258,10 @@ class CapabilityService:
             elif kind == "expert":
                 pkg = self.catalog.experts.get(item.id)
                 row["avatar"] = pkg.avatar if pkg is not None else ""
+            # MCP 行补 transport：前端区分 stdio / streamable-http 连接形态
+            elif kind == "mcp":
+                pkg = self.catalog.mcps.get(item.id)
+                row["transport"] = pkg.transport if pkg is not None else ""
             rows.append(row)
         # 内置（全员默认可用）排前展示，同组内按 id 稳定排序；
         # 前端市场页与插件选择器均直接消费本顺序
