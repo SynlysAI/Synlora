@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.admin_mcp_api import router as admin_mcp_router
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
 from app.api.deps import Repos
@@ -236,6 +237,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog_router)
     app.include_router(me_router)
     app.include_router(mcp_router)
+    app.include_router(admin_mcp_router)
     app.include_router(jobs_router)
 
     @app.get("/api/health")
