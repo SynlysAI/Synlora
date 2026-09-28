@@ -116,7 +116,7 @@ pm2 logs synlys-agent
 | `SANDBOX_JOB_DEFAULT_TIMEOUT_S` / `SANDBOX_JOB_MAX_TIMEOUT_S` | `1800` / `7200` | 后台沙箱任务独立默认/最大超时；不复用前台工具预算 |
 | `SANDBOX_DEPLOYMENT_ID` | 空（按 `DATA_DIR` 派生） | 精确标记本部署容器，供取消和重启清理 |
 
-其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`/`SANDBOX_DOCKER_NETWORK`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 插件机制（AI⁴MS 子平台接入）
 
@@ -152,7 +152,7 @@ MCP 支持两档来源与会话级附加：**公共 MCP** 由管理员维护（c
 
 ### Docker 沙箱（多用户/云部署）
 
-`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器断网、非 root、资源受限、每次调用后删除，运行用户动态对齐宿主工作区属主（Linux bind mount 权限对齐，保证容器内可写工作区；`SANDBOX_DOCKER_USER` 可显式覆盖）。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
+`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器默认断网（`SANDBOX_DOCKER_NETWORK=true` 可放开联网，仅建议可信内网部署）、非 root、资源受限、每次调用后删除，运行用户动态对齐宿主工作区属主（Linux bind mount 权限对齐，保证容器内可写工作区；`SANDBOX_DOCKER_USER` 可显式覆盖）。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
 
 ```bash
 docker build -t synlora-sandbox:latest docker/sandbox/

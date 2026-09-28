@@ -43,6 +43,11 @@ class Settings(BaseSettings):
             宿主工作区属主，保证容器内可写 /workspace；Windows 或宿主属主为
             root 时用镜像默认非 root 用户——后端以 root 运行的部署建议显式
             配置本项或改后端非 root 运行，否则容器内写工作区会被权限拒绝）。
+        sandbox_docker_network: docker 模式是否放开容器网络（默认 False =
+            断网）。开启后容器走 Docker 默认网络，可 pip 安装依赖、访问外网，
+            但也因此能到达宿主可达的一切（内网服务、同网桥容器、云元数据
+            地址）——仅在可信内网部署开启；公网/多租户部署应改用 egress
+            代理或专用网络方案。
         sandbox_job_default_timeout_s: 后台沙箱任务默认超时秒数。
         sandbox_job_max_timeout_s: 后台沙箱任务最大超时秒数。
         sandbox_deployment_id: Docker 执行资源所属部署标识；空时按 data_root 派生。
@@ -81,6 +86,7 @@ class Settings(BaseSettings):
     sandbox_cpus: float = 1.0
     sandbox_pids_limit: int = 256
     sandbox_docker_user: str = ""
+    sandbox_docker_network: bool = False
     sandbox_job_default_timeout_s: float = 1800.0
     sandbox_job_max_timeout_s: float = 7200.0
     sandbox_deployment_id: str = ""

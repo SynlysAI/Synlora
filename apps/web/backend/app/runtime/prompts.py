@@ -19,6 +19,7 @@ PERSONA_PRIORITY = 100
 
 SANDBOX_NOTES = {
     "docker": "- 代码执行：临时 Docker 容器（**无网络**、非 root、CPU/内存/进程数受限），跑完即销毁——装不了新依赖包，也访问不了外网；需要联网或额外依赖时改用平台已有工具，或先向用户说明。",
+    "docker-net": "- 代码执行：临时 Docker 容器（**有网络**、非 root、CPU/内存/进程数受限），跑完即销毁——可 `pip install` 依赖、访问外网；但每次执行都是全新容器，临时装好的包不保留，需复用请把依赖声明写进脚本或随工作区携带。",
     "local-weak": "- 代码执行：本机子进程（请求容器但不可用的降级模式，无强隔离与资源限额；有网络，但不要当默认手段）。",
     "local": "- 代码执行：本机子进程（`-I` 隔离 + 环境白名单 + 超时/输出截断；是事故围栏，不是安全边界）。",
     "unavailable": "- 代码执行：当前不可用（沙箱未就绪）——不要调用 `python.run`，改用文件工具或直接向用户说明能力受限。",
@@ -59,6 +60,7 @@ def _render_environment(
     sandbox: str,
     shell_available: bool,
     today: str | None,
+    sandbox_network: bool = False,
 ) -> str:
     """渲染日期、沙箱和 Shell 能力说明。"""
     lines = [
@@ -66,7 +68,8 @@ def _render_environment(
         "",
         f"- 当前日期：{today or date.today().isoformat()}（用户说“今天/最近”时以此为准）。",
     ]
-    note = SANDBOX_NOTES.get(sandbox)
+    note_key = "docker-net" if (sandbox == "docker" and sandbox_network) else sandbox
+    note = SANDBOX_NOTES.get(note_key)
     if note:
         if sandbox != "docker":
             lines.append(f"- 本机平台：{platform.system()}。")
@@ -84,6 +87,7 @@ def build_system_prompt(
     sandbox: str = "",
     shell_available: bool = False,
     today: str | None = None,
+    sandbox_network: bool = False,
 ) -> str:
     """构造产品系统提示词。
 
@@ -94,6 +98,7 @@ def build_system_prompt(
         sandbox: 执行器能力标记。
         shell_available: 本轮是否可调用 shell.run。
         today: 测试使用的日期覆盖值。
+        sandbox_network: docker 沙箱是否放开了容器网络（决定能力说明口径）。
 
     Returns:
         完整系统提示词。
@@ -109,6 +114,7 @@ def build_system_prompt(
                 sandbox=sandbox,
                 shell_available=shell_available,
                 today=today,
+                sandbox_network=sandbox_network,
             ),
         ),
     ]

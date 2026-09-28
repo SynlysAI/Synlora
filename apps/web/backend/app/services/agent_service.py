@@ -252,6 +252,7 @@ class AgentService:
                 pids_limit=self._settings.sandbox_pids_limit,
                 container_user=self._settings.sandbox_docker_user,
                 deployment_id=self._settings.deployment_id,
+                network_enabled=self._settings.sandbox_docker_network,
             )
             if executor.sandbox != "docker":
                 _LOGGER.warning("python.run 沙箱: %s", note)
@@ -517,6 +518,9 @@ class AgentService:
                            if executor.sandbox == "docker" else workspace_root),
                 skills=index,
                 sandbox=executor.sandbox,
+                sandbox_network=bool(
+                    getattr(executor, "network_enabled", False)
+                ),
                 shell_available=executor.sandbox == "docker",
             )
             # 有白名单时严格使用显式授权；无专家或未限制时放开注册表工具。
@@ -550,6 +554,11 @@ class AgentService:
             # 否则未选专家时白名单被撑成非空，select_runtime_tools 会弃用注册表
             # 全部内置工具（用户启用任一 MCP 后内置工具集体消失）
             tool_names = list(dict.fromkeys([*tool_names, *mcp_tool_names]))
+            # http.request 的出口由 HTTP_ALLOWED_HOSTS 定义：未配白名单时
+            # 每次调用必然 host_denied，不暴露给模型（白烧步数）。注册表本身
+            # 保持完整——助手白名单校验要与运行期看到同一份工具集
+            if not self._settings.allowed_hosts:
+                tool_names = [t for t in tool_names if t != "http.request"]
             tool_names = apply_research_tool_policy(tool_names, research_context)
             # 图片阅读双重门控：模型多模态 +（助手未限白名单或白名单显式包含）
             if provider_cfg.multimodal and (not whitelist or "file.read_image" in whitelist):

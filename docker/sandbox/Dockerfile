@@ -1,7 +1,8 @@
 # Synlora python.run 沙箱镜像（分析全家桶，与本地 conda 能力对齐）
 # 构建：docker build -t synlora-sandbox:latest docker/sandbox/
 # 运行形态见 packages/synlys-harness/src/synlys_harness/tools/sandbox.py
-# （临时容器：workspace 单目录挂载、断网、资源限额、非 root 用户）
+# （临时容器：workspace 单目录挂载、默认断网、资源限额、非 root 用户；
+#  联网开关 SANDBOX_DOCKER_NETWORK 只影响运行参数，不改本镜像）
 FROM python:3.12-slim
 
 # CJK 字体：matplotlib 中文标签不缺字（技能里字体链需含 Noto Sans CJK SC）
