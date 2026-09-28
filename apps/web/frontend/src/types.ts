@@ -131,7 +131,7 @@ export interface PluginInfo {
 
 /** 能力目录条目（对应后端 app/catalog/service.py 的 market_items）。 */
 export interface CatalogItem {
-  kind: 'expert' | 'skill' | 'plugin'
+  kind: 'expert' | 'skill' | 'plugin' | 'mcp'
   id: string
   name: string
   description: string
@@ -148,6 +148,8 @@ export interface CatalogItem {
   config_schema?: PluginConfigField[]
   /** 仅插件行返回：管理员公共配置已就绪的字段名（这些留空即用系统配置） */
   config_ready_keys?: string[]
+  /** 仅 MCP 行返回：连接形态（stdio / streamable-http）。 */
+  transport?: string
 }
 
 /** 用户 MCP 扩展的安全视图。 */
@@ -262,8 +264,22 @@ export interface Session {
   project_id?: string | null
   /** 会话级插件开关：null/缺省 = 跟随用户级可见集；列表 = 只用这些（[] = 本会话禁用全部插件）。 */
   enabled_plugins?: string[] | null
+  /** 会话级 MCP 附加：null/缺省/[] = 不附加任何 MCP；列表 = 附加这些（自建 ∪ 可见公共）。 */
+  enabled_mcp?: string[] | null
   created_at: number
   updated_at: number
+}
+
+/** 「+」面板 MCP 合并视图行（GET /me/mcps/panel）。 */
+export interface McpPanelItem {
+  id: string
+  name: string
+  description: string
+  source: 'user' | 'catalog'
+  transport: string
+  status: 'connected' | 'error' | 'unchecked' | string
+  last_error: string
+  tool_count: number
 }
 
 /** 用户工作区文件记录。 */

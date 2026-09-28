@@ -157,10 +157,10 @@ def test_scan_catalog_kinds_are_isolated(tmp_path):
 
 def test_scan_catalog_empty_root_is_fine(tmp_path):
     """根目录不存在 / 无任何子目录时返回空索引（首次部署）。"""
-    assert scan_catalog([tmp_path / "nope"]) == CatalogIndex({}, {}, {})
+    assert scan_catalog([tmp_path / "nope"]) == CatalogIndex({}, {}, {}, {})
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert scan_catalog([empty]) == CatalogIndex({}, {}, {})
+    assert scan_catalog([empty]) == CatalogIndex({}, {}, {}, {})
 
 
 def test_scan_experts_parses_package(tmp_path):

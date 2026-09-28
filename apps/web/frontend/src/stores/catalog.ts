@@ -13,11 +13,11 @@ import { create } from 'zustand'
 import type { CapabilityDetail, CatalogItem, PluginConfigSnapshot } from '@/types'
 import { api } from '@/api/client'
 
-/** 市场按类型分组存放（三类分别拉取，避免一次请求混排后再在前端切分）。 */
+/** 市场按类型分组存放（四类分别拉取，避免一次请求混排后再在前端切分）。 */
 type KindMap = Record<CatalogItem['kind'], CatalogItem[]>
 
-const EMPTY: KindMap = { expert: [], skill: [], plugin: [] }
-const KINDS: CatalogItem['kind'][] = ['expert', 'skill', 'plugin']
+const EMPTY: KindMap = { expert: [], skill: [], plugin: [], mcp: [] }
+const KINDS: CatalogItem['kind'][] = ['expert', 'skill', 'plugin', 'mcp']
 
 interface CatalogState {
   /** 当前用户可见的市场条目（三类分组）。 */

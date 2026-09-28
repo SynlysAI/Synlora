@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.admin_mcp_api import router as admin_mcp_router
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
 from app.api.deps import Repos
@@ -140,6 +141,9 @@ async def lifespan(app: FastAPI):
         installs=UserCapabilityRepo(store),
         tool_names_by_plugin=app.state.plugin_service.tool_names_by_plugin,
     )
+    # 公共 MCP 目录：经能力服务的 catalog 实时取（管理端写入后的热重载也走它）
+    app.state.mcp_service.set_catalog_provider(
+        lambda: app.state.capability_service.catalog.mcps)
     # 暴露给目录 API 与运行期（插件配置校验取 schema、用户维度解析配置）
     app.state.plugin_config_store = plugin_config_store
     app.state.plugin_packages = index.plugins
@@ -197,6 +201,9 @@ async def lifespan(app: FastAPI):
     await app.state.job_poller.stop()
     if app.state.sandbox_job_runner is not None:
         await app.state.sandbox_job_runner.shutdown()
+    # 公共 stdio MCP 子进程统一清理（无则空操作）
+    if getattr(app.state, "mcp_service", None) is not None:
+        await app.state.mcp_service.aclose()
     await store.close()
 
 
@@ -230,6 +237,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog_router)
     app.include_router(me_router)
     app.include_router(mcp_router)
+    app.include_router(admin_mcp_router)
     app.include_router(jobs_router)
 
     @app.get("/api/health")

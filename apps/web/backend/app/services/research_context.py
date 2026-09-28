@@ -27,6 +27,9 @@ class ResearchContextMetadata(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     policy_id: str = ""
     policy_hash: str = ""
+    scope_kind: str = "OWNER"
+    scope_source: str = "chain_owner"
+    policy_version: str = "research-agent-policy.v1"
 
     @model_validator(mode="after")
     def validate_v2_scope(self) -> "ResearchContextMetadata":
@@ -111,6 +114,9 @@ class ResearchContextAdapter:
             "allowed_tools": expected.allowed_tools,
             "policy_id": expected.policy_id,
             "policy_hash": expected.policy_hash,
+            "scope_kind": expected.scope_kind,
+            "scope_source": expected.scope_source,
+            "policy_version": expected.policy_version,
         }
         actual_values = {
             "context_id": actual_context.get("context_id"),
@@ -125,6 +131,9 @@ class ResearchContextAdapter:
             "allowed_tools": actual_context.get("allowed_tools") or [],
             "policy_id": actual_context.get("policy_id") or "",
             "policy_hash": actual_context.get("policy_hash") or "",
+            "scope_kind": actual_context.get("scope_kind") or "OWNER",
+            "scope_source": actual_context.get("scope_source") or "chain_owner",
+            "policy_version": actual_context.get("policy_version") or "research-agent-policy.v1",
         }
         if expected_values != actual_values:
             raise ResearchContextError(403, "Research context scope mismatch")
@@ -200,7 +209,7 @@ class PlaneResearchClient:
                 response = await client.post(
                     url,
                     json=payload,
-                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    headers={"X-API-Key": self._api_token},
                 )
         except httpx.HTTPError as exc:
             raise ResearchContextError(503, "Plane event write-back is unavailable") from exc

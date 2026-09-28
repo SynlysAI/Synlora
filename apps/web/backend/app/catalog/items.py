@@ -7,7 +7,8 @@
 - 专家：`catalog/experts/<dir>/expert.json`（插件播种的 `asst-plugin-*` 专家
   由插件运行时生成，不落在 catalog 里，天然不计入）；
 - 技能：`catalog/skills/<name>/SKILL.md`（frontmatter 即元数据，无额外 manifest）；
-- 插件：`catalog/plugins/<id>/plugin.json`（沿用既有插件契约）。
+- 插件：`catalog/plugins/<id>/plugin.json`（沿用既有插件契约）；
+- 公共 MCP：`catalog/mcp/<id>/mcp.json`（stdio / streamable-http）。
 
 另有数据目录公共层根 `{data_dir}/public/catalog/`（运行期安装预留），同名后者覆盖前者。
 """
@@ -26,12 +27,13 @@ if TYPE_CHECKING:
     from app.catalog.loader import (
         CatalogIndex,
         ExpertPackage,
+        McpPackage,
         PluginPackage,
     )
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("expert", "skill", "plugin")
+KINDS = ("expert", "skill", "plugin", "mcp")
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,15 @@ class CatalogService:
         """
         return self._index.experts
 
+    @property
+    def mcps(self) -> dict[str, "McpPackage"]:
+        """扫描到的公共 MCP 包（{id: McpPackage}）。
+
+        Returns:
+            MCP 包映射（只读用途；调用方不得就地修改）。
+        """
+        return self._index.mcps
+
     def list_items(self, kind: str) -> list[CatalogItem]:
         """枚举某类内置条目。
 
@@ -97,6 +108,8 @@ class CatalogService:
             return self._skills()
         if kind == "plugin":
             return self._plugins()
+        if kind == "mcp":
+            return self._mcps()
         return []
 
     def all_items(self) -> list[CatalogItem]:
@@ -159,6 +172,23 @@ class CatalogService:
                     name=pkg.name, description=pkg.description,
                 )
                 for pkg in self._index.plugins.values()
+            ),
+            key=lambda i: i.id,
+        )
+
+    def _mcps(self) -> list[CatalogItem]:
+        """公共 MCP 条目（扫描到的 MCP 包）。
+
+        Returns:
+            条目列表（按 id 排序）。
+        """
+        return sorted(
+            (
+                CatalogItem(
+                    kind="mcp", id=pkg.id,
+                    name=pkg.name or pkg.id, description=pkg.description,
+                )
+                for pkg in self._index.mcps.values()
             ),
             key=lambda i: i.id,
         )

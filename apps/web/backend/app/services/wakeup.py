@@ -53,6 +53,7 @@ def make_run_context_resolver(settings: Any, project_service: Any, repos: Any,
             "workspace_root": runtime.workspace_root,
             "ownership": runtime.ownership,
             "enabled_plugins": doc.get("enabled_plugins"),
+            "enabled_mcp": doc.get("enabled_mcp"),
             "research_context": doc.get("research_context"),
         }
 

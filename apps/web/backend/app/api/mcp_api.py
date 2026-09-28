@@ -47,6 +47,46 @@ async def list_mcps(request: Request,
     return await _service(request).list_for_user(user["sub"])
 
 
+@router.get("/panel")
+async def mcp_panel(request: Request,
+                    user=Depends(get_current_user)) -> list[dict]:
+    """「+」面板 MCP 合并视图：自建(enabled) ∪ 可见公共，含探测状态。
+
+    公共条目状态来自后端进程级缓存（McpService.test_public_connection 写入），
+    前端无法拼接，故由后端统一出。自建条目启用才进面板（停用的不附加）。
+
+    Returns:
+        行列表：{id, name, description, source, transport, status, last_error,
+        tool_count}，自建在前、公共在后（各自按 id 排序）。
+    """
+    service = _service(request)
+    capability = getattr(request.app.state, "capability_service", None)
+    rows: list[dict] = []
+    for item in await service.list_for_user(user["sub"]):
+        if not item["enabled"]:
+            continue
+        rows.append({
+            "id": item["id"], "name": item["name"],
+            "description": item["description"], "source": "user",
+            "transport": "streamable-http", "status": item["status"],
+            "last_error": item["last_error"],
+            "tool_count": len(item.get("tools") or []),
+        })
+    if capability is not None:
+        for mcp_id in sorted(await capability.visible_ids(user["sub"], "mcp")):
+            pkg = capability.catalog.mcps.get(mcp_id)
+            if pkg is None:
+                continue
+            status = service.public_status(mcp_id)
+            rows.append({
+                "id": mcp_id, "name": pkg.name, "description": pkg.description,
+                "source": "catalog", "transport": pkg.transport,
+                "status": status["status"], "last_error": status["last_error"],
+                "tool_count": status["tool_count"],
+            })
+    return rows
+
+
 @router.post("", status_code=201)
 async def create_mcp(request: Request, body: McpCreateBody,
                      user=Depends(get_current_user)) -> dict:

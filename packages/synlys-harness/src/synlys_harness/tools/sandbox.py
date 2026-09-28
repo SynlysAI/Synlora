@@ -276,7 +276,8 @@ class DockerCodeExecutor:
     """Docker 容器执行（多用户部署的强隔离）。
 
     每次执行一个临时容器：workspace 单目录挂载 /workspace（rw，其余
-    文件系统为容器私有层）、断网（network_disabled）、内存/CPU/进程数
+    文件系统为容器私有层）、默认断网（network_disabled，可经
+    network_enabled 放开）、内存/CPU/进程数
     限额、非 root 用户（Linux 下动态对齐宿主工作区属主 uid/gid，保证
     容器内对挂载目录的写权限与宿主后端一致）、跑完即删。代码经挂载的
     工作区传入，不进 argv（无长度与转义问题）、不经 stdin（无管道时序
@@ -293,6 +294,7 @@ class DockerCodeExecutor:
         pids_limit: int = 256,
         container_user: str = "",
         deployment_id: str = "default",
+        network_enabled: bool = False,
     ) -> None:
         """初始化容器执行器。
 
@@ -304,9 +306,14 @@ class DockerCodeExecutor:
             container_user: 容器内运行用户（"uid[:gid]"，空 = Linux 下动态
                 对齐宿主工作区属主；对齐不可用时用镜像默认非 root 用户）。
             deployment_id: 宿主提供的部署命名空间标识。
+            network_enabled: 是否放开容器网络（默认 False = 断网）。开启后
+                容器走 Docker 默认网络，可装依赖、访问外网，但也因此能到达
+                宿主可达的一切（内网服务、同网桥容器、云元数据地址）——仅在
+                可信内网部署开启，公网/多租户部署应改用代理或专用网络方案。
         """
         self.sandbox = "docker"
         self.image = image
+        self.network_enabled = network_enabled
         self._mem_limit = mem_limit
         self._nano_cpus = int(cpus * 1e9)
         self._pids_limit = pids_limit
@@ -434,7 +441,7 @@ class DockerCodeExecutor:
             name=name,
             working_dir=working_dir,
             volumes=volumes,
-            network_disabled=True,
+            network_disabled=not self.network_enabled,
             mem_limit=self._mem_limit,
             nano_cpus=self._nano_cpus,
             pids_limit=self._pids_limit,
@@ -753,6 +760,7 @@ def resolve_executor(
     pids_limit: int = 256,
     container_user: str = "",
     deployment_id: str = "default",
+    network_enabled: bool = False,
 ) -> tuple[CodeExecutor, str]:
     """按部署配置解析执行器（含探测，阻塞调用：宿主启动时经 to_thread 调一次）。
 
@@ -773,6 +781,7 @@ def resolve_executor(
             对齐宿主工作区属主，保证容器内可写 /workspace；Windows 或
             宿主属主为 root 时用镜像默认非 root 用户）。
         deployment_id: Docker 容器标签使用的部署命名空间。
+        network_enabled: docker 模式是否放开容器网络（默认 False = 断网）。
 
     Returns:
         (executor, note)：note 为人读状态行（含降级原因），宿主用于日志。
@@ -782,7 +791,7 @@ def resolve_executor(
     docker_exec = DockerCodeExecutor(
         image=image, mem_limit=mem_limit, cpus=cpus,
         pids_limit=pids_limit, container_user=container_user,
-        deployment_id=deployment_id,
+        deployment_id=deployment_id, network_enabled=network_enabled,
     )
     ok, reason = docker_exec.probe()
     if ok:

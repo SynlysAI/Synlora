@@ -20,6 +20,7 @@ import { pickSelectedAssistant, useAssistantsStore } from '@/stores/assistants'
 import { useChatStore } from '@/stores/chat'
 import { useSessionsStore } from '@/stores/sessions'
 import ExpertPicker from './ExpertPicker'
+import McpPicker from './McpPicker'
 import PluginPicker from './PluginPicker'
 import SkillPicker from './SkillPicker'
 
@@ -56,7 +57,7 @@ export default function AttachMenu({ selectedSkills, onToggleSkill, onFiles }: A
 
   const [open, setOpen] = useState(false)
   /** 当前展开的二级面板（四选一互斥）。 */
-  const [panel, setPanel] = useState<'none' | 'expert' | 'skill' | 'plugin'>('none')
+  const [panel, setPanel] = useState<'none' | 'expert' | 'skill' | 'plugin' | 'mcp'>('none')
   const [anchor, setAnchor] = useState<DOMRect | null>(null)
   const [direction, setDirection] = useState<'up' | 'down'>('down')
 
@@ -388,6 +389,49 @@ export default function AttachMenu({ selectedSkills, onToggleSkill, onFiles }: A
                 </svg>
               </button>
               {panel === 'plugin' && <PluginPicker direction={direction} />}
+            </div>
+
+            {/* MCP ›（二级面板，会话级附加开关，照插件面板语义） */}
+            <div className="relative">
+              <button
+                type="button"
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={panel === 'mcp'}
+                onClick={() => setPanel(panel === 'mcp' ? 'none' : 'mcp')}
+                className={`${ITEM_CLASS} ${panel === 'mcp' ? ITEM_OPEN_CLASS : ''}`}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="shrink-0"
+                  aria-hidden="true"
+                >
+                  <path d="M8 1.75v3M8 11.25v3M1.75 8h3M11.25 8h3M8 8h.01" />
+                </svg>
+                <span className="flex-1 truncate">MCP</span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="shrink-0"
+                  aria-hidden="true"
+                >
+                  <path d="M4.5 2.5 8 6l-3.5 3.5" />
+                </svg>
+              </button>
+              {panel === 'mcp' && <McpPicker direction={direction} />}
             </div>
           </div>,
           document.body,

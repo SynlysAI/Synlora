@@ -1,9 +1,10 @@
-"""内置内容（catalog）扫描：专家 / 技能 / 插件。
+"""内置内容（catalog）扫描：专家 / 技能 / 插件 / 公共 MCP。
 
 目录位置即类型（一眼可辨，加一个目录即扩展）：
     <root>/experts/<dir>/expert.json    → 专家
     <root>/skills/<name>/SKILL.md       → 技能（frontmatter 即元数据，无额外 manifest）
     <root>/plugins/<id>/plugin.json     → 插件（沿用既有插件契约）
+    <root>/mcp/<id>/mcp.json            → 公共 MCP（stdio / streamable-http）
 两个根：随仓库的 `apps/web/backend/catalog/` + `{data_dir}/public/catalog/`（运行期安装预留）。
 非法/缺字段/放错位置的包只告警跳过，不阻断启动；同名（同根内或跨根）后者覆盖前者并告警。
 """
@@ -32,11 +33,16 @@ REQUIRED_FIELDS = ("id", "name", "version")
 EXPERT_MANIFEST = "expert.json"
 EXPERT_REQUIRED = ("id", "name", "system_prompt")
 SKILL_FILE = "SKILL.md"
+MCP_DIR = "mcp"
+MCP_MANIFEST = "mcp.json"
+MCP_REQUIRED = ("id", "name", "description", "transport")
+MCP_TRANSPORTS = ("stdio", "streamable-http")
 
 # 重复条目告警前缀：同根内覆盖与跨根合并共用同一口径（专家/插件按 id，技能按技能名）
 EXPERT_DUP_MSG = "专家 id 重复，后者覆盖前者"
 SKILL_DUP_MSG = "技能名重复，后者覆盖前者"
 PLUGIN_DUP_MSG = "插件 id 重复，后者覆盖前者"
+MCP_DUP_MSG = "MCP id 重复，后者覆盖前者"
 
 
 @dataclass(frozen=True)
@@ -119,18 +125,55 @@ class SkillPackage:
 
 
 @dataclass(frozen=True)
+class McpPackage:
+    """公共 MCP 包（catalog/mcp/<id>/mcp.json）。
+
+    Attributes:
+        id: MCP id（kebab-case，= 目录名；工具命名空间 mcp.<id>.<tool>）。
+        name: 显示名。
+        description: 描述。
+        transport: stdio | streamable-http（用户自建恒为后者，此处为公共条目）。
+        command: stdio 启动命令。
+        args: stdio 命令参数。
+        cwd: stdio 工作目录（空 = 继承）。
+        env: stdio 子进程环境变量。
+        url: streamable-http 服务地址。
+        headers: HTTP 请求头（可含凭证；管理员信任级，一期明文 manifest）。
+        bearer_token: Bearer 凭证（空 = 无）。
+        timeout_s: 单次调用超时秒数。
+        directory: 包目录绝对路径。
+    """
+
+    id: str
+    name: str
+    description: str
+    transport: str
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    cwd: str = ""
+    env: dict[str, str] = field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    bearer_token: str = ""
+    timeout_s: float = 60.0
+    directory: Path = field(default_factory=Path)
+
+
+@dataclass(frozen=True)
 class CatalogIndex:
-    """一次扫描的结果（三类分开，调用方各取所需）。
+    """一次扫描的结果（四类分开，调用方各取所需）。
 
     Attributes:
         experts: {专家 id: ExpertPackage}。
         skills: {技能名: SkillPackage}。
         plugins: {插件 id: PluginPackage}。
+        mcps: {MCP id: McpPackage}。
     """
 
     experts: dict[str, ExpertPackage]
     skills: dict[str, SkillPackage]
     plugins: dict[str, PluginPackage]
+    mcps: dict[str, McpPackage]
 
 
 def catalog_roots(settings: "Settings") -> list[Path]:
@@ -161,13 +204,14 @@ def scan_catalog(roots: list[Path]) -> CatalogIndex:
     Returns:
         CatalogIndex；三类条目各自的非法包只告警跳过，不抛异常。
     """
-    index = CatalogIndex(experts={}, skills={}, plugins={})
+    index = CatalogIndex(experts={}, skills={}, plugins={}, mcps={})
     for root in roots:
         if not root.is_dir():
             continue
         _merge(index.experts, _scan_experts(root), EXPERT_DUP_MSG)
         _merge(index.skills, _scan_skills(root), SKILL_DUP_MSG)
         _merge(index.plugins, _scan_plugins(root), PLUGIN_DUP_MSG)
+        _merge(index.mcps, _scan_mcps(root), MCP_DUP_MSG)
     return index
 
 
@@ -355,6 +399,89 @@ def _scan_plugins(root: Path) -> dict[str, PluginPackage]:
             skills=skills,
             expert=expert,
         )
+    return packages
+
+
+def parse_mcp_manifest(data: dict, directory: Path) -> McpPackage:
+    """解析并校验一份 MCP manifest（扫描与管理端写入共用的单一校验入口）。
+
+    Args:
+        data: manifest 字典（mcp.json 内容）。
+        directory: 包目录（写入返回值的 directory 字段）。
+
+    Returns:
+        McpPackage。
+
+    Raises:
+        ValueError: 任一字段非法（id 非 kebab-case、缺必填、transport 未知、
+            stdio 缺 command、http url 非 http(s) 等）。
+    """
+    from app.services.mcp_service import MCP_ID_OK
+
+    mcp_id = str(data.get("id") or "").strip()
+    if not MCP_ID_OK.fullmatch(mcp_id):
+        raise ValueError(f"MCP id 必须是 kebab-case: {mcp_id!r}")
+    missing = [k for k in MCP_REQUIRED if not str(data.get(k) or "").strip()]
+    if missing:
+        raise ValueError(f"MCP manifest 缺必填字段: {missing}")
+    transport = str(data["transport"]).strip()
+    if transport not in MCP_TRANSPORTS:
+        raise ValueError(f"MCP transport 仅支持 {MCP_TRANSPORTS}: {transport!r}")
+    if transport == "stdio" and not str(data.get("command") or "").strip():
+        raise ValueError("stdio 类型必须提供 command")
+    url = str(data.get("url") or "").strip()
+    if transport == "streamable-http" and not url.startswith(("http://", "https://")):
+        raise ValueError("streamable-http 类型的 url 必须以 http:// 或 https:// 开头")
+    return McpPackage(
+        id=mcp_id,
+        name=str(data["name"]).strip(),
+        description=str(data["description"]).strip(),
+        transport=transport,
+        command=str(data.get("command") or "").strip(),
+        args=[str(a) for a in data.get("args") or []],
+        cwd=str(data.get("cwd") or "").strip(),
+        env={str(k): str(v) for k, v in (data.get("env") or {}).items()},
+        url=url,
+        headers={str(k): str(v) for k, v in (data.get("headers") or {}).items()},
+        bearer_token=str(data.get("bearer_token") or ""),
+        timeout_s=float(data.get("timeout_s") or 60.0),
+        directory=directory,
+    )
+
+
+def _scan_mcps(root: Path) -> dict[str, McpPackage]:
+    """扫描 `<root>/mcp` 下的公共 MCP 包，解析 manifest。
+
+    Args:
+        root: catalog 根目录。
+
+    Returns:
+        {MCP id: McpPackage}；非法 manifest 只告警跳过，不抛异常。
+    """
+    packages: dict[str, McpPackage] = {}
+    mcps_dir = root / MCP_DIR
+    if not mcps_dir.is_dir():
+        return packages
+    for entry in sorted(mcps_dir.iterdir()):
+        manifest_path = entry / MCP_MANIFEST
+        if not manifest_path.is_file():
+            continue
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("MCP manifest 解析失败，已跳过 %s: %s", entry.name, exc)
+            continue
+        if not isinstance(data, dict):
+            logger.warning("MCP manifest 非对象，已跳过 %s", entry.name)
+            continue
+        try:
+            pkg = parse_mcp_manifest(data, entry.resolve())
+        except ValueError as exc:
+            logger.warning("MCP manifest 非法，已跳过 %s: %s", entry.name, exc)
+            continue
+        if pkg.id in packages:  # 同根内重复 id：告警不静默
+            _warn_dup(MCP_DUP_MSG, pkg.id, entry)
+        packages[pkg.id] = pkg
     return packages
 
 

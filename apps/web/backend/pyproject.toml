@@ -1,6 +1,6 @@
 [project]
 name = "synlys-web"
-version = "0.2.0"
+version = "0.2.1"
 description = "SynlysAgent Web 后端（FastAPI，harness 宿主）"
 requires-python = ">=3.12"
 dependencies = [

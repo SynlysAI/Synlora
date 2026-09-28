@@ -6,7 +6,7 @@
 
 平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）、**文件工作台**（`file.read/write/edit/list/search`：局部精确替换与内容搜索宿主直跑，零沙箱开销）。后台长任务走统一 Job 注册表（提交即返回、终态在右侧运行信息展示；**任务完成自动唤醒所属会话续跑**——对话进行中不打断，空闲时助手自动汇总结果，连续唤醒有上限防自激）。沙箱输出超限自动 **spill** 全文落工作区 `tmp/spill/`，模型可分段读回，截断不再等于丢失。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
 
-- 版本：1.4.0（正式版）
+- 版本：1.4.2（正式版）
 - 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
 
@@ -116,7 +116,7 @@ pm2 logs synlys-agent
 | `SANDBOX_JOB_DEFAULT_TIMEOUT_S` / `SANDBOX_JOB_MAX_TIMEOUT_S` | `1800` / `7200` | 后台沙箱任务独立默认/最大超时；不复用前台工具预算 |
 | `SANDBOX_DEPLOYMENT_ID` | 空（按 `DATA_DIR` 派生） | 精确标记本部署容器，供取消和重启清理 |
 
-其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`/`SANDBOX_DOCKER_NETWORK`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 插件机制（AI⁴MS 子平台接入）
 
@@ -134,6 +134,8 @@ pm2 logs synlys-agent
 
 扩展中心统一展示插件市场、MCP 接入和我的扩展。普通用户首期仅开放 Streamable HTTP MCP，可配置 URL、Headers、Bearer Token、启用状态，并支持测试连接和发现远程工具；凭证加密存储，接口只返回字段名和是否已配置。
 
+MCP 支持两档来源与会话级附加：**公共 MCP** 由管理员维护（catalog 第 4 类条目 `catalog/mcp/<id>/mcp.json`，支持 stdio 与 Streamable HTTP；管理后台「MCP 服务」页新增/覆盖编辑/恢复默认/策略控制/测试连接，写入即热重载生效），走市场安装模型（内置 = 全员可用只读）；**用户自建 MCP** 仍限 Streamable HTTP。聊天输入框「+ → MCP」面板可按会话勾选附加（我的 / 公共分组、连接状态徽标，默认不附加、切换即落库刷新），运行时附加集 = 会话勾选 ∪ 专家 `mcp_refs`（自建优先于公共同名），工具按 `mcp.<id>.<tool>` 命名注入本轮工具面，stdio 子进程懒拉起、失败销毁重建。
+
 三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。
 
 能力中心按「**市场 / 我的**」页签组织：市场是「可安装的内置条目」，我的 = 用户自建能力 + 已安装能力。用户在市场安装后可**启用 / 停用**（`user_capabilities.enabled`，停用优先于默认启用）；用户还可**自建技能与专家**（落各自 `{data_dir}/users/<uid>/{skills,experts}/`，技能同名全局唯一，内置条目不可编辑、想定制请自建换名）。**自建技能与专家仅本人可见**：文件只存在作者目录里（专家为纯文件事实源，不实例化进全局助手集合；`assistants` 集合仅存管理员资产——目录播种/插件播种/后台自建），专家选择列表由「集合管理员资产 ∪ 本人文件根专家」组装，会话绑定与运行期按 id 前缀路由解析。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。
@@ -142,15 +144,15 @@ pm2 logs synlys-agent
 
 点卡片进入**详情页**（路由 `/capabilities/<类型>/<条目 id>`），按条目类型展示技能说明与目录文件预览、专家人设与能力编排、插件配置字段与附属清单；**安装 / 卸载 / 启用 / 停用 / 编辑 / 删除**按类型在详情或扩展中心完成。**内置条目对普通用户只读**（标「内置 · 全员可用」，无启停与编辑入口），管理员在详情页有「在管理后台编辑」跳转直达对应管理页。
 
-后端接口：`/api/v1/market/{kind}`、`GET /api/v1/me/capabilities/{kind}/{item_id}`、`PUT /api/v1/me/capabilities/{kind}/{id}`、`/api/v1/me/{skills,experts}`、`POST /api/v1/me/skills/import`、`GET /api/v1/me/skills/{name}/files`、`GET /api/v1/me/skills/{name}/file`、`GET/POST/PATCH/DELETE /api/v1/me/mcps` 和 `POST /api/v1/me/mcps/{id}/test`。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+后端接口：`/api/v1/market/{kind}`、`GET /api/v1/me/capabilities/{kind}/{item_id}`、`PUT /api/v1/me/capabilities/{kind}/{id}`、`/api/v1/me/{skills,experts}`、`POST /api/v1/me/skills/import`、`GET /api/v1/me/skills/{name}/files`、`GET /api/v1/me/skills/{name}/file`、`GET/POST/PATCH/DELETE /api/v1/me/mcps`、`POST /api/v1/me/mcps/{id}/test`、`GET /api/v1/me/mcps/panel`（+ 面板合并视图）与 `GET/POST/PUT/DELETE /api/v1/admin/mcp[/{id}]`、`POST /api/v1/admin/mcp/{id}/{test,reset}`（公共 MCP 管理）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### 内置内容布局（catalog/）
 
-**位置即类型，加一个目录即扩展**：内置专家 / 技能 / 插件统一落在 `apps/web/backend/catalog/`（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`），由 `app/catalog/loader.py` 的 `scan_catalog()` 一次性扫入；`catalog/skills/` 作为**只读技能根**直接提供，`{data_dir}/public/skills/` 为可写公共层（同名公共层优先），用户自建技能另落 `{data_dir}/users/<uid>/skills/`。**harness 内不含任何内置内容（内容归宿主、机制归 harness）**，宿主的 `catalog/` 是数据目录而非 Python 包，非 editable 部署需与 `app/` 同级一起放。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+**位置即类型，加一个目录即扩展**：内置专家 / 技能 / 插件 / 公共 MCP 统一落在 `apps/web/backend/catalog/`（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`、`mcp/<id>/mcp.json`），由 `app/catalog/loader.py` 的 `scan_catalog()` 一次性扫入；`catalog/skills/` 作为**只读技能根**直接提供，`{data_dir}/public/skills/` 为可写公共层（同名公共层优先），用户自建技能另落 `{data_dir}/users/<uid>/skills/`。**harness 内不含任何内置内容（内容归宿主、机制归 harness）**，宿主的 `catalog/` 是数据目录而非 Python 包，非 editable 部署需与 `app/` 同级一起放。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
 
 ### Docker 沙箱（多用户/云部署）
 
-`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器断网、非 root、资源受限、每次调用后删除，运行用户动态对齐宿主工作区属主（Linux bind mount 权限对齐，保证容器内可写工作区；`SANDBOX_DOCKER_USER` 可显式覆盖）。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
+`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器默认断网（`SANDBOX_DOCKER_NETWORK=true` 可放开联网，仅建议可信内网部署）、非 root、资源受限、每次调用后删除，运行用户动态对齐宿主工作区属主（Linux bind mount 权限对齐，保证容器内可写工作区；`SANDBOX_DOCKER_USER` 可显式覆盖）。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
 
 ```bash
 docker build -t synlora-sandbox:latest docker/sandbox/

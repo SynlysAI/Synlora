@@ -20,6 +20,8 @@ export interface CreateSessionOptions {
   modelProviderId?: string | null
   /** 会话级插件开关；缺省不传该字段（= 跟随用户级可见集）。 */
   enabledPlugins?: string[] | null
+  /** 会话级 MCP 附加；缺省不传该字段（= 不附加任何 MCP）。 */
+  enabledMcp?: string[] | null
 }
 
 interface SessionsState {
@@ -41,6 +43,13 @@ interface SessionsState {
   draftEnabledPlugins: string[] | null
   /** 设置草稿态插件开关（仅在草稿态有意义）。 */
   setDraftPlugins: (plugins: string[] | null) => void
+  /**
+   * 草稿态下选定的 MCP 附加（null = 未做过任何选择；列表 = 附加这些）。
+   * 首次发送时随 `create` 一起写进会话。
+   */
+  draftEnabledMcp: string[] | null
+  /** 设置草稿态 MCP 附加（仅在草稿态有意义）。 */
+  setDraftMcp: (ids: string[] | null) => void
   /** load() 是否完成（启动引导依据）。 */
   loaded: boolean
   /** 拉取会话列表。 */
@@ -60,6 +69,8 @@ interface SessionsState {
   setModel: (id: string, providerId: string | null) => Promise<void>
   /** 切换会话级插件开关（plugins=null 恢复跟随用户级可见集；[] = 本会话禁用全部插件）。 */
   setEnabledPlugins: (id: string, plugins: string[] | null) => Promise<void>
+  /** 切换会话级 MCP 附加（ids=null 恢复不附加任何 MCP；[] = 同义清空）。 */
+  setEnabledMcp: (id: string, ids: string[] | null) => Promise<void>
   /** 删除会话（删除当前会话时清空 currentId）。 */
   remove: (id: string) => Promise<void>
   /** 切换当前会话。 */
@@ -73,6 +84,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   currentId: null,
   draftModelProviderId: null,
   draftEnabledPlugins: null,
+  draftEnabledMcp: null,
   loaded: false,
 
   load: async () => {
@@ -82,9 +94,10 @@ export const useSessionsStore = create<SessionsState>((set) => ({
 
   create: async (assistantId, options = {}) => {
     const { title = '', projectId = null, modelProviderId = null,
-            enabledPlugins } = options
+            enabledPlugins, enabledMcp } = options
     // 缺省的字段一律不传：不传 project_id = 无工作区会话（会话目录即工作区），
-    // model_provider_id 不传 = 跟随助手绑定，enabled_plugins 不传 = 跟随用户级可见集
+    // model_provider_id 不传 = 跟随助手绑定，enabled_plugins 不传 = 跟随用户级可见集，
+    // enabled_mcp 不传 = 不附加任何 MCP
     const session = await api<Session>('/api/v1/sessions', {
       method: 'POST',
       body: {
@@ -93,6 +106,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         ...(projectId ? { project_id: projectId } : {}),
         ...(modelProviderId ? { model_provider_id: modelProviderId } : {}),
         ...(enabledPlugins ? { enabled_plugins: enabledPlugins } : {}),
+        ...(enabledMcp ? { enabled_mcp: enabledMcp } : {}),
       },
     })
     // 新会话 updated_at 最新：插到列表头并选中
@@ -103,6 +117,8 @@ export const useSessionsStore = create<SessionsState>((set) => ({
   setDraftModel: (providerId) => set({ draftModelProviderId: providerId }),
 
   setDraftPlugins: (plugins) => set({ draftEnabledPlugins: plugins }),
+
+  setDraftMcp: (ids) => set({ draftEnabledMcp: ids }),
 
   rename: async (id, title) => {
     const updated = await api<Session>(`/api/v1/sessions/${id}`, {
@@ -138,6 +154,15 @@ export const useSessionsStore = create<SessionsState>((set) => ({
     set((s) => ({ sessions: s.sessions.map((x) => (x._id === id ? updated : x)) }))
   },
 
+  setEnabledMcp: async (id, ids) => {
+    // body 显式携带 null/列表：后端以此区分"恢复不附加"与显式集合
+    const updated = await api<Session>(`/api/v1/sessions/${id}`, {
+      method: 'PATCH',
+      body: { enabled_mcp: ids },
+    })
+    set((s) => ({ sessions: s.sessions.map((x) => (x._id === id ? updated : x)) }))
+  },
+
   remove: async (id) => {
     await api(`/api/v1/sessions/${id}`, { method: 'DELETE' })
     set((s) => ({
@@ -153,6 +178,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
     currentId: null,
     draftModelProviderId: null,
     draftEnabledPlugins: null,
+    draftEnabledMcp: null,
     loaded: false,
   }),
 }))

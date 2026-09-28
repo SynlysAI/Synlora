@@ -29,6 +29,9 @@ def _metadata(**overrides) -> ResearchContextMetadata:
         "allowed_tools": ["knowledge.search", "file.read"],
         "policy_id": "policy-1",
         "policy_hash": "policy-hash",
+        "scope_kind": "OWNER",
+        "scope_source": "chain_owner",
+        "policy_version": "research-agent-policy.v1",
     }
     payload.update(overrides)
     return ResearchContextMetadata.model_validate(payload)
@@ -50,6 +53,9 @@ def _plane_response(metadata: ResearchContextMetadata) -> dict:
             "allowed_tools": metadata.allowed_tools,
             "policy_id": metadata.policy_id,
             "policy_hash": metadata.policy_hash,
+            "scope_kind": metadata.scope_kind,
+            "scope_source": metadata.scope_source,
+            "policy_version": metadata.policy_version,
         },
     }
 
@@ -99,6 +105,7 @@ async def test_plane_event_client_uses_backend_token_and_idempotency():
     captured = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        captured["api_key"] = request.headers.get("X-API-Key")
         captured["authorization"] = request.headers.get("Authorization")
         captured["json"] = json.loads(request.content)
         return httpx.Response(201, json={"event_id": "event-1"})
@@ -114,7 +121,8 @@ async def test_plane_event_client_uses_backend_token_and_idempotency():
         transport=httpx.MockTransport(handler),
     )
     assert result == {"event_id": "event-1"}
-    assert captured["authorization"] == "Bearer service-token"
+    assert captured["api_key"] == "service-token"
+    assert captured["authorization"] is None
     assert captured["json"]["request_id"] == "request-1"
 
 

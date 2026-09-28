@@ -1,6 +1,7 @@
 """用户级 Streamable HTTP MCP 连接、工具发现与远程调用。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -12,6 +13,7 @@ import httpx
 from cryptography.fernet import InvalidToken
 
 from app.core.crypto import decrypt_key, encrypt_key
+from app.services.mcp_stdio import connect_stdio
 
 MCP_COLLECTION = "mcp_connections"
 MCP_PROTOCOL_VERSION = "2026-07-28"
@@ -28,18 +30,26 @@ class McpService:
     """MCP 连接配置与 HTTP JSON-RPC 客户端。"""
 
     def __init__(self, store: Any, fernet_key: str,
-                 client_factory: Callable[[], httpx.AsyncClient] | None = None) -> None:
-        """保存存储、密钥与 HTTP 客户端工厂。
+                 client_factory: Callable[[], httpx.AsyncClient] | None = None,
+                 catalog_mcps: Callable[[], dict[str, Any]] | None = None) -> None:
+        """保存存储、密钥、HTTP 客户端工厂与公共 MCP 目录。
 
         Args:
             store: DocumentStore 实例。
             fernet_key: Fernet key；空表示开发环境明文存储。
             client_factory: 测试或定制 HTTP 客户端工厂。
+            catalog_mcps: 公共 MCP 目录提供者（{id: McpPackage}，实时求值，
+                配合管理端写入后的 catalog 热重载）；None 表示无公共条目。
         """
         self._store = store
         self._fernet_key = fernet_key
         self._client_factory = client_factory or (
             lambda: httpx.AsyncClient(timeout=httpx.Timeout(30.0)))
+        self._catalog_mcps = catalog_mcps or (lambda: {})
+        self._public_status: dict[str, dict] = {}
+        # stdio 子进程缓存（{mcp_id: StdioMcpClient}）与单飞锁（防并发重复 spawn）
+        self._stdio_clients: dict[str, Any] = {}
+        self._stdio_locks: dict[str, asyncio.Lock] = {}
 
     async def list_for_user(self, user_id: str) -> list[dict]:
         """列出用户的 MCP 连接，不回传任何密钥明文。"""
@@ -180,6 +190,211 @@ class McpService:
             config["tools"] = tools
             out.append(config)
         return out
+
+    def set_catalog_provider(self, provider: Callable[[], dict[str, Any]]) -> None:
+        """注入公共 MCP 目录提供者（main 装配期回调，晚于构造）。"""
+        self._catalog_mcps = provider
+
+    async def resolve_runtime_mcps(self, user_id: str, mcp_ids: list[str],
+                                   visible_catalog_ids: "set[str]") -> list[dict]:
+        """解析本轮要附加的 MCP 集合（自建优先、公共按可见性、失败跳过）。
+
+        对每个 id（去重）：用户自建文档存在即遮蔽公共同名条目（停用则整体
+        跳过，不回落）；否则公共条目须在 visible_catalog_ids 内才使用。
+        连接失败/无工具的条目静默跳过（专家 mcp_refs 与会话勾选共用此口径）。
+
+        Args:
+            user_id: 用户 sub。
+            mcp_ids: 本轮引用的 MCP id（会话勾选 ∪ 专家 mcp_refs）。
+            visible_catalog_ids: 该用户可见的公共 MCP id 集合
+                （CapabilityService.visible_ids(user, "mcp")）。
+
+        Returns:
+            连接列表，每项 {id, name, source, transport, tools}。
+        """
+        out: list[dict] = []
+        for mcp_id in dict.fromkeys(str(i) for i in mcp_ids if i):
+            doc = await self._store.get(MCP_COLLECTION, mcp_doc_id(user_id, mcp_id))
+            if doc is not None and doc.get("user_id") == user_id:
+                # 自建存在即遮蔽公共同名条目；停用整体跳过
+                if doc.get("enabled") is not True:
+                    continue
+                try:
+                    config = await self.resolved(user_id, mcp_id)
+                    tools = list(config.get("tools") or [])
+                    if not tools:
+                        tools = await self.discover_tools(user_id, mcp_id, persist=True)
+                except Exception:
+                    continue
+                out.append({"id": mcp_id, "name": config["name"],
+                            "source": "user", "transport": "streamable-http",
+                            "tools": tools})
+                continue
+            pkg = self._catalog_mcps().get(mcp_id)
+            if pkg is None or mcp_id not in visible_catalog_ids:
+                continue
+            try:
+                tools = await self.discover_public_tools(mcp_id)
+            except Exception:
+                continue
+            out.append({"id": mcp_id, "name": pkg.name, "source": "catalog",
+                        "transport": pkg.transport, "tools": tools})
+        return out
+
+    async def call_runtime_tool(self, user_id: str, source: str, mcp_id: str,
+                                tool_name: str, arguments: dict) -> dict:
+        """按来源分发一次远程工具调用。
+
+        Args:
+            user_id: 用户 sub（自建来源用于取配置）。
+            source: "user" | "catalog"（resolve_runtime_mcps 返回值）。
+            mcp_id: MCP id。
+            tool_name: 远程工具名。
+            arguments: 工具参数。
+
+        Returns:
+            MCP tools/call 的原始 result（content/isError）。
+
+        Raises:
+            KeyError: 条目不存在。
+            RuntimeError: 连接或协议失败。
+        """
+        if source == "user":
+            return await self.call_tool(user_id, mcp_id, tool_name, arguments)
+        pkg = self._public_pkg(mcp_id)
+        if pkg.transport == "stdio":
+            return await self._stdio_request(
+                mcp_id, "tools/call",
+                {"name": tool_name, "arguments": arguments})
+        return await self._request(
+            self._public_config(pkg), "tools/call",
+            {"name": tool_name, "arguments": arguments})
+
+    def _public_pkg(self, mcp_id: str) -> Any:
+        """取公共 MCP 包。
+
+        Args:
+            mcp_id: MCP id。
+
+        Returns:
+            McpPackage。
+
+        Raises:
+            KeyError: 公共条目不存在。
+        """
+        pkg = self._catalog_mcps().get(mcp_id)
+        if pkg is None:
+            raise KeyError(f"公共 MCP 不存在: {mcp_id}")
+        return pkg
+
+    @staticmethod
+    def _public_config(pkg: Any) -> dict:
+        """把公共包转成 HTTP 调用配置（与用户自建 resolved() 同构）。"""
+        return {
+            "id": pkg.id, "name": pkg.name, "url": pkg.url,
+            "headers": dict(pkg.headers), "bearer_token": pkg.bearer_token,
+        }
+
+    def public_status(self, mcp_id: str) -> dict:
+        """公共 MCP 的探测状态（无记录视为未检测）。"""
+        return dict(self._public_status.get(mcp_id) or {
+            "status": "unchecked", "last_error": "", "tool_count": 0, "checked_at": None,
+        })
+
+    async def _stdio_request(self, mcp_id: str, method: str, params: dict) -> dict:
+        """对公共 stdio MCP 发请求：懒 spawn + 单飞锁 + 失败销毁（下次重建）。
+
+        Args:
+            mcp_id: MCP id。
+            method: JSON-RPC 方法名。
+            params: 参数。
+
+        Raises:
+            KeyError: 公共条目不存在。
+            RuntimeError: 连接或协议失败。
+        """
+        pkg = self._public_pkg(mcp_id)
+        if pkg.transport != "stdio":
+            raise RuntimeError(f"MCP {mcp_id} 不是 stdio transport")
+        lock = self._stdio_locks.setdefault(mcp_id, asyncio.Lock())
+        async with lock:
+            client = self._stdio_clients.get(mcp_id)
+            if client is None or not client.alive:
+                if client is not None:
+                    await client.close()
+                client = await connect_stdio(pkg)
+                self._stdio_clients[mcp_id] = client
+            try:
+                return await client.request(method, params)
+            except Exception:
+                # 死连接就地销毁：下次调用走重建，不再等一轮超时
+                await client.close()
+                self._stdio_clients.pop(mcp_id, None)
+                raise
+
+    async def aclose(self) -> None:
+        """应用退出清理：关闭全部 stdio 子进程。"""
+        for client in list(self._stdio_clients.values()):
+            try:
+                await client.close()
+            except Exception:
+                pass
+        self._stdio_clients.clear()
+
+    async def invalidate_public_cache(
+            self, mcp_ids: set[str] | None = None) -> None:
+        """丢弃公共 MCP 的进程缓存与探测状态（配置变更后必须重建才生效）。
+
+        stdio 客户端的 command/env/args 在 spawn 时固化，改了公共 MCP 配置
+        而沿用旧子进程等于改动不生效；探测状态同步作废（等下次测试连接重写，
+        免得管理页显示的是旧配置的连接结果）。
+
+        Args:
+            mcp_ids: 要失效的 id 集合；None 表示全部失效。
+        """
+        targets = (
+            set(self._stdio_clients) | set(self._public_status)
+            if mcp_ids is None else set(mcp_ids)
+        )
+        for mcp_id in targets:
+            client = self._stdio_clients.pop(mcp_id, None)
+            if client is not None:
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+            self._public_status.pop(mcp_id, None)
+
+    async def discover_public_tools(self, mcp_id: str) -> list[dict]:
+        """连接公共 MCP 并读取工具列表（http 走无状态短连接；stdio 走子进程客户端）。
+
+        Raises:
+            KeyError: 公共条目不存在。
+            RuntimeError: 连接或协议失败。
+        """
+        pkg = self._public_pkg(mcp_id)
+        if pkg.transport == "stdio":
+            result = await self._stdio_request(mcp_id, "tools/list", {})
+        else:
+            result = await self._request(self._public_config(pkg), "tools/list", {})
+        return [self._normalize_tool(item)
+                for item in result.get("tools") or [] if isinstance(item, dict)]
+
+    async def test_public_connection(self, mcp_id: str) -> dict:
+        """测试公共 MCP 连接并更新状态缓存。"""
+        try:
+            tools = await self.discover_public_tools(mcp_id)
+        except Exception as exc:
+            self._public_status[mcp_id] = {
+                "status": "error", "last_error": str(exc),
+                "tool_count": 0, "checked_at": time.time(),
+            }
+            raise
+        self._public_status[mcp_id] = {
+            "status": "connected", "last_error": "",
+            "tool_count": len(tools), "checked_at": time.time(),
+        }
+        return {"ok": True, "tools": tools}
 
     async def _request(self, config: dict, method: str, params: dict) -> dict:
         """优先使用 2026-07-28 无状态协议，失败时兼容旧握手协议。"""

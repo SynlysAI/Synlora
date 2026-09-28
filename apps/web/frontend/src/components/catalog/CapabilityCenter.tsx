@@ -322,6 +322,9 @@ function CapabilityList({
 
   /** 启用/停用（我的页签的快按钮）。 */
   const handleToggle = async (item: MyCapability) => {
+    // 自建技能/专家没有 user_capabilities 安装记录，启用态固定为 true；
+    // 这里只做防御，避免未来其它入口误把自建条目提交到启停接口。
+    if (item.source !== 'installed') return
     setBusy(`${item.kind}:${item.id}`)
     try {
       await setEnabled(item.kind, item.id, !item.enabled)

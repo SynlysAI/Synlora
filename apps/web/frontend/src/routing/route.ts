@@ -11,7 +11,7 @@
  */
 
 /** 管理页页签（常规/模型服务/助手管理/技能管理/插件）。 */
-export type AdminTab = 'general' | 'models' | 'assistants' | 'skills' | 'plugins'
+export type AdminTab = 'general' | 'models' | 'assistants' | 'skills' | 'plugins' | 'mcp'
 
 /** 能力类型（能力中心左导航）。 */
 export type CapabilityKind = 'expert' | 'skill' | 'plugin'

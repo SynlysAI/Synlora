@@ -44,6 +44,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
 | `SANDBOX_STRICT` | `false` | docker 不可用时：`false` 回退本机执行（事件标 `sandbox=local-weak`）；`true` 拒绝执行（fail-closed） |
 | `SANDBOX_MEM_LIMIT` / `SANDBOX_CPUS` / `SANDBOX_PIDS_LIMIT` | `512m` / `1.0` / `256` | docker 模式单容器资源限额 |
 | `SANDBOX_DOCKER_USER` | 空 | 容器内运行用户（空 = 镜像默认非 root 用户） |
+| `SANDBOX_DOCKER_NETWORK` | `false` | 容器网络：`false` 断网；`true` 放开（可 `pip install`、访问外网，但也因此能到达宿主可达的内网服务与云元数据地址——仅可信内网部署开启，公网/多租户部署应改用 egress 代理或专用网络） |
 
 ## AI⁴MS 子平台接入（插件机制）
 
