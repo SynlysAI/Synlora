@@ -148,16 +148,17 @@ export default function MinePanel({
                   ) : (
                     <CardBadge>{item.source === 'mine' ? '自建' : '已安装'}</CardBadge>
                   )}
-                  {item.source !== 'builtin' && (
+                  {item.source === 'installed' && (
                     <CardBadge>{item.enabled ? '已启用' : '已停用'}</CardBadge>
                   )}
                   {item.revoked && <CardBadge>已被管理员下架</CardBadge>}
                 </>
               }
               actionSlot={
+                // 自建条目没有 user_capabilities 安装记录，始终启用，只提供编辑/删除。
                 // 内置对普通用户只读；下架条目后端启停会 404，只保留详情页的卸载入口。
                 // 用开关而非图标按钮：图标表达不了"当前启用中"，开关本身就是状态载体。
-                item.source === 'builtin' || item.revoked
+                item.source !== 'installed' || item.revoked
                   ? undefined
                   : (
                     <Switch
