@@ -131,7 +131,7 @@ export interface PluginInfo {
 
 /** 能力目录条目（对应后端 app/catalog/service.py 的 market_items）。 */
 export interface CatalogItem {
-  kind: 'expert' | 'skill' | 'plugin'
+  kind: 'expert' | 'skill' | 'plugin' | 'mcp'
   id: string
   name: string
   description: string
@@ -148,6 +148,8 @@ export interface CatalogItem {
   config_schema?: PluginConfigField[]
   /** 仅插件行返回：管理员公共配置已就绪的字段名（这些留空即用系统配置） */
   config_ready_keys?: string[]
+  /** 仅 MCP 行返回：连接形态（stdio / streamable-http）。 */
+  transport?: string
 }
 
 /** 用户 MCP 扩展的安全视图。 */

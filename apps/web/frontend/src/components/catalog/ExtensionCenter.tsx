@@ -21,9 +21,11 @@ type Tab = 'market' | 'mcp' | 'mine'
 /** 插件与 MCP 的统一扩展管理页。 */
 export default function ExtensionCenter() {
   const plugins = useCatalogStore((state) => state.byKind.plugin)
+  const catalogMcps = useCatalogStore((state) => state.byKind.mcp)
   const marketLoaded = useCatalogStore((state) => state.loaded)
   const loadMarket = useCatalogStore((state) => state.loadMarket)
   const install = useCatalogStore((state) => state.install)
+  const uninstall = useCatalogStore((state) => state.uninstall)
   const setEnabled = useCatalogStore((state) => state.setEnabled)
   const mine = useMyCapabilitiesStore((state) => state.items)
   const loadMine = useMyCapabilitiesStore((state) => state.loadMine)
@@ -47,6 +49,10 @@ export default function ExtensionCenter() {
     const q = query.trim().toLowerCase()
     return q ? plugins.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(q)) : plugins
   }, [plugins, query])
+  const filteredMcps = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return q ? catalogMcps.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(q)) : catalogMcps
+  }, [catalogMcps, query])
   const installedPlugins = mine.filter((item) => item.kind === 'plugin')
 
   const installPlugin = async (item: CatalogItem) => {
@@ -71,6 +77,32 @@ export default function ExtensionCenter() {
       await setEnabled('plugin', item.id, !item.enabled)
       await loadMine().catch(() => undefined)
       toast('success', item.enabled ? `已停用 ${item.name}` : `已启用 ${item.name}`)
+    } catch (err) {
+      toast('error', errorText(err))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  /** 安装公共 MCP（无个人配置表单，与技能同路径：只写安装记录）。 */
+  const installMcp = async (item: CatalogItem) => {
+    setBusy(`install-mcp:${item.id}`)
+    try {
+      await install('mcp', item.id)
+      toast('success', `已安装 ${item.name}`)
+    } catch (err) {
+      toast('error', errorText(err))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  /** 卸载公共 MCP。 */
+  const uninstallMcp = async (item: CatalogItem) => {
+    setBusy(`uninstall-mcp:${item.id}`)
+    try {
+      await uninstall('mcp', item.id)
+      toast('success', `已卸载 ${item.name}`)
     } catch (err) {
       toast('error', errorText(err))
     } finally {
@@ -111,6 +143,31 @@ export default function ExtensionCenter() {
           <div className="mt-5 grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(360px,1fr))]">
             {filteredPlugins.map((item) => <CapabilityCard key={item.id} title={item.name} description={item.description} badges={<CardBadge>{item.default_enabled ? '内置 · 全员可用' : item.installed ? '已安装' : '未安装'}</CardBadge>} actionIcon={!item.installed && !item.default_enabled ? <span>＋</span> : undefined} actionLabel={`安装 ${item.name}`} actionBusy={busy === `install:${item.id}`} onAction={() => void installPlugin(item)} onClick={() => useRouterStore.getState().navigate({ kind: 'capability-detail', capabilityKind: 'plugin', itemId: item.id })} />)}
             {filteredPlugins.length === 0 && <p className="col-span-full py-12 text-center text-sm text-[var(--sa-alias-label-caption)]">暂无匹配插件</p>}
+          </div>
+        )
+      )}
+
+      {tab === 'market' && (
+        !marketLoaded ? null : (
+          <div className="mt-6">
+            <h3 className="text-sm font-medium text-[var(--sa-alias-label-primary)]">公共 MCP</h3>
+            <div className="mt-3 grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(360px,1fr))]">
+              {filteredMcps.map((item) => (
+                <CapabilityCard key={item.id} title={item.name} description={item.description}
+                  badges={<>
+                    <CardBadge>{item.transport === 'stdio' ? 'stdio' : 'HTTP'}</CardBadge>
+                    <CardBadge>{item.default_enabled ? '内置 · 全员可用' : item.installed ? '已安装' : '未安装'}</CardBadge>
+                  </>}
+                  actionIcon={!item.installed && !item.default_enabled ? <span>＋</span> : undefined}
+                  actionLabel={!item.installed && !item.default_enabled
+                    ? `安装 ${item.name}`
+                    : item.installed && !item.default_enabled ? `卸载 ${item.name}` : undefined}
+                  actionBusy={busy === `install-mcp:${item.id}` || busy === `uninstall-mcp:${item.id}`}
+                  onAction={() => void (item.installed ? uninstallMcp(item) : installMcp(item))}
+                  onClick={() => undefined} />
+              ))}
+              {filteredMcps.length === 0 && <p className="col-span-full py-8 text-center text-sm text-[var(--sa-alias-label-caption)]">暂无公共 MCP</p>}
+            </div>
           </div>
         )
       )}

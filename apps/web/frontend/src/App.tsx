@@ -8,7 +8,7 @@
  * ready 前（init 校验 token 中）全屏 loading；未登录渲染登录页。
  */
 import { useEffect } from 'react'
-import { AdminLayout, GeneralAdmin, ModelsAdmin, AssistantsAdmin, SkillsAdmin, PluginsAdmin } from '@/components/admin'
+import { AdminLayout, GeneralAdmin, ModelsAdmin, AssistantsAdmin, SkillsAdmin, PluginsAdmin, McpAdmin } from '@/components/admin'
 import { AppShell } from '@/components/layout'
 import { CapabilityCenter } from '@/components/catalog'
 import { ConversationNotFound } from '@/components/chat'
@@ -59,8 +59,10 @@ function App() {
           <AssistantsAdmin />
         ) : route.tab === 'skills' ? (
           <SkillsAdmin />
-        ) : (
+        ) : route.tab === 'plugins' ? (
           <PluginsAdmin />
+        ) : (
+          <McpAdmin />
         )}
       </AdminLayout>
     )
