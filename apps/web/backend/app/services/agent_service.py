@@ -119,7 +119,7 @@ async def assemble_mcp_tools(
         run_registry: 本轮运行的工具注册表。
 
     Returns:
-        注册成功的 MCP 工具名列表（并入白名单）。
+        注册成功的 MCP 工具名列表（由调用侧独立并集进本轮工具集）。
     """
     mcp_ids = list(dict.fromkeys(
         [str(i) for i in (session_mcp_ids or []) if i]
@@ -541,11 +541,15 @@ class AgentService:
                     visible_plugin_tools = visible_tools & keep
             tool_names = select_runtime_tools(
                 list(run_registry.names),
-                whitelist=list(dict.fromkeys([*whitelist, *mcp_tool_names])),
+                whitelist=whitelist,
                 sandbox=executor.sandbox,
                 all_plugin_tools=all_plugin_tools,
                 visible_plugin_tools=visible_plugin_tools,
             )
+            # MCP 工具独立并集：注册时已按可见性交集过滤，不能拼进专家白名单——
+            # 否则未选专家时白名单被撑成非空，select_runtime_tools 会弃用注册表
+            # 全部内置工具（用户启用任一 MCP 后内置工具集体消失）
+            tool_names = list(dict.fromkeys([*tool_names, *mcp_tool_names]))
             tool_names = apply_research_tool_policy(tool_names, research_context)
             # 图片阅读双重门控：模型多模态 +（助手未限白名单或白名单显式包含）
             if provider_cfg.multimodal and (not whitelist or "file.read_image" in whitelist):
