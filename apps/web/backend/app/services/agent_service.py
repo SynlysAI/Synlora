@@ -100,6 +100,78 @@ def apply_research_plugin_policy(plugin_ids: list[str], research_context: dict |
     return [plugin_id for plugin_id in plugin_ids if plugin_id in allowed]
 
 
+async def assemble_mcp_tools(
+    mcp_service: Any, capability_service: Any, user_sub: str,
+    session_mcp_ids: list[str], expert_mcp_ids: list[str],
+    run_registry: ToolRegistry,
+) -> list[str]:
+    """把会话勾选 ∪ 专家引用的 MCP 解析为工具并注册进 run_registry。
+
+    解析口径见 McpService.resolve_runtime_mcps（自建优先、可见性交集、
+    失败静默跳过）；工具命名 mcp.<id>.<safe_name>，撞名跳过（既有口径）。
+
+    Args:
+        mcp_service: MCP 服务。
+        capability_service: 能力服务（算公共 MCP 可见集；None 时公共条目全部不可见）。
+        user_sub: 用户 sub。
+        session_mcp_ids: 会话勾选的 MCP id（enabled_mcp）。
+        expert_mcp_ids: 专家绑定的 MCP id（mcp_refs）。
+        run_registry: 本轮运行的工具注册表。
+
+    Returns:
+        注册成功的 MCP 工具名列表（并入白名单）。
+    """
+    mcp_ids = list(dict.fromkeys(
+        [str(i) for i in (session_mcp_ids or []) if i]
+        + [str(i) for i in (expert_mcp_ids or []) if i]))
+    if not mcp_ids:
+        return []
+    if capability_service is not None:
+        visible = await capability_service.visible_ids(user_sub, "mcp")
+    else:
+        visible = set()
+    connections = await mcp_service.resolve_runtime_mcps(user_sub, mcp_ids, visible)
+    tool_names: list[str] = []
+    for connection in connections:
+        mcp_id = str(connection["id"])
+        source = str(connection["source"])
+        for remote_tool in connection.get("tools") or []:
+            remote_name = str(remote_tool.get("name") or "")
+            safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", remote_name)
+            local_name = f"mcp.{mcp_id}.{safe_name}"
+            if not remote_name or run_registry.find(local_name) is not None:
+                continue
+
+            async def execute_mcp(_ctx, args, *, mcp_source=source,
+                                  connection_id=mcp_id, tool_name=remote_name):
+                result = await mcp_service.call_runtime_tool(
+                    user_sub, mcp_source, connection_id, tool_name, args)
+                parts = result.get("content") or []
+                text = "\n".join(
+                    str(part.get("text") or "")
+                    for part in parts
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ).strip()
+                return ToolResult(
+                    ok=result.get("isError") is not True,
+                    content=text or json.dumps(result, ensure_ascii=False),
+                    data={"mcp_id": connection_id, "result": result},
+                    error=("mcp_tool_error"
+                           if result.get("isError") is True else None),
+                )
+
+            run_registry.register(ToolDefinition(
+                name=local_name,
+                description=str(remote_tool.get("description") or remote_name),
+                parameters=(remote_tool.get("input_schema")
+                            or {"type": "object", "properties": {}}),
+                execute=execute_mcp,
+                timeout_s=60.0,
+            ))
+            tool_names.append(local_name)
+    return tool_names
+
+
 class ActiveRun:
     """一次进行中的对话运行（queue 供 SSE 消费，done 标记收尾完成）。"""
 
@@ -427,48 +499,12 @@ class AgentService:
             run_registry = ToolRegistry()
             for name in _REGISTRY.names:
                 run_registry.register(_REGISTRY.get(name))
-            mcp_tool_names: list[str] = []
-            if self._mcp_service is not None and assistant:
-                connections = await self._mcp_service.runtime_connections(
-                    user_sub,
-                    [str(item) for item in (assistant.get("mcp_refs") or []) if item],
-                )
-                for connection in connections:
-                    mcp_id = str(connection["id"])
-                    for remote_tool in connection.get("tools") or []:
-                        remote_name = str(remote_tool.get("name") or "")
-                        safe_name = re.sub(r"[^A-Za-z0-9_-]", "_", remote_name)
-                        local_name = f"mcp.{mcp_id}.{safe_name}"
-                        if not remote_name or run_registry.find(local_name) is not None:
-                            continue
-
-                        async def execute_mcp(_ctx, args, *, connection_id=mcp_id,
-                                              tool_name=remote_name):
-                            result = await self._mcp_service.call_tool(
-                                user_sub, connection_id, tool_name, args)
-                            parts = result.get("content") or []
-                            text = "\n".join(
-                                str(part.get("text") or "")
-                                for part in parts
-                                if isinstance(part, dict) and part.get("type") == "text"
-                            ).strip()
-                            return ToolResult(
-                                ok=result.get("isError") is not True,
-                                content=text or json.dumps(result, ensure_ascii=False),
-                                data={"mcp_id": connection_id, "result": result},
-                                error=("mcp_tool_error"
-                                       if result.get("isError") is True else None),
-                            )
-
-                        run_registry.register(ToolDefinition(
-                            name=local_name,
-                            description=str(remote_tool.get("description") or remote_name),
-                            parameters=(remote_tool.get("input_schema")
-                                        or {"type": "object", "properties": {}}),
-                            execute=execute_mcp,
-                            timeout_s=60.0,
-                        ))
-                        mcp_tool_names.append(local_name)
+            mcp_tool_names = await assemble_mcp_tools(
+                self._mcp_service, self._capability_service, user_sub,
+                list(enabled_mcp or []),
+                [str(i) for i in ((assistant or {}).get("mcp_refs") or []) if i],
+                run_registry,
+            ) if self._mcp_service is not None else []
             run_pipeline = ToolPipeline(run_registry)
             # 执行器就在这里解析（后面 ctx.extra 还要用同一个），拿它的 sandbox 标记
             # 写进提示词：模型必须知道代码执行的能力边界（docker 断网、跑完即删；
