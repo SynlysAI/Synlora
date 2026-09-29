@@ -17,9 +17,10 @@ tags:
 | **合并/拆分/旋转/加密** | `pypdf`（`PdfWriter`） |
 | **从零生成 PDF** | `reportlab`（中文字体注册是第一坑，见下） |
 
-> **Synlora 沙箱适配**：`pypdf` / `pdfplumber` / `reportlab` **已预装**，直接 import，
-> **禁止 pip/uv 安装**（沙箱离线）。当前目录是会话工作区根，PDF 在 `files/`，
-> 产物写 `output/`。无 pdftotext / LibreOffice / PyMuPDF；官方技能的 `scripts/`
+> **Synlora 沙箱适配**：`pypdf` / `pdfplumber` / `reportlab` / `PyMuPDF`（import 名 `fitz`）
+> **已预装**，直接 import，**禁止 pip/uv 安装**（沙箱离线）。当前目录是会话工作区根，
+> PDF 在 `files/`，产物写 `output/`。另有命令行 `pdftotext` / `pdfimages`（poppler-utils）
+> 与 OCR `tesseract`（语言含 `chi_sim` / `eng`）；无 LibreOffice；官方技能的 `scripts/`
 > 不随附，等价能力按本技能的 Python 路线实现；高级参考见
 > [references/reference.md](references/reference.md)。
 
@@ -28,7 +29,8 @@ tags:
 - 优先 `pdfplumber`：`with pdfplumber.open(p) as pdf: page.extract_text()`，
   按页处理、带坐标（`extract_words` 可拿到词级位置做版面分析）。
 - **扫描件判定**：先抽 1-2 页统计字符数，平均每页字符数极低（如 < 50）即无文本层，
-  判为扫描件——**提示用户需要 OCR 且本环境未预装 OCR**，不要臆造内容。
+  判为扫描件——可改用命令行 `tesseract`（`tesseract in.png out -l chi_sim+eng`）做 OCR；
+  无法确定内容时如实说明，不要臆造。
 - 表格用 `page.extract_tables()`（返回行列表），跨页表格合并时保留表头并标注来源页码。
 - 加密 PDF：`pypdf` 报 `needs_pass` 时如实报告，**不要尝试暴力破解**。
 - 引用关键结论时标注来源页码。
