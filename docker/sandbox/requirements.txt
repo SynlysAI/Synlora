@@ -4,7 +4,7 @@
 # pdf: pypdf/pdfplumber/reportlab
 # rdkit: rdkit
 # experimental-design: pyDOE3
-# uncertainty-and-units: pint
+# uncertainty-and-units: pint/uncertainties
 pandas>=2.2
 matplotlib>=3.9
 openpyxl>=3.1
@@ -19,3 +19,27 @@ reportlab>=4.0
 rdkit>=2024.3
 pyDOE3>=1.0
 pint>=0.24
+uncertainties>=3.2
+
+# --- P0：技能正文声明「已预装」却曾缺失（import 即失败，勿删）---
+# statistical-analysis 正文按其验证版本写明接口与列名，须锁主版本：
+# pingouin 0.7 起 ttest 改为 ttest(x, y) 并改了结果列名，0.6.x 才与技能示例一致；
+# 贝叶斯段按 arviz 1.x 编写（ci_prob / az.plot_dist），arviz 1.x 只兼容 pymc 6.x
+# （pymc 5.x 的 backend 需 from arviz import InferenceData/concat，那是 arviz 0.x 的顶层 API）。
+pingouin>=0.6,<0.7
+pymc>=6,<7
+arviz>=1.2,<2
+
+# --- P1：技能正文点名 / 常用科研分析补全 ---
+# scikit-learn（EDA 聚类/降维）、polars（大表）、pyarrow（pandas 读写 parquet）、
+# xlrd（pandas 读旧版 .xls）、PyMuPDF（PDF 渲染取图，pdf 技能缺口）
+scikit-learn>=1.5
+polars>=1.0
+pyarrow>=17.0
+xlrd>=2.0
+PyMuPDF>=1.24
+networkx>=3.3
+sympy>=1.13
+biopython>=1.84
+# plotly 仅补 write_html；write_image 静态导出另需 kaleido + Chrome，未纳入
+plotly>=5.24
