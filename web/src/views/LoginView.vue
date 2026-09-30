@@ -22,7 +22,7 @@
           <h1 class="brand-text">
             <span v-if="brandOrgName" class="brand-org">{{ brandOrgName }}</span>
             <span v-if="brandOrgName && brandName !== brandOrgName" class="brand-separator"></span>
-            <span class="brand-main">{{ brandName }}</span>
+            <span v-if="!brandOrgName || brandName !== brandOrgName" class="brand-main">{{ brandName }}</span>
           </h1>
         </div>
       </div>
@@ -267,9 +267,9 @@
     <!-- 页面底部：版权信息等 -->
     <footer class="page-footer">
       <div class="footer-links">
-        <a href="https://github.com/xerrors" target="_blank">联系我们</a>
+        <a href="https://github.com/SynlysAI" target="_blank">联系我们</a>
         <span class="divider">|</span>
-        <a href="https://github.com/xerrors/Yuxi" target="_blank">使用帮助</a>
+        <a href="https://gcnpf55d0gns.feishu.cn/wiki/VyMAwRVa4i1bNMkEiifcgG22nrh?from=from_copylink" target="_blank">使用帮助</a>
       </div>
       <div class="copyright">
         &copy; {{ new Date().getFullYear() }} {{ brandName }}. All Rights Reserved.
