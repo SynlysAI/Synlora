@@ -98,7 +98,7 @@ class MinerUParser(BaseDocumentProcessor):
             file_path: 文件路径
             params: 处理参数
                 - lang_list: 语言列表 (默认: ["ch"])
-                - backend: 后端类型 (默认: "hybrid-auto-engine")
+                - backend: 后端类型 (默认: "pipeline")
                 - parse_method: 解析方法 (默认: "auto")
                 - start_page_id: 起始页码 (默认: 0)
                 - end_page_id: 结束页码 (默认: 99999)
@@ -124,7 +124,7 @@ class MinerUParser(BaseDocumentProcessor):
 
         data = {
             "lang_list": params.get("lang_list", ["ch"]),
-            "backend": params.get("backend", "hybrid-auto-engine"),
+            "backend": params.get("backend", "pipeline"),
             "parse_method": params.get("parse_method", "auto"),
             "formula_enable": params.get("formula_enable", True),
             "table_enable": params.get("table_enable", True),
