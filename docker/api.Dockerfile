@@ -52,8 +52,11 @@ COPY backend/uv.lock /app/uv.lock
 # 先复制 package 目录，因为 pyproject.toml 中 yuxi = { path = "package", editable = true }
 COPY backend/package /app/package
 
-# 如果网络还是不好，可以在后面添加 --index-url https://pypi.tuna.tsinghua.edu.cn/simple
-RUN uv sync --no-cache --group test --no-dev --frozen
+# 依赖下载：cache mount 让成功下载的包跨构建复用（失败重试不从头来），600s 超时容忍慢链路
+# 注意：挂 VPN 时国内源会绕海外出口变慢，要么关 VPN，要么换 https://pypi.org/simple
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_HTTP_TIMEOUT=600 uv sync --group test --no-dev --frozen \
+    --index-url http://mirrors.aliyun.com/pypi/simple
 
 # 复制 server 代码
 COPY backend/server /app/server
