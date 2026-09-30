@@ -131,7 +131,11 @@ const goToLogin = () => {
 }
 
 const openDocs = () => {
-  window.open('https://xerrors.github.io/Yuxi/', '_blank', 'noopener,noreferrer')
+  window.open(
+    'https://gcnpf55d0gns.feishu.cn/wiki/VyMAwRVa4i1bNMkEiifcgG22nrh?from=from_copylink',
+    '_blank',
+    'noopener,noreferrer'
+  )
 }
 
 const toggleTheme = () => {

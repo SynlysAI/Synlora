@@ -155,7 +155,7 @@
           需要了解评估基准生成原理？查看
           <a
             class="benchmark-help-link"
-            href="https://xerrors.github.io/Yuxi/intro/evaluation.html"
+            href="https://gcnpf55d0gns.feishu.cn/wiki/VyMAwRVa4i1bNMkEiifcgG22nrh?from=from_copylink"
             target="_blank"
             rel="noopener noreferrer"
           >
