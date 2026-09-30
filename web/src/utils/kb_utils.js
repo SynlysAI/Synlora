@@ -20,7 +20,8 @@ export const getKbTypeLabel = (type) => {
   const labels = {
     milvus: 'Yuxi',
     dify: 'Dify',
-    notion: 'Notion'
+    notion: 'Notion',
+    weknora: 'WeKnora'
   }
   return labels[normalized] || type
 }
@@ -38,12 +39,13 @@ export const getKbTypeColor = (type) => {
   const colors = {
     milvus: 'blue',
     dify: 'gold',
-    notion: 'purple'
+    notion: 'purple',
+    weknora: 'geekblue'
   }
   return colors[type] || 'blue'
 }
 
-const READ_ONLY_KB_TYPES = new Set(['dify', 'notion'])
+const READ_ONLY_KB_TYPES = new Set(['dify', 'notion', 'weknora'])
 
 export const isReadOnlyDatabase = (database, kbTypes = {}) => {
   const kbType = (
