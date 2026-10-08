@@ -34,7 +34,7 @@ Yuxi 是面向需要企业自部署的多用户 Agent 产品，且需要自己�
 
 ## 快速启动
 
-语析（Yuxi）完全基于 Docker 启动，服务和中间件主要包括：LangGraph、Vue、FastAPI、Milvus、Neo4j、PostgreSQL、MinerU、PaddleOCR。
+Synlora 完全基于 Docker 启动，服务和中间件主要包括：LangGraph、Vue、FastAPI、Milvus、Neo4j、PostgreSQL、MinerU、PaddleOCR。
 
 ### 前置条件
 

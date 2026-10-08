@@ -2,6 +2,12 @@
 
 Yuxi 是基于 LangGraph、FastAPI、Vue 和多种持久化服务构建的知识库与多智能体平台。Docker Compose 是开发拓扑的事实来源；修改不熟悉的模块前先阅读 [ARCHITECTURE.md](ARCHITECTURE.md)，再用符号搜索确认真实实现。
 
+## 项目背景与命名（重要）
+
+- 本项目基于开源项目 **Yuxi** 二次开发；目录名暂为 `Yuxi`，后续将整体改名为 **Synlora**。
+- **品牌名统一用 Synlora**：新写或修改的用户可见文案（系统提示词、界面标语、README、文档）一律自称 "Synlora"，不再使用旧名"语析"或"Yuxi"。
+- **标识符暂不改**：Python 包名 `yuxi`、compose 服务/镜像名、路径、环境变量前缀等技术标识符在整体改名前保持原样，避免破坏性重构；改名时再一次性统一。
+
 ## 每次任务先加载什么
 
 - [ARCHITECTURE.md](ARCHITECTURE.md)：稳定边界、主链路和架构不变量。
