@@ -8,9 +8,13 @@ import pytest
 from yuxi.agents.toolkits.buildin import sciverse
 
 
-WORKDIR = "/projects/2026-01-01_00-00-00_demo"
+WORKDIR = "/home/gem/user-data/projects/2026-01-01_00-00-00_demo"
 
-_SCOPE = {"runtime_scope_id": "run-1", "uid": "u-1", "workdir_relative_path": WORKDIR}
+_SCOPE = {
+    "runtime_scope_id": "run-1",
+    "uid": "u-1",
+    "workdir_relative_path": "projects/2026-01-01_00-00-00_demo",
+}
 
 
 def _runtime():
