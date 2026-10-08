@@ -204,6 +204,16 @@ Yuxi 把知识进入系统、Agent 执行任务和团队治理放在一条完整
 - 自由配置 Agent 的基座模型、知识挂载、工具调用与系统提示词。
 - 支持多个 SubAgents 异步并行执行深度调研、数据分析或内容生成。
 - 原生兼容 Skills 插件机制与 MCP（Model Context Protocol）标准协议。
+- 内置科研领域智能体（谱图解析 / 高分子预测 / 文献检索 / 学术研究），开箱即用。
+
+**内置领域智能体**：顶层智能体在智能体列表直接选择对话；子智能体由主智能体经 `subagents` 配置引用（派发前主智能体先向用户收齐输入参数，输入不完整时子智能体返回缺失清单）。对应能力同时以内置技能形式提供，可挂到任意智能体；上游未配置时工具返回明确的未配置错误，不影响其他能力。
+
+| 智能体 | 形态 | 能力 | 依赖配置 |
+| --- | --- | --- | --- |
+| academic-research 学术研究助手 | 顶层智能体 | 研究→写作→评审→修订→定稿全流程方法论（ARS 技能套件） | `web_search`（可选） |
+| spec-agent 谱图解析专家 | 子智能体 | 核磁正/反向预测与库检索；NMR/IR/GPC/Raman/LC-MS 五类谱图文件解析（同步等待） | `SPEC_AGENT_BASE_URL`（可选 `SPEC_AGENT_TOKEN`、`SPEC_TASK_MAX_WAIT_SECONDS`） |
+| poly-agent 高分子性能预测专家 | 子智能体 | 聚酰亚胺 Tg、氟基电解质配方、Raman 解析、竞聚率拟合、硅键评分 | `POLY_AGENT_BASE_URL` + 账号密码 |
+| sciverse 科技文献检索专家 | 子智能体 | 语义检索、结构化筛选、全文分页、附件下载 | `SCIVERSE_BASE_URL` + `SCIVERSE_API_TOKEN` |
 
 ![Yuxi 多智能体编排](https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260825152252874.png)
 
