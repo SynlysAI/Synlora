@@ -21,8 +21,10 @@ def _runtime():
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("SPEC_AGENT_BASE_URL", "http://spec.test")
-    monkeypatch.delenv("SPEC_AGENT_TOKEN", raising=False)
+    monkeypatch.delenv("AI4MS_USERNAME", raising=False)
+    monkeypatch.delenv("AI4MS_PASSWORD", raising=False)
     monkeypatch.delenv("SPEC_TASK_MAX_WAIT_SECONDS", raising=False)
+    spec_agent._token_provider.reset()
 
 
 @pytest.fixture(autouse=True)

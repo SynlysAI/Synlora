@@ -15,8 +15,8 @@ def _clean_token_cache():
 
 def _env(monkeypatch, complete=True):
     monkeypatch.setenv("POLY_AGENT_BASE_URL", "http://poly.test" if complete else "")
-    monkeypatch.setenv("POLY_AGENT_USERNAME", "u" if complete else "")
-    monkeypatch.setenv("POLY_AGENT_PASSWORD", "p" if complete else "")
+    monkeypatch.setenv("AI4MS_USERNAME", "u" if complete else "")
+    monkeypatch.setenv("AI4MS_PASSWORD", "p" if complete else "")
 
 
 def _login_ok(request: httpx.Request) -> httpx.Response:
@@ -31,6 +31,7 @@ async def test_unconfigured(monkeypatch):
     assert result["ok"] is False
     assert result["error"] == "poly_agent_unconfigured"
     assert "POLY_AGENT_BASE_URL" in result["message"]
+    assert "AI4MS_USERNAME" in result["message"]
 
 
 @pytest.mark.asyncio

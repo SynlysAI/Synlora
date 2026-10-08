@@ -2,7 +2,9 @@
 
 来源：Synlora 插件 catalog/plugins/spec_agent（tools.py 同步三件套平移；
 connectors.py 的五类异步任务改造为同步内嵌轮询工具，见文末 spec_task_* 部分）。
-认证只用静态 SPEC_AGENT_TOKEN（不迁移 ai4ms_token 代签机制）。
+认证走 AI4MS 平台账号（AI4MS_USERNAME / AI4MS_PASSWORD，经 /api/v1/auth/login
+换 token，与 Poly_Agent 同款接口、token 互不通用）；未配置账号时不发认证头
+（服务端未开鉴权的部署可用）。
 """
 
 import asyncio
@@ -15,6 +17,7 @@ import httpx
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import BaseModel, Field
 
+from yuxi.agents.toolkits.buildin._ai4ms_auth import Ai4msTokenProvider
 from yuxi.agents.toolkits.buildin._workspace_io import download_workspace_file
 from yuxi.agents.toolkits.registry import tool
 
@@ -24,12 +27,17 @@ NMR_REQUEST_TIMEOUT_S = 360.0
 # 测试注入 MockTransport 的钩子；None 时 httpx 使用默认传输
 _transport: httpx.BaseTransport | None = None
 
+# 本服务独立的 token 提供者（与 Poly_Agent 的 token 互不通用）
+_token_provider = Ai4msTokenProvider()
+
 
 def _settings() -> dict[str, str]:
-    """读取 Spec_Agent 环境变量配置。"""
+    """读取 Spec_Agent 环境变量配置（账号走全局 AI4MS_*）。"""
+    username, password = Ai4msTokenProvider.credentials()
     return {
         "base_url": (os.getenv("SPEC_AGENT_BASE_URL") or "").strip().rstrip("/"),
-        "token": (os.getenv("SPEC_AGENT_TOKEN") or "").strip(),
+        "username": username,
+        "password": password,
     }
 
 
@@ -47,9 +55,23 @@ def _make_client(**kwargs) -> httpx.AsyncClient:
     )
 
 
-def _headers(settings: dict[str, str]) -> dict[str, str]:
-    """构造请求头；未配置 token 时不发送认证头。"""
-    return {"Authorization": f"Bearer {settings['token']}"} if settings["token"] else {}
+async def _auth_headers(client: httpx.AsyncClient, base_url: str,
+                        username: str, password: str) -> dict[str, str]:
+    """构造请求头；配置了 AI4MS 账号时登录换 token，未配置时不发送认证头。
+
+    Args:
+        client: HTTP 客户端（复用已打开的连接与传输配置）。
+        base_url: 服务地址（已去尾斜杠）。
+        username: AI4MS 平台账号。
+        password: AI4MS 平台密码。
+
+    Returns:
+        请求头 dict；未配置账号时为空 dict。
+    """
+    if not username or not password:
+        return {}
+    token = await _token_provider.ensure_token(client, base_url, username, password)
+    return {"Authorization": f"Bearer {token}"}
 
 
 async def _call_nmrserver(path: str, payload: dict) -> dict:
@@ -71,9 +93,11 @@ async def _call_nmrserver(path: str, payload: dict) -> dict:
         )
     try:
         async with _make_client() as client:
+            headers = await _auth_headers(
+                client, settings["base_url"], settings["username"], settings["password"])
             resp = await client.post(
                 f"{settings['base_url']}/api/v1/nmrserver/{path}",
-                headers=_headers(settings),
+                headers=headers,
                 json=payload,
             )
     except httpx.TimeoutException as exc:
@@ -82,10 +106,14 @@ async def _call_nmrserver(path: str, payload: dict) -> dict:
         return _error("connection_error", f"无法连接谱图服务: {exc}")
     except httpx.HTTPError as exc:
         return _error("http_error", f"谱图服务请求失败: {exc}")
+    except RuntimeError as exc:
+        return _error("unauthorized", str(exc))
     if resp.status_code in (401, 403):
+        _token_provider.reset()  # 下次调用重新登录
         return _error(
             "unauthorized",
-            "访问凭证无效或已过期：请核对部署配置中的 SPEC_AGENT_TOKEN（这不是参数错误，请勿原样重试）",
+            "访问凭证无效或已过期：请核对 AI4MS 平台账号（AI4MS_USERNAME / AI4MS_PASSWORD）；"
+            "凭证缓存已清除，稍后重试将自动重新登录（这不是参数错误，请勿原样重试）",
         )
     if resp.status_code != 200:
         return _error("http_error", f"谱图服务返回 {resp.status_code}: {resp.text[:300]}")
@@ -247,9 +275,11 @@ def _unwrap(resp: httpx.Response, action: str) -> tuple[dict | None, dict | None
         (错误 dict 或 None, data dict 或 None)。
     """
     if resp.status_code in (401, 403):
+        _token_provider.reset()  # 下次调用重新登录
         return _error(
             "unauthorized",
-            "访问凭证无效或已过期：请核对 SPEC_AGENT_TOKEN（这不是参数错误，请勿原样重试）",
+            "访问凭证无效或已过期：请核对 AI4MS 平台账号（AI4MS_USERNAME / AI4MS_PASSWORD）；"
+            "凭证缓存已清除，稍后重试将自动重新登录（这不是参数错误，请勿原样重试）",
         ), None
     if resp.status_code != 200:
         return _error("http_error", f"{action}失败：上游返回 {resp.status_code} {resp.text[:200]}"), None
@@ -315,85 +345,94 @@ async def _run_spectra_task(
         )
     except ValueError:
         raise  # 路径类问题按参数错误抛出，由工具框架兜底
-    headers = _headers(settings)
     upstream_params = dict(params or {})
     if default_mode and not upstream_params.get("mode"):
         upstream_params["mode"] = default_mode
     base = settings["base_url"]
     max_wait = _task_max_wait_s()
     deadline = time.monotonic() + max_wait
-    async with _make_client(timeout=TASK_QUICK_TIMEOUT_S) as client:
-        try:
-            upload = await client.post(
-                f"{base}/api/v1/files/upload",
-                headers=headers,
-                files={"file": (file_name, file_bytes, "application/octet-stream")},
-                timeout=TASK_UPLOAD_TIMEOUT_S,
-            )
-        except httpx.HTTPError as exc:
-            return _error("http_error", f"上传谱图文件失败: {exc}")
-        err, data = _unwrap(upload, "上传谱图文件")
-        if err:
-            return err
-        file_id = data.get("file_id")
-        if not file_id:
-            return _error("upstream_error", f"上传谱图文件失败：上游未返回 file_id: {str(data)[:200]}")
-        try:
-            submit = await client.post(
-                f"{base}/api/v1/tasks/{endpoint}",
-                headers=headers,
-                json={"input": {"input_type": "file_id", "file_id": file_id},
-                      "params": upstream_params},
-            )
-        except httpx.HTTPError as exc:
-            return _error("http_error", f"提交解析任务失败: {exc}")
-        err, data = _unwrap(submit, "提交解析任务")
-        if err:
-            return err
-        task_id = data.get("task_id")
-        if not task_id:
-            return _error("upstream_error", f"提交解析任务失败：上游未返回 task_id: {str(data)[:200]}")
-        # 内嵌轮询：pending/queued/running → 终态
-        while True:
+    try:
+        async with _make_client(timeout=TASK_QUICK_TIMEOUT_S) as client:
+            headers = await _auth_headers(client, base, settings["username"], settings["password"])
             try:
-                status_resp = await client.get(f"{base}/api/v1/tasks/{task_id}", headers=headers)
+                upload = await client.post(
+                    f"{base}/api/v1/files/upload",
+                    headers=headers,
+                    files={"file": (file_name, file_bytes, "application/octet-stream")},
+                    timeout=TASK_UPLOAD_TIMEOUT_S,
+                )
             except httpx.HTTPError as exc:
-                return _error("http_error", f"查询任务状态失败（task_id={task_id}）: {exc}")
-            err, data = _unwrap(status_resp, "查询任务状态")
+                return _error("http_error", f"上传谱图文件失败: {exc}")
+            err, data = _unwrap(upload, "上传谱图文件")
             if err:
                 return err
-            status = str(data.get("status") or "").strip().lower()
-            if status in ("success", "completed"):
-                break
-            if status in ("failed", "canceled", "cancelled"):
-                try:
-                    result_resp = await client.get(
-                        f"{base}/api/v1/tasks/{task_id}/result", headers=headers)
-                    err, data = _unwrap(result_resp, "获取任务失败原因")
-                    reason = _error_text((data or {}).get("error")) if not err else err["message"]
-                except httpx.HTTPError:
-                    reason = "上游未返回失败原因"
-                return _error("upstream_failed", f"任务失败（task_id={task_id}）：{reason}")
-            if time.monotonic() > deadline:
-                return _error(
-                    "timeout",
-                    f"任务 {task_id} 超过 {int(max_wait)} 秒仍在 {status} 状态，本次调用放弃等待；"
-                    f"上游任务仍在运行，再次调用会重新提交新任务，请酌情调整参数后重试",
+            file_id = data.get("file_id")
+            if not file_id:
+                return _error("upstream_error", f"上传谱图文件失败：上游未返回 file_id: {str(data)[:200]}")
+            try:
+                submit = await client.post(
+                    f"{base}/api/v1/tasks/{endpoint}",
+                    headers=headers,
+                    json={"input": {"input_type": "file_id", "file_id": file_id},
+                          "params": upstream_params},
                 )
-            await asyncio.sleep(TASK_POLL_INTERVAL_S)
-        try:
-            result_resp = await client.get(f"{base}/api/v1/tasks/{task_id}/result", headers=headers)
-        except httpx.HTTPError as exc:
-            return _error("http_error", f"获取任务结果失败（task_id={task_id}）: {exc}")
-        err, data = _unwrap(result_resp, "获取任务结果")
-        if err:
-            return err
-        return {
-            "ok": True,
-            "task_id": task_id,
-            "status": "success",
-            "result": _render_result(data.get("result")),
-        }
+            except httpx.HTTPError as exc:
+                return _error("http_error", f"提交解析任务失败: {exc}")
+            err, data = _unwrap(submit, "提交解析任务")
+            if err:
+                return err
+            task_id = data.get("task_id")
+            if not task_id:
+                return _error("upstream_error", f"提交解析任务失败：上游未返回 task_id: {str(data)[:200]}")
+            # 内嵌轮询：pending/queued/running → 终态
+            while True:
+                try:
+                    status_resp = await client.get(f"{base}/api/v1/tasks/{task_id}", headers=headers)
+                except httpx.HTTPError as exc:
+                    return _error("http_error", f"查询任务状态失败（task_id={task_id}）: {exc}")
+                err, data = _unwrap(status_resp, "查询任务状态")
+                if err:
+                    return err
+                status = str(data.get("status") or "").strip().lower()
+                if status in ("success", "completed"):
+                    break
+                if status in ("failed", "canceled", "cancelled"):
+                    try:
+                        result_resp = await client.get(
+                            f"{base}/api/v1/tasks/{task_id}/result", headers=headers)
+                        err, data = _unwrap(result_resp, "获取任务失败原因")
+                        reason = _error_text((data or {}).get("error")) if not err else err["message"]
+                    except httpx.HTTPError:
+                        reason = "上游未返回失败原因"
+                    return _error("upstream_failed", f"任务失败（task_id={task_id}）：{reason}")
+                if time.monotonic() > deadline:
+                    return _error(
+                        "timeout",
+                        f"任务 {task_id} 超过 {int(max_wait)} 秒仍在 {status} 状态，本次调用放弃等待；"
+                        f"上游任务仍在运行，再次调用会重新提交新任务，请酌情调整参数后重试",
+                    )
+                await asyncio.sleep(TASK_POLL_INTERVAL_S)
+            try:
+                result_resp = await client.get(f"{base}/api/v1/tasks/{task_id}/result", headers=headers)
+            except httpx.HTTPError as exc:
+                return _error("http_error", f"获取任务结果失败（task_id={task_id}）: {exc}")
+            err, data = _unwrap(result_resp, "获取任务结果")
+            if err:
+                return err
+            return {
+                "ok": True,
+                "task_id": task_id,
+                "status": "success",
+                "result": _render_result(data.get("result")),
+            }
+    except httpx.TimeoutException as exc:
+        return _error("timeout", f"谱图服务响应超时: {exc}")
+    except httpx.ConnectError as exc:
+        return _error("connection_error", f"无法连接谱图服务: {exc}")
+    except httpx.HTTPError as exc:
+        return _error("http_error", f"谱图服务请求失败: {exc}")
+    except RuntimeError as exc:
+        return _error("unauthorized", str(exc))
 
 
 class SpecTaskInput(BaseModel):

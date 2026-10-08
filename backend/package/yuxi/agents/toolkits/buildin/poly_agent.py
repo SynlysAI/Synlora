@@ -1,13 +1,14 @@
 """Poly_Agent 高分子垂类预测内置工具。
 
 来源：Synlora 插件 catalog/plugins/poly_agent/tools.py 平移。
-差异：配置改读环境变量（POLY_AGENT_BASE_URL/USERNAME/PASSWORD）；
-工作区文件读取走 _workspace_io；ToolResult 改 dict 返回。
+差异：配置改读环境变量（POLY_AGENT_BASE_URL + 全局 AI4MS 账号）；
+工作区文件读取走 _workspace_io；登录换 token 走 _ai4ms_auth 公共模块；
+ToolResult 改 dict 返回。
 上游契约（Poly_Agent Backend 0.1.0，2026-09-22 实测）：
 - 垂类算法入口为 `POST /api/v1/research-engine/algorithm-runs`（algorithm_id +
   input_snapshot），同步阻塞执行，响应 data 内直接带 status 与 output_summary；
   若上游改异步（queued/running），兜底轮询详情接口直至终态；
-- 认证为平台自有账号体系（`POST /api/v1/auth/login` 换 token，12h 过期），
+- 认证为 AI4MS 平台账号体系（`POST /api/v1/auth/login` 换 token，12h 过期），
   token 进程内缓存 + 过期/401 自动重登；
 - Raman 解析需上传光谱文件，走 `POST /research-engine/algorithm-runs:multipart`
   （表单字段 `payload` 为 JSON 字符串，文件 part 名 spectrum_file）。
@@ -24,6 +25,7 @@ import httpx
 from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import BaseModel, Field
 
+from yuxi.agents.toolkits.buildin._ai4ms_auth import Ai4msTokenProvider
 from yuxi.agents.toolkits.buildin._workspace_io import download_workspace_file
 from yuxi.agents.toolkits.registry import tool
 
@@ -32,11 +34,9 @@ REQUEST_TIMEOUT_S = 600.0    # 读超时（上游同步执行模型推理，实�
 POLL_TIMEOUT_S = 60.0        # 轮询单个请求的读超时
 POLL_INTERVAL_S = 5.0        # 兜底轮询间隔（正常响应即终态，不进入轮询）
 UPLOAD_TIMEOUT_S = 120.0     # 光谱文件上传单独放宽
-TOKEN_REFRESH_MARGIN_S = 300.0   # 凭证到期前提前重登的余量
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 上游限制 10MiB，超限直接本地拒绝
 
 # 上游 base 路径段（与 /api/v1 拼接）
-LOGIN_PATH = "/api/v1/auth/login"
 RUNS_PATH = "/api/v1/research-engine/algorithm-runs"
 
 # 光谱文件扩展名 → MIME（上游 input_assets.mime_types 白名单内的子集）
@@ -50,23 +50,22 @@ SPECTRUM_MIME: dict[str, str] = {
 # 测试注入 MockTransport 的钩子；None 时 httpx 使用默认传输
 _transport: httpx.BaseTransport | None = None
 
-# 平台级凭证缓存（worker 单进程部署，模块级即进程级；跨用户共享同一账号）
-_token_cache: dict = {"token": "", "expires_at": 0.0}
-_token_lock = asyncio.Lock()
+# 本服务独立的 token 提供者（与 Spec_Agent 的 token 互不通用）
+_token_provider = Ai4msTokenProvider()
 
 
 def _reset_token_cache() -> None:
     """清空平台级 token 缓存（测试隔离用）。"""
-    _token_cache["token"] = ""
-    _token_cache["expires_at"] = 0.0
+    _token_provider.reset()
 
 
 def _settings() -> dict[str, str]:
-    """读取 Poly_Agent 环境变量配置。"""
+    """读取 Poly_Agent 环境变量配置（账号走全局 AI4MS_*）。"""
+    username, password = Ai4msTokenProvider.credentials()
     return {
         "base_url": (os.getenv("POLY_AGENT_BASE_URL") or "").strip().rstrip("/"),
-        "username": (os.getenv("POLY_AGENT_USERNAME") or "").strip(),
-        "password": (os.getenv("POLY_AGENT_PASSWORD") or "").strip(),
+        "username": username,
+        "password": password,
     }
 
 
@@ -103,84 +102,6 @@ def _error_text(error: object, fallback: str) -> str:
     if error:
         return str(error)
     return fallback
-
-
-async def _login(client: httpx.AsyncClient, base_url: str,
-                 username: str, password: str) -> tuple[str, float]:
-    """登录 Poly_Agent 换取访问凭证。
-
-    Args:
-        client: HTTP 客户端。
-        base_url: 服务地址（已去尾斜杠）。
-        username: 平台账号。
-        password: 平台密码。
-
-    Returns:
-        (access_token, 过期时刻的 Unix 秒)；上游未给 expires_at 时按 12h 兜底。
-
-    Raises:
-        RuntimeError: 上游拒绝登录或响应结构异常（message 为可读原因）。
-    """
-    resp = await client.post(
-        f"{base_url}{LOGIN_PATH}",
-        json={"username": username, "password": password})
-    if resp.status_code != 200:
-        detail = ""
-        try:
-            err_body = resp.json() or {}
-            err_data = err_body.get("data")
-            detail = str((err_data or {}).get("detail") or err_body.get("message") or "")
-        except ValueError:
-            pass
-        raise RuntimeError(
-            f"登录失败：{detail or f'上游返回 {resp.status_code} {resp.text[:200]}'}")
-    try:
-        body = resp.json() or {}
-    except ValueError as exc:
-        raise RuntimeError(f"登录失败：上游返回非 JSON: {resp.text[:200]}") from exc
-    if body.get("code") != 0:
-        raise RuntimeError(f"登录失败：{body.get('message') or body.get('code')}")
-    data = body.get("data")
-    if not isinstance(data, dict) or not data.get("access_token"):
-        raise RuntimeError(f"登录失败：上游未返回 access_token: {str(data)[:200]}")
-    expires_at = float(data.get("expires_at") or (time.time() + 12 * 3600))
-    return str(data["access_token"]), expires_at
-
-
-async def _ensure_token(client: httpx.AsyncClient, base_url: str,
-                        username: str, password: str) -> str:
-    """取当前有效凭证（缓存命中直接用，否则登录并缓存；双重检查锁）。
-
-    Args:
-        client: HTTP 客户端。
-        base_url: 服务地址（已去尾斜杠）。
-        username: 平台账号。
-        password: 平台密码。
-
-    Returns:
-        有效的 access_token。
-
-    Raises:
-        RuntimeError: 登录失败（message 为可读原因）。
-    """
-    if (_token_cache["token"]
-            and _token_cache["expires_at"] - TOKEN_REFRESH_MARGIN_S > time.time()):
-        return _token_cache["token"]
-    async with _token_lock:
-        # 双重检查：等锁期间可能已被并发调用刷新
-        if (_token_cache["token"]
-                and _token_cache["expires_at"] - TOKEN_REFRESH_MARGIN_S > time.time()):
-            return _token_cache["token"]
-        token, expires_at = await _login(client, base_url, username, password)
-        _token_cache["token"] = token
-        _token_cache["expires_at"] = expires_at
-        return token
-
-
-def _clear_token() -> None:
-    """清空凭证缓存（401 后强制下次重登）。"""
-    _token_cache["token"] = ""
-    _token_cache["expires_at"] = 0.0
 
 
 async def _post_run(client: httpx.AsyncClient, base_url: str, token: str,
@@ -231,25 +152,24 @@ async def _run_algorithm(algorithm_id: str, input_snapshot: dict,
     if not base_url or not username or not password:
         return _error(
             "poly_agent_unconfigured",
-            "Poly_Agent 未配置：请在部署配置中设置环境变量 "
-            "POLY_AGENT_BASE_URL / POLY_AGENT_USERNAME / POLY_AGENT_PASSWORD",
+            "Poly_Agent 未配置：请在部署配置中设置环境变量 POLY_AGENT_BASE_URL "
+            "与 AI4MS 平台账号（AI4MS_USERNAME / AI4MS_PASSWORD）",
         )
     deadline = time.monotonic() + REQUEST_TIMEOUT_S
     try:
         async with _make_client() as client:
-            token = await _ensure_token(client, base_url, username, password)
+            token = await _token_provider.ensure_token(client, base_url, username, password)
             payload = {"algorithm_id": algorithm_id, "input_snapshot": input_snapshot}
             resp = await _post_run(client, base_url, token, payload, file_part)
             if resp.status_code in (401, 403):
                 # 凭证可能在缓存期内被上游吊销：强制重登后重试一次
-                _clear_token()
-                token = await _ensure_token(client, base_url, username, password)
+                token = await _token_provider.force_relogin(client, base_url, username, password)
                 resp = await _post_run(client, base_url, token, payload, file_part)
             if resp.status_code in (401, 403):
                 return _error(
                     "unauthorized",
-                    "访问凭证无效（重登后仍被拒绝）：请核对 POLY_AGENT_USERNAME / "
-                    "POLY_AGENT_PASSWORD，或确认该账号未被停用",
+                    "访问凭证无效（重登后仍被拒绝）：请核对 AI4MS 平台账号"
+                    "（AI4MS_USERNAME / AI4MS_PASSWORD），或确认该账号未被停用",
                 )
             if resp.status_code != 200:
                 return _error("http_error",
