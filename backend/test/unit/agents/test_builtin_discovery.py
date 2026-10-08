@@ -187,6 +187,10 @@ def test_shipping_skills_keep_required_dependencies():
         "spec-spectra",
         "poly-prediction",
         "sciverse-search",
+        "ars-deep-research",
+        "ars-academic-paper",
+        "ars-academic-paper-reviewer",
+        "ars-academic-pipeline",
     }
     assert found["knowledge-base"]["tool_dependencies"] == [
         "list_kbs",
