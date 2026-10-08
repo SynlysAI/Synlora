@@ -244,3 +244,17 @@ def test_builtin_skill_tool_dependencies_resolve():
     for spec in skill_service.list_builtin_skill_specs():
         for tool_name in spec["tool_dependencies"]:
             assert tool_name in registered, f"{spec['slug']} 依赖未注册的工具 {tool_name}"
+
+
+def test_synlora_tools_never_leak_into_default_buildin_category():
+    """Synlora 迁移工具用专属 category，不得进入默认 all 工具集。
+
+    一旦误改为 buildin，18 个谱图/文献工具会静默出现在所有普通智能体
+    的默认工具列表与前端工具选择器中。
+    """
+    from yuxi.agents.toolkits.service import get_tool_instances_by_category
+
+    buildin_names = {t.name for t in get_tool_instances_by_category("buildin")}
+    leaked = [name for name in buildin_names
+              if name.startswith(("spec_", "poly_", "sciverse_"))]
+    assert leaked == [], f"以下工具泄漏进 buildin category: {leaked}"
