@@ -31,6 +31,10 @@ def test_preset_discovery_includes_shipping_roles():
         "deep-research",
         "research-explorer",
         "fact-verifier",
+        "spec-agent",
+        "poly-agent",
+        "sciverse",
+        "academic-research",
     }
     assert found["deep-research"].context["subagents"] == ["research-explorer", "fact-verifier"]
     assert found["general-purpose"].context == {}

@@ -44,12 +44,25 @@ async def test_discovered_presets_creates_orchestrator_and_subagents(monkeypatch
         "deep-research",
         "research-explorer",
         "fact-verifier",
+        "spec-agent",
+        "poly-agent",
+        "sciverse",
+        "academic-research",
     }
 
     explorer = created["research-explorer"]
     verifier = created["fact-verifier"]
     assert explorer.backend_id == SUB_AGENT_BACKEND_ID and explorer.is_subagent is True
     assert verifier.backend_id == SUB_AGENT_BACKEND_ID and verifier.is_subagent is True
+
+    # Synlora 迁移：三个领域子智能体 + 一个顶层智能体
+    for slug in ("spec-agent", "poly-agent", "sciverse"):
+        assert created[slug].backend_id == SUB_AGENT_BACKEND_ID
+        assert created[slug].is_subagent is True
+    academic = created["academic-research"]
+    assert academic.backend_id == DEFAULT_AGENT_BACKEND_ID and academic.is_subagent is False
+    assert academic.config_json["context"]["tools"] == ["web_search"]
+    assert created["spec-agent"].config_json["context"]["preload_skills"] == ["spec-nmr", "spec-spectra"]
 
     orchestrator = created["deep-research"]
     assert orchestrator.backend_id == DEFAULT_AGENT_BACKEND_ID
