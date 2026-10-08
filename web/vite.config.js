@@ -105,7 +105,9 @@ export default defineConfig(({ mode }) => {
         interval: 1000,
         ignored: ['**/node_modules/**', '**/dist/**']
       },
-      host: '0.0.0.0'
+      host: '0.0.0.0',
+      // 外部映射域名白名单；要放开整个主域可改为 ['.wumiaox.com']（点前缀=所有子域）
+      allowedHosts: ['synlora.wumiaox.com']
     }
   }
 })
