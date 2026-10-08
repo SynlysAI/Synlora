@@ -123,11 +123,24 @@ class AgentRepository:
         return agent
 
     async def ensure_preset(self, preset: AgentPreset, *, created_by: str | None = None) -> Agent:
-        """首次落库预置角色，保留已存在的用户配置。"""
+        """首次落库预置角色，并为已有子智能体补齐缺失的默认能力。"""
         if preset.slug == DEFAULT_AGENT_SLUG:
             return await self.ensure_default_agent(created_by=created_by)
         agent = await self.get_by_slug(preset.slug)
         if agent:
+            if preset.backend_id != SUB_AGENT_BACKEND_ID:
+                return agent
+            config = agent.config_json or {}
+            context = config.get("context") or {}
+            missing = {
+                key: copy.deepcopy(preset.context[key])
+                for key in ("tools", "skills")
+                if key in preset.context and key not in context
+            }
+            if missing:
+                agent.config_json = {**config, "context": {**context, **missing}}
+                await self.db.commit()
+                await self.db.refresh(agent)
             return agent
 
         agent = Agent(

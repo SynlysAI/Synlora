@@ -37,7 +37,16 @@ def test_preset_discovery_includes_shipping_roles():
         "academic-research",
     }
     assert found["deep-research"].context["subagents"] == ["research-explorer", "fact-verifier"]
-    assert found["general-purpose"].context == {}
+    assert found["general-purpose"].context == {"tools": [], "skills": []}
+    assert found["web-search"].context["tools"] == ["web_search"]
+    assert found["web-search"].context["skills"] == []
+    assert found["fact-verifier"].context["tools"] == ["web_search"]
+    assert found["fact-verifier"].context["skills"] == []
+    assert found["research-explorer"].context["tools"] == ["web_search"]
+    assert found["research-explorer"].context["skills"] == ["knowledge-base"]
+    assert found["spec-agent"].context["skills"] == ["spec-nmr", "spec-spectra"]
+    assert found["poly-agent"].context["skills"] == ["poly-prediction"]
+    assert found["sciverse"].context["skills"] == ["sciverse-search"]
     assert found["default-chatbot"].backend_id == "ChatbotAgent"
     assert found["fact-verifier"].backend_id == "SubAgentBackend"
 
@@ -255,6 +264,5 @@ def test_synlora_tools_never_leak_into_default_buildin_category():
     from yuxi.agents.toolkits.service import get_tool_instances_by_category
 
     buildin_names = {t.name for t in get_tool_instances_by_category("buildin")}
-    leaked = [name for name in buildin_names
-              if name.startswith(("spec_", "poly_", "sciverse_"))]
+    leaked = [name for name in buildin_names if name.startswith(("spec_", "poly_", "sciverse_"))]
     assert leaked == [], f"以下工具泄漏进 buildin category: {leaked}"

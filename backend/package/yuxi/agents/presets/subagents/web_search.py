@@ -23,5 +23,7 @@ PRESET = AgentPreset(
     backend_id="SubAgentBackend",
     context={
         "system_prompt": SYSTEM_PROMPT,
+        "tools": ["web_search"],
+        "skills": [],
     },
 )

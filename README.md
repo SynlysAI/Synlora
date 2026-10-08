@@ -215,6 +215,8 @@ Yuxi 把知识进入系统、Agent 执行任务和团队治理放在一条完整
 | poly-agent 高分子性能预测专家 | 子智能体 | 聚酰亚胺 Tg、氟基电解质配方、Raman 解析、竞聚率拟合、硅键评分 | `POLY_AGENT_BASE_URL` + AI4MS 账号 |
 | sciverse 科技文献检索专家 | 子智能体 | 语义检索、结构化筛选、全文分页、附件下载 | `SCIVERSE_BASE_URL` + `SCIVERSE_API_TOKEN` |
 
+子智能体默认不全选工具或共享 Skill：通用任务不预选专用能力；网页检索和事实核查仅选择 `web_search`，调研探索同时选择 `web_search` 与 `knowledge-base`；领域专家只选择各自的 Skill。网页检索工具需要配置可用的搜索供应商。预置子智能体初始化只补齐已有配置中缺失的工具与 Skill 字段，保留管理员显式保存的选择；个人 Skill 仍按用户身份可用。
+
 AI4MS 平台账号（`AI4MS_USERNAME` / `AI4MS_PASSWORD`）为 Spec_Agent 与 Poly_Agent 共用的登录凭证（自动换 token、缓存并过期/401 重登）；未配置时 Spec_Agent 不带认证头（适用于服务端未开鉴权的部署），Poly_Agent 工具返回未配置错误。
 
 ![Yuxi 多智能体编排](https://xerrors.oss-cn-shanghai.aliyuncs.com/github/image-20260825152252874.png)

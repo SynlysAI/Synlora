@@ -93,6 +93,17 @@ def test_get_configurable_items_filters_admin_fields_for_user():
     assert "max_execution_steps" not in items
 
 
+def test_subagent_defaults_do_not_select_new_tools_or_shared_skills():
+    """子智能体缺省不随新增能力全选，主智能体保持原有默认。"""
+    from yuxi.agents.buildin.subagent.context import SubAgentContext
+
+    assert SubAgentContext().tools == []
+    assert SubAgentContext().skills == []
+    assert SubAgentContext.get_configurable_items()["skills"]["default"] == []
+    assert BaseContext().tools == "all"
+    assert BaseContext().skills == "all"
+
+
 def test_get_configurable_items_allows_admin_and_superadmin_fields():
     admin_items = BaseContext.get_configurable_items(user_role="admin")
     superadmin_items = SuperAdminOnlyContext.get_configurable_items(user_role="superadmin")

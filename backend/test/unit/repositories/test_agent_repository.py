@@ -7,6 +7,7 @@ import pytest
 from yuxi.agents.buildin.chatbot.context import ChatBotContext
 
 from yuxi.agents.presets.subagents.general_purpose import PRESET as GENERAL_PURPOSE
+from yuxi.agents.presets.deep_research import PRESET as DEEP_RESEARCH
 from yuxi.repositories.agent_repository import (
     AgentRepository,
     DEFAULT_AGENT_DESCRIPTION,
@@ -199,7 +200,8 @@ async def test_ensure_default_agent_backfills_missing_description(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ensure_preset_creates_empty_config_subagent(monkeypatch):
+async def test_ensure_preset_creates_scoped_config_subagent(monkeypatch):
+    """首次初始化保存通用子智能体的最小能力。"""
     db = FakeDb()
     repo = AgentRepository(db)
 
@@ -216,7 +218,7 @@ async def test_ensure_preset_creates_empty_config_subagent(monkeypatch):
     assert agent.backend_id == SUB_AGENT_BACKEND_ID
     assert agent.is_subagent is True
     assert agent.is_default is False
-    assert agent.config_json == {"context": {}}
+    assert agent.config_json == {"context": {"tools": [], "skills": []}}
     assert agent.share_config == DEFAULT_SHARE_CONFIG
     assert agent.created_by == "system"
     assert db.added is agent
@@ -226,6 +228,7 @@ async def test_ensure_preset_creates_empty_config_subagent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ensure_preset_is_idempotent(monkeypatch):
+    """只补齐缺失能力，重复初始化不再写入。"""
     db = FakeDb()
     repo = AgentRepository(db)
     existing = SimpleNamespace(slug=GENERAL_PURPOSE.slug, config_json={"context": {"model": "custom:model"}})
@@ -238,7 +241,53 @@ async def test_ensure_preset_is_idempotent(monkeypatch):
     agent = await repo.ensure_preset(GENERAL_PURPOSE)
 
     assert agent is existing
+    assert agent.config_json == {"context": {"model": "custom:model", "tools": [], "skills": []}}
     assert db.added is None
+    db.commit.assert_awaited_once()
+    db.refresh.assert_awaited_once_with(existing)
+
+    await repo.ensure_preset(GENERAL_PURPOSE)
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_preset_preserves_explicit_resource_selections(monkeypatch):
+    """管理员明确保存的空列表、全部或固定选择均不被预置覆盖。"""
+    db = FakeDb()
+    repo = AgentRepository(db)
+    existing = SimpleNamespace(
+        slug=GENERAL_PURPOSE.slug,
+        config_json={"context": {"tools": "all", "skills": [], "model": "custom:model"}},
+    )
+
+    async def get_by_slug(_slug):
+        return existing
+
+    monkeypatch.setattr(repo, "get_by_slug", get_by_slug)
+
+    assert await repo.ensure_preset(GENERAL_PURPOSE) is existing
+    assert existing.config_json["context"] == {"tools": "all", "skills": [], "model": "custom:model"}
+    db.commit.assert_not_awaited()
+    db.refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ensure_preset_does_not_backfill_main_agent_resources(monkeypatch):
+    """子智能体默认能力调整不补写主智能体的配置。"""
+    db = FakeDb()
+    repo = AgentRepository(db)
+    existing = SimpleNamespace(
+        slug=DEEP_RESEARCH.slug,
+        config_json={"context": {"model": "custom:model"}},
+    )
+
+    async def get_by_slug(_slug):
+        return existing
+
+    monkeypatch.setattr(repo, "get_by_slug", get_by_slug)
+
+    assert await repo.ensure_preset(DEEP_RESEARCH) is existing
+    assert existing.config_json == {"context": {"model": "custom:model"}}
     db.commit.assert_not_awaited()
     db.refresh.assert_not_awaited()
 

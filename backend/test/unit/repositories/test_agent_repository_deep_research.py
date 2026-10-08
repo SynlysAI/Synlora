@@ -78,13 +78,14 @@ async def test_discovered_presets_creates_orchestrator_and_subagents(monkeypatch
 async def test_discovered_presets_is_idempotent(monkeypatch):
     db = CollectingDb()
     repo = AgentRepository(db)
+    discovered = {preset.slug: preset for preset in discover_agent_presets()}
 
     async def get_by_slug(slug):
-        return SimpleNamespace(slug=slug)
+        return SimpleNamespace(slug=slug, config_json={"context": discovered[slug].context.copy()})
 
     monkeypatch.setattr(repo, "get_by_slug", get_by_slug)
 
-    for preset in discover_agent_presets():
+    for preset in discovered.values():
         if preset.slug != "default-chatbot":
             await repo.ensure_preset(preset)
 

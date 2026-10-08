@@ -139,7 +139,7 @@ const tools = ref([])
 const currentTool = ref(null)
 const detailVisible = ref(false)
 
-const categories = ['buildin', 'knowledge', 'mysql', 'debug']
+const categories = computed(() => [...new Set(tools.value.map((tool) => tool.category).filter(Boolean))])
 const categoryLabels = { buildin: '内置工具', knowledge: '知识库', mysql: 'MySQL', debug: '调试' }
 const categoryColors = { buildin: 'blue', knowledge: 'purple', mysql: 'green', debug: 'orange' }
 
