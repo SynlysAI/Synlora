@@ -5,12 +5,17 @@ connectors.py 的五类异步任务改造为同步内嵌轮询工具，见文末
 认证只用静态 SPEC_AGENT_TOKEN（不迁移 ai4ms_token 代签机制）。
 """
 
+import asyncio
 import json
 import os
+import time
+from typing import Any
 
 import httpx
+from langgraph.prebuilt.tool_node import ToolRuntime
 from pydantic import BaseModel, Field
 
+from yuxi.agents.toolkits.buildin._workspace_io import download_workspace_file
 from yuxi.agents.toolkits.registry import tool
 
 CONNECT_TIMEOUT_S = 10.0
@@ -205,3 +210,242 @@ async def spec_nmr_search(
             "allowed_elements": allowed_elements,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# 五类谱图文件解析（同步内嵌轮询；替代 Synlora 的 job 模式）
+# ---------------------------------------------------------------------------
+
+TASK_QUICK_TIMEOUT_S = 60.0    # 上传/提交/查状态/取结果都是秒级操作
+TASK_UPLOAD_TIMEOUT_S = 120.0  # 上传单独放宽
+TASK_POLL_INTERVAL_S = 5.0
+TASK_MAX_WAIT_S_DEFAULT = 1500.0  # 轮询总预算；必须显著小于 worker job_timeout(3600s)
+TASK_MAX_WAIT_S_CEILING = 3300.0
+TASK_MAX_WAIT_S_FLOOR = 60.0
+TASK_FILE_MAX_BYTES = 100 * 1024 * 1024
+RESULT_RENDER_LIMIT = 30000  # 回给模型的结果字符预算
+
+
+def _task_max_wait_s() -> float:
+    """读取并钳制谱图任务轮询总预算（秒）。"""
+    raw = (os.getenv("SPEC_TASK_MAX_WAIT_SECONDS") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return TASK_MAX_WAIT_S_DEFAULT
+    return min(max(value, TASK_MAX_WAIT_S_FLOOR), TASK_MAX_WAIT_S_CEILING)
+
+
+def _unwrap(resp: httpx.Response, action: str) -> tuple[dict | None, dict | None]:
+    """解析上游 {code, message, data} 包络。
+
+    Args:
+        resp: 上游响应。
+        action: 动作名（用于错误消息，如"上传谱图文件"）。
+
+    Returns:
+        (错误 dict 或 None, data dict 或 None)。
+    """
+    if resp.status_code in (401, 403):
+        return _error(
+            "unauthorized",
+            "访问凭证无效或已过期：请核对 SPEC_AGENT_TOKEN（这不是参数错误，请勿原样重试）",
+        ), None
+    if resp.status_code != 200:
+        return _error("http_error", f"{action}失败：上游返回 {resp.status_code} {resp.text[:200]}"), None
+    try:
+        body = resp.json() or {}
+    except ValueError:
+        return _error("upstream_error", f"{action}失败：上游返回非 JSON: {resp.text[:200]}"), None
+    if body.get("code") != 0:
+        return _error("upstream_error", f"{action}失败: {body.get('message') or body.get('code')}"), None
+    data = body.get("data")
+    if not isinstance(data, dict):
+        return _error("upstream_error", f"{action}失败：上游返回结构异常: {str(data)[:200]}"), None
+    return None, data
+
+
+def _render_result(result: Any) -> Any:
+    """超大结果截断，保护模型上下文。"""
+    text = json.dumps(result, ensure_ascii=False)
+    if len(text) <= RESULT_RENDER_LIMIT:
+        return result
+    return {
+        "truncated": True,
+        "preview": text[:RESULT_RENDER_LIMIT],
+        "hint": f"结果共 {len(text)} 字符已截断；完整结果请在服务端按 task_id 取回",
+    }
+
+
+def _error_text(error: Any) -> str:
+    """把上游 error 字段拼成可读文本。"""
+    if isinstance(error, dict):
+        code = error.get("error_code")
+        message = error.get("error_message")
+        detail = error.get("error_detail")
+        parts = f"[{code}] {message}：{detail}" if code else f"{message}：{detail}"
+        return parts if message or detail else str(error)
+    return str(error or "未知原因")
+
+
+async def _run_spectra_task(
+    endpoint: str, default_mode: str | None, path: str, params: dict | None, runtime: ToolRuntime
+) -> dict:
+    """上传谱图文件→提交解析任务→内嵌轮询至终态→取结果（同步语义）。
+
+    Args:
+        endpoint: 上游任务类型（nmr/ir/gpc/raman/lcms）。
+        default_mode: 缺省 mode 兜底值（仅 raman 用 function_groups）。
+        path: 谱图文件的工作区相对路径。
+        params: 任务参数（可选，自由字典，字段见 spec-spectra 技能参数表）。
+        runtime: LangGraph 工具运行时。
+
+    Returns:
+        成功为 {"ok": True, "task_id", "status", "result"}；失败为错误 dict。
+    """
+    settings = _settings()
+    if not settings["base_url"]:
+        return _error(
+            "spec_agent_unconfigured",
+            "Spec_Agent 未配置服务地址：请在部署配置中设置环境变量 SPEC_AGENT_BASE_URL",
+        )
+    try:
+        file_bytes, file_name = await download_workspace_file(
+            path, runtime, max_bytes=TASK_FILE_MAX_BYTES
+        )
+    except ValueError:
+        raise  # 路径类问题按参数错误抛出，由工具框架兜底
+    headers = _headers(settings)
+    upstream_params = dict(params or {})
+    if default_mode and not upstream_params.get("mode"):
+        upstream_params["mode"] = default_mode
+    base = settings["base_url"]
+    max_wait = _task_max_wait_s()
+    deadline = time.monotonic() + max_wait
+    async with _make_client(timeout=TASK_QUICK_TIMEOUT_S) as client:
+        try:
+            upload = await client.post(
+                f"{base}/api/v1/files/upload",
+                headers=headers,
+                files={"file": (file_name, file_bytes, "application/octet-stream")},
+                timeout=TASK_UPLOAD_TIMEOUT_S,
+            )
+        except httpx.HTTPError as exc:
+            return _error("http_error", f"上传谱图文件失败: {exc}")
+        err, data = _unwrap(upload, "上传谱图文件")
+        if err:
+            return err
+        file_id = data.get("file_id")
+        if not file_id:
+            return _error("upstream_error", f"上传谱图文件失败：上游未返回 file_id: {str(data)[:200]}")
+        try:
+            submit = await client.post(
+                f"{base}/api/v1/tasks/{endpoint}",
+                headers=headers,
+                json={"input": {"input_type": "file_id", "file_id": file_id},
+                      "params": upstream_params},
+            )
+        except httpx.HTTPError as exc:
+            return _error("http_error", f"提交解析任务失败: {exc}")
+        err, data = _unwrap(submit, "提交解析任务")
+        if err:
+            return err
+        task_id = data.get("task_id")
+        if not task_id:
+            return _error("upstream_error", f"提交解析任务失败：上游未返回 task_id: {str(data)[:200]}")
+        # 内嵌轮询：pending/queued/running → 终态
+        while True:
+            try:
+                status_resp = await client.get(f"{base}/api/v1/tasks/{task_id}", headers=headers)
+            except httpx.HTTPError as exc:
+                return _error("http_error", f"查询任务状态失败（task_id={task_id}）: {exc}")
+            err, data = _unwrap(status_resp, "查询任务状态")
+            if err:
+                return err
+            status = str(data.get("status") or "").strip().lower()
+            if status in ("success", "completed"):
+                break
+            if status in ("failed", "canceled", "cancelled"):
+                try:
+                    result_resp = await client.get(
+                        f"{base}/api/v1/tasks/{task_id}/result", headers=headers)
+                    err, data = _unwrap(result_resp, "获取任务失败原因")
+                    reason = _error_text((data or {}).get("error")) if not err else err["message"]
+                except httpx.HTTPError:
+                    reason = "上游未返回失败原因"
+                return _error("upstream_failed", f"任务失败（task_id={task_id}）：{reason}")
+            if time.monotonic() > deadline:
+                return _error(
+                    "timeout",
+                    f"任务 {task_id} 超过 {int(max_wait)} 秒仍在 {status} 状态，本次调用放弃等待；"
+                    f"上游任务仍在运行，再次调用会重新提交新任务，请酌情调整参数后重试",
+                )
+            await asyncio.sleep(TASK_POLL_INTERVAL_S)
+        try:
+            result_resp = await client.get(f"{base}/api/v1/tasks/{task_id}/result", headers=headers)
+        except httpx.HTTPError as exc:
+            return _error("http_error", f"获取任务结果失败（task_id={task_id}）: {exc}")
+        err, data = _unwrap(result_resp, "获取任务结果")
+        if err:
+            return err
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "status": "success",
+            "result": _render_result(data.get("result")),
+        }
+
+
+class SpecTaskInput(BaseModel):
+    path: str = Field(description="谱图文件的工作区相对路径（如 uploads/nmr.txt）")
+    params: dict | None = Field(
+        default=None,
+        description="任务参数字典（可选）。可用字段与默认值见 spec-spectra 技能的参数表；"
+                    "不认识的字段不要传，自造字段会被上游静默忽略",
+    )
+
+
+def _spectra_tool(endpoint: str, display_name: str, description: str, default_mode: str | None = None):
+    """工厂：生成五类谱图任务的同构工具（显式命名，避免闭包函数名重名）。"""
+
+    @tool(
+        category="spec_agent",
+        tags=["谱图", "文件解析"],
+        display_name=display_name,
+        description=description,
+        args_schema=SpecTaskInput,
+        name_or_callable=f"spec_task_{endpoint}",
+    )
+    async def spectra_task(
+        path: str, params: dict | None = None, runtime: ToolRuntime = None
+    ) -> dict:
+        return await _run_spectra_task(endpoint, default_mode, path, params, runtime)
+
+    return spectra_task
+
+
+SPEC_TASK_NMR_DESCRIPTION = """解析核磁（NMR）谱图文件：峰识别、积分、multiplet 检测。
+常用参数：nucleus（1H/13C）、threshold、integration_method 等，完整参数表见 spec-spectra 技能。
+同步等待结果，通常数十秒到数分钟。"""
+
+SPEC_TASK_IR_DESCRIPTION = """解析红外（IR）光谱文件。
+常用参数：mode（greedy_decode/beam_search/retrieval 等 4 种）、k、x0/x1 波数区间、transmittance。
+同步等待结果；完整参数表见 spec-spectra 技能。"""
+
+SPEC_TASK_GPC_DESCRIPTION = """解析凝胶渗透色谱（GPC）谱图文件：分子量分布。
+常用参数：detect_mode（auto/manual）、manual_interval（manual 时必填 [start, end]）。
+同步等待结果；完整参数表见 spec-spectra 技能。"""
+
+SPEC_TASK_RAMAN_DESCRIPTION = """解析拉曼（Raman）光谱文件。
+默认 mode=function_groups（官能团识别）；greedy_decode/beam_search 当前部署不可用，除非明确要求不要传。
+其余参数与 IR 一致；完整参数表见 spec-spectra 技能。同步等待结果。"""
+
+SPEC_TASK_LCMS_DESCRIPTION = """解析液质（LC-MS）数据文件，基本无可调参数。
+同步等待结果。"""
+
+
+spec_task_nmr = _spectra_tool("nmr", "核磁谱图文件解析", SPEC_TASK_NMR_DESCRIPTION)
+spec_task_ir = _spectra_tool("ir", "红外光谱文件解析", SPEC_TASK_IR_DESCRIPTION)
+spec_task_gpc = _spectra_tool("gpc", "GPC 谱图文件解析", SPEC_TASK_GPC_DESCRIPTION)
+spec_task_raman = _spectra_tool("raman", "拉曼光谱文件解析", SPEC_TASK_RAMAN_DESCRIPTION, default_mode="function_groups")
+spec_task_lcms = _spectra_tool("lcms", "液质数据文件解析", SPEC_TASK_LCMS_DESCRIPTION)
