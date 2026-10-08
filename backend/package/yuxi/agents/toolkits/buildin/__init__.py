@@ -1,5 +1,12 @@
 # buildin 工具包
 from .install_skill import install_skill
+from .poly_agent import (
+    poly_electrolyte_predict,
+    poly_raman_analyze,
+    poly_reactivity_fit,
+    poly_silicon_bond,
+    poly_tg_predict,
+)
 from .spec_agent import (
     spec_nmr_forward,
     spec_nmr_reverse,
@@ -16,6 +23,11 @@ __all__ = [
     "ask_user_question",
     "install_skill",
     "ocr_parse_file",
+    "poly_electrolyte_predict",
+    "poly_raman_analyze",
+    "poly_reactivity_fit",
+    "poly_silicon_bond",
+    "poly_tg_predict",
     "present_artifacts",
     "spec_nmr_forward",
     "spec_nmr_reverse",
