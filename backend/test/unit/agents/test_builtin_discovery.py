@@ -177,7 +177,17 @@ async def test_each_graph_uses_its_own_run_context(monkeypatch, backend_id):
 def test_shipping_skills_keep_required_dependencies():
     """默认知识能力及研究依赖不能因发现重组缺失。"""
     found = {spec["slug"]: spec for spec in skill_service.list_builtin_skill_specs()}
-    assert set(found) == {"image-gen", "html-preview", "deep-research", "knowledge-base", "mysql-reporter"}
+    assert set(found) == {
+        "image-gen",
+        "html-preview",
+        "deep-research",
+        "knowledge-base",
+        "mysql-reporter",
+        "spec-nmr",
+        "spec-spectra",
+        "poly-prediction",
+        "sciverse-search",
+    }
     assert found["knowledge-base"]["tool_dependencies"] == [
         "list_kbs",
         "query_kb",
@@ -190,3 +200,39 @@ def test_shipping_skills_keep_required_dependencies():
     assert found["deep-research"]["skill_dependencies"] == []
     assert found["mysql-reporter"]["mcp_dependencies"] == []
     assert found["html-preview"]["version"] == "2026.07.23"
+    assert found["spec-nmr"]["tool_dependencies"] == [
+        "spec_nmr_forward",
+        "spec_nmr_reverse",
+        "spec_nmr_search",
+    ]
+    assert found["spec-spectra"]["tool_dependencies"] == [
+        "spec_task_nmr",
+        "spec_task_ir",
+        "spec_task_gpc",
+        "spec_task_raman",
+        "spec_task_lcms",
+    ]
+    assert found["poly-prediction"]["tool_dependencies"] == [
+        "poly_tg_predict",
+        "poly_electrolyte_predict",
+        "poly_raman_analyze",
+        "poly_reactivity_fit",
+        "poly_silicon_bond",
+    ]
+    assert found["sciverse-search"]["tool_dependencies"] == [
+        "sciverse_agentic_search",
+        "sciverse_content",
+        "sciverse_resource",
+        "sciverse_meta_catalog",
+        "sciverse_meta_search",
+    ]
+
+
+def test_builtin_skill_tool_dependencies_resolve():
+    """每个内置技能声明的工具依赖都必须是已注册的工具名。"""
+    from yuxi.agents.toolkits.registry import get_all_tool_instances
+
+    registered = {t.name for t in get_all_tool_instances()}
+    for spec in skill_service.list_builtin_skill_specs():
+        for tool_name in spec["tool_dependencies"]:
+            assert tool_name in registered, f"{spec['slug']} 依赖未注册的工具 {tool_name}"
