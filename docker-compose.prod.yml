@@ -90,6 +90,10 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      # Milvus Proxy 就绪慢：api 启动即初始化 required 的 knowledge_base，
+      # 不等 healthz 通过会在开机自启时撞上 "Proxy is not ready" 假死。
+      milvus:
+        condition: service_healthy
       sandbox-provisioner:
         condition: service_healthy
       storage-migrator:
@@ -137,6 +141,8 @@ services:
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      milvus:
         condition: service_healthy
       sandbox-provisioner:
         condition: service_healthy
