@@ -17,6 +17,13 @@ from .spec_agent import (
     spec_task_nmr,
     spec_task_raman,
 )
+from .sciverse import (
+    sciverse_agentic_search,
+    sciverse_content,
+    sciverse_meta_catalog,
+    sciverse_meta_search,
+    sciverse_resource,
+)
 from .tools import ask_user_question, ocr_parse_file, present_artifacts
 
 __all__ = [
@@ -29,6 +36,11 @@ __all__ = [
     "poly_silicon_bond",
     "poly_tg_predict",
     "present_artifacts",
+    "sciverse_agentic_search",
+    "sciverse_content",
+    "sciverse_meta_catalog",
+    "sciverse_meta_search",
+    "sciverse_resource",
     "spec_nmr_forward",
     "spec_nmr_reverse",
     "spec_nmr_search",
