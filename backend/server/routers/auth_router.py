@@ -299,6 +299,9 @@ async def login_for_access_token(
     # 登录成功，重置失败计数器并清除 IP+账号维度的失败记录
     user.reset_failed_login()
     user.last_login = utc_now_naive()
+    # 外部系统（AI4MS）导入的 PBKDF2 哈希验证通过后，升级为本地 argon2 格式
+    if AuthUtils.needs_rehash(user.password_hash):
+        user.password_hash = AuthUtils.hash_password(form_data.password)
     await user_repository.save(user)
     await clear_login_failures(client_ip, login_identifier)
 

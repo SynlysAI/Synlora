@@ -16,6 +16,8 @@ JWT_EXPIRATION = 7 * 24 * 60 * 60
 JWT_AUDIENCE = "yuxi-know-api"
 PUBLIC_DEFAULT_JWT_SECRET_KEY = "yuxi_know_secure_key"
 PASSWORD_HASHER = PasswordHasher()
+# 从 AI4MS 等外部系统导入的 PBKDF2-SHA256 哈希前缀，格式：pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>
+PBKDF2_HASH_PREFIX = "pbkdf2_sha256$"
 SECURITY_SECRET_NAMES = (
     "JWT_SECRET_KEY",
     "API_KEY_DERIVATION_SECRET",
@@ -88,6 +90,28 @@ def _get_jwt_issuer() -> str:
     return f"yuxi-know:{instance_id}"
 
 
+def _verify_pbkdf2_password(stored_password: str, provided_password: str) -> bool:
+    """校验外部系统（AI4MS）导入的 pbkdf2_sha256$iterations$salt_hex$hash_hex 格式哈希。
+
+    Args:
+        stored_password: pbkdf2_sha256$ 分隔的四段式哈希字符串。
+        provided_password: 用户输入的明文密码。
+
+    Returns:
+        哈希匹配返回 True，格式非法或不匹配返回 False。
+    """
+    try:
+        algorithm, iterations_str, salt_hex, hash_hex = stored_password.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+        derived = hashlib.pbkdf2_hmac("sha256", provided_password.encode(), salt, int(iterations_str))
+        return hmac.compare_digest(derived, expected)
+    except (ValueError, TypeError):
+        return False
+
+
 class AuthUtils:
     @staticmethod
     def generate_api_key() -> tuple[str, str, str]:
@@ -128,12 +152,26 @@ class AuthUtils:
 
     @staticmethod
     def verify_password(stored_password: str, provided_password: str) -> bool:
+        if stored_password.startswith(PBKDF2_HASH_PREFIX):
+            return _verify_pbkdf2_password(stored_password, provided_password)
         if not stored_password.startswith("$argon2"):
             return False
         try:
             return PASSWORD_HASHER.verify(stored_password, provided_password)
         except (InvalidHash, VerifyMismatchError, VerificationError):
             return False
+
+    @staticmethod
+    def needs_rehash(stored_password: str) -> bool:
+        """判断存储的哈希是否为需要升级为本地 argon2 格式的外部格式。
+
+        Args:
+            stored_password: 数据库中存储的密码哈希。
+
+        Returns:
+            非 argon2 格式（如 AI4MS 导入的 PBKDF2）返回 True。
+        """
+        return not stored_password.startswith("$argon2")
 
     @staticmethod
     def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = None) -> str:
