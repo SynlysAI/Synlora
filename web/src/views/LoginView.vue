@@ -31,12 +31,7 @@
     <!-- 主要内容区：居中卡片 -->
     <main class="login-main">
       <div class="login-card">
-        <!-- 左侧图片 -->
-        <div class="card-side is-image">
-          <img :src="loginBgImage" alt="登录背景" class="login-bg-image" />
-        </div>
-
-        <!-- 右侧表单 -->
+        <!-- 表单区 -->
         <div class="card-side is-form">
           <div class="form-wrapper">
             <header class="form-header">
@@ -303,9 +298,6 @@ const infoStore = useInfoStore()
 const agentStore = useAgentStore()
 
 // 品牌展示数据
-const loginBgImage = computed(() => {
-  return infoStore.organization?.login_bg || '/login-bg.jpg'
-})
 const brandLogo = computed(() => {
   return infoStore.organization?.logo || ''
 })
@@ -765,9 +757,8 @@ onUnmounted(() => {
 }
 
 .login-card {
-  width: 900px;
+  width: 440px;
   max-width: 95vw;
-  height: 560px;
   background: var(--gray-0);
   border-radius: 16px;
   box-shadow: 0 0px 40px var(--shadow-1);
@@ -777,20 +768,6 @@ onUnmounted(() => {
 
 .card-side {
   position: relative;
-}
-
-/* Image Side */
-.card-side.is-image {
-  flex: 1.4;
-  background-color: var(--main-10);
-  overflow: hidden;
-
-  .login-bg-image {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    object-position: center;
-  }
 }
 
 /* Form Side */
@@ -1053,10 +1030,6 @@ onUnmounted(() => {
     max-height: none;
     width: 100%;
     margin-top: 20px;
-  }
-
-  .card-side.is-image {
-    display: none;
   }
 
   .card-side.is-form {
