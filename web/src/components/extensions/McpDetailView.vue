@@ -376,6 +376,7 @@ import {
 import ExtensionDetailLayout from '@/components/shared/ExtensionDetailLayout.vue'
 import { mcpApi } from '@/apis/mcp_api'
 import { formatFullDateTime } from '@/utils/time'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 const route = useRoute()
 const router = useRouter()
@@ -595,7 +596,7 @@ const handleToggleTool = async (tool) => {
 
 const copyToolName = async (toolName) => {
   try {
-    await navigator.clipboard.writeText(toolName)
+    await copyTextToClipboard(toolName)
     message.success('已复制到剪贴板')
   } catch {
     message.error('复制失败')

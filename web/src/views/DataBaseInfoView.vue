@@ -462,6 +462,7 @@ import { authApi } from '@/apis/auth_api'
 import { useChunkPresetOptions } from '@/composables/useChunkPresetOptions'
 import { DEFAULT_CHUNK_PRESET_ID } from '@/utils/chunkUtils'
 import { kbUtils } from '@/utils/kb_utils'
+import { copyTextToClipboard } from '@/utils/clipboard'
 import { createAsyncPanel } from '@/utils/asyncPanel'
 
 const KnowledgeGraphSection = createAsyncPanel(
@@ -882,16 +883,10 @@ const copyDatabaseId = async () => {
   }
 
   try {
-    await navigator.clipboard.writeText(database.value.kb_id)
+    await copyTextToClipboard(database.value.kb_id)
     message.success('知识库ID已复制到剪贴板')
   } catch {
-    const textArea = document.createElement('textarea')
-    textArea.value = database.value.kb_id
-    document.body.appendChild(textArea)
-    textArea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textArea)
-    message.success('知识库ID已复制到剪贴板')
+    message.error('复制失败')
   }
 }
 

@@ -124,6 +124,7 @@ import { useDatabaseStore } from '@/stores/database'
 import { Copy, Pencil, Plus, Trash2 } from '@lucide/vue'
 import { message, Modal } from 'ant-design-vue'
 import { databaseApi, typeApi } from '@/apis/knowledge_api'
+import { copyTextToClipboard } from '@/utils/clipboard'
 import PageHeader from '@/components/shared/PageHeader.vue'
 import PageShoulder from '@/components/shared/PageShoulder.vue'
 import ResourceEmptyState from '@/components/shared/ResourceEmptyState.vue'
@@ -258,16 +259,11 @@ const navigateToDatabase = (database) => {
 
 const copyDatabaseId = async (database) => {
   try {
-    await navigator.clipboard.writeText(database.kb_id)
+    await copyTextToClipboard(database.kb_id)
+    message.success('知识库 ID 已复制')
   } catch {
-    const textArea = document.createElement('textarea')
-    textArea.value = database.kb_id
-    document.body.appendChild(textArea)
-    textArea.select()
-    document.execCommand('copy')
-    document.body.removeChild(textArea)
+    message.error('复制失败')
   }
-  message.success('知识库 ID 已复制')
 }
 
 const deleteDatabase = (database) => {

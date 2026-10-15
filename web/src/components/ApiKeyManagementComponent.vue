@@ -149,6 +149,7 @@ import { message } from 'ant-design-vue'
 import { Plus, RefreshCw, Trash2, Copy } from '@lucide/vue'
 import { Key as KeyIcon } from '@lucide/vue'
 import { apikeyApi } from '@/apis/apikey_api'
+import { copyTextToClipboard } from '@/utils/clipboard'
 
 const loading = ref(false)
 const refreshing = ref(false)
@@ -262,7 +263,7 @@ const handleCreate = async () => {
 
 const copySecret = async () => {
   try {
-    await navigator.clipboard.writeText(createdSecret.value)
+    await copyTextToClipboard(createdSecret.value)
     message.success('已复制到剪贴板')
   } catch {
     message.error('复制失败')
