@@ -29,7 +29,7 @@ for import_path in (APP_ROOT, APP_ROOT / "package"):
         sys.path.insert(0, import_path_str)
 
 # AI4MS 生产 MongoDB（远程服务器，与本机 27018 的旧副本不是同一个实例）
-DEFAULT_MONGO_URI = "mongodb://admin:password123@10.26.15.93:27018/ai4ms?authSource=admin"
+DEFAULT_MONGO_URI = "mongodb://admin:password123@172.16.12.74:27018/ai4ms?authSource=admin"
 DEFAULT_REFERENCE_UID = "xiaoxu"
 # 与 docker-compose.yml 中 POSTGRES_URL 的默认值保持一致，供宿主机直连本地容器
 DEFAULT_POSTGRES_URL = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/yuxi"
