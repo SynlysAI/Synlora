@@ -317,6 +317,25 @@ services:
     command: pnpm run server
     restart: unless-stopped
 
+  # 生产构建静态站点：nginx 托管 dist 并在容器网络内代理 /api 与 /minio，
+  # 供公网域名（frp 隧道）访问；代码更新后需 rebuild 才会生效。
+  # 仅显式启用 public profile 时才构建/启动，避免拖慢默认开发拓扑
+  web-prod:
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+      target: production
+    image: ${COMPOSE_PROJECT_NAME:-yuxi}-web-prod:${YUXI_VERSION:-0.7.3}
+    profiles:
+      - public
+    ports:
+      - "127.0.0.1:${YUXI_WEB_PROD_PORT:-4173}:80"
+    depends_on:
+      - api
+    networks:
+      - app-network
+    restart: unless-stopped
+
   # region neo4j
   graph:
     image: neo4j:5.26.29

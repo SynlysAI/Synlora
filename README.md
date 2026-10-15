@@ -72,6 +72,23 @@ curl --fail http://localhost:5050/api/system/ready
 
 从 v0.7.1 或 v0.7.2 升级到当前版本时，不能直接执行 `docker compose up`。请先阅读[生产部署与升级](docs/advanced/deployment.md)，在停机窗口完成备份和迁移。
 
+### 3. 公网域名部署（web-prod）
+
+`web-prod` 服务面向公网域名访问：nginx 托管前端生产构建产物，并在容器网络内反向代理 `/api` 与 `/minio`（SSE 已配置无缓冲）。它默认不随 `docker compose up -d` 启动，需显式启用 `public` profile：
+
+```bash
+docker compose --profile public up -d --build web-prod
+```
+
+注意：不带 profile 的 `docker compose down` 不会停止 web-prod，移除它需 `docker compose --profile public down`。
+
+日常代码更新的生效方式：
+
+- **后端**（`backend/`）：源码以 bind mount 挂载，api 由 `uvicorn --reload`、worker 由 `watchfiles` 热重载，保存即生效；修改 Python 依赖（`pyproject.toml` / `uv.lock`）时需重建镜像：`docker compose build api worker && docker compose up -d api worker`。
+- **前端**（`web/`）：对局域网开发地址（5173，HMR）即时生效；对 web-prod 生效需重新执行上面的构建命令。
+
+公网入口（域名、反向代理与反向隧道）属于部署环境配置，不在本仓库内维护。
+
 ## 文档导航
 
 - [项目介绍](https://xerrors.github.io/Yuxi/intro/project-overview)：了解能力、概念和系统边界。
