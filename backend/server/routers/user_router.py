@@ -1,5 +1,6 @@
 """用户级配置与凭据路由"""
 
+import hmac
 import re
 from typing import Any
 
@@ -231,6 +232,29 @@ async def get_api_key(
 ):
     api_key = await get_accessible_api_key(APIKeyRepository(db), api_key_id, current_user)
     return {"api_key": api_key.to_dict()}
+
+
+@user_router.post("/apikey/{api_key_id}/reveal", response_model=dict)
+async def reveal_api_key(
+    api_key_id: int,
+    current_user: User = Depends(get_required_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """重新派生并返回 UI 创建密钥的完整密钥。
+
+    仅支持 user-request 幂等域创建的密钥：重算结果必须与存储 hash 一致才返回，
+    CLI 授权等无法重建派生域的密钥拒绝。可见性与读取/更新一致（本人或 superadmin）。
+    """
+    api_key = await get_accessible_api_key(APIKeyRepository(db), api_key_id, current_user)
+    if not api_key.request_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该密钥不支持再次查看")
+    full_key, key_hash, _ = AuthUtils.derive_api_key(
+        f"user-request:{api_key.request_id}",
+        api_key.user_id,
+    )
+    if not hmac.compare_digest(key_hash, api_key.key_hash):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该密钥不支持再次查看")
+    return {"secret": full_key}
 
 
 @user_router.put("/apikey/{api_key_id}", response_model=dict)

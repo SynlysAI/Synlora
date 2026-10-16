@@ -5,7 +5,7 @@
       <div class="header-content">
         <div class="section-title">API Key 管理</div>
         <p class="section-description">
-          用于外部系统调用 Agent 对话接口。密钥仅显示一次，请妥善保管。
+          用于外部系统调用 Agent 对话接口。密钥可在创建后随时在列表操作列中复制，请妥善保管。
         </p>
       </div>
       <div class="header-actions">
@@ -66,18 +66,31 @@
                   <span class="time-text">{{ record.expires_at || '永不过期' }}</span>
                 </template>
                 <template v-if="column.key === 'action'">
-                  <a-popconfirm
-                    title="确定要删除此 API Key 吗？此操作不可恢复。"
-                    @confirm="deleteKey(record)"
-                    ok-text="确定"
-                    cancel-text="取消"
-                  >
-                    <a-tooltip title="删除 API Key">
-                      <a-button type="text" size="small" danger class="action-btn lucide-icon-btn">
-                        <Trash2 :size="14" />
+                  <div class="action-btns">
+                    <a-tooltip title="复制密钥">
+                      <a-button
+                        type="text"
+                        size="small"
+                        class="action-btn lucide-icon-btn"
+                        :loading="revealLoadingId === record.id"
+                        @click="copyKeySecret(record)"
+                      >
+                        <Copy :size="14" />
                       </a-button>
                     </a-tooltip>
-                  </a-popconfirm>
+                    <a-popconfirm
+                      title="确定要删除此 API Key 吗？此操作不可恢复。"
+                      @confirm="deleteKey(record)"
+                      ok-text="确定"
+                      cancel-text="取消"
+                    >
+                      <a-tooltip title="删除 API Key">
+                        <a-button type="text" size="small" danger class="action-btn lucide-icon-btn">
+                          <Trash2 :size="14" />
+                        </a-button>
+                      </a-tooltip>
+                    </a-popconfirm>
+                  </div>
                 </template>
               </template>
             </a-table>
@@ -115,7 +128,7 @@
       </a-form>
     </a-modal>
 
-    <!-- 密钥显示 Modal (创建后一次性显示) -->
+    <!-- 密钥显示 Modal (创建后展示，列表中也可随时复制) -->
     <a-modal
       v-model:open="secretModalVisible"
       title="API Key 已创建"
@@ -127,7 +140,7 @@
       <div class="secret-display">
         <a-alert
           type="warning"
-          message="请立即复制密钥，关闭后将无法再次查看完整密钥"
+          message="请妥善保管密钥，也可以稍后在列表操作列中复制"
           show-icon
           class="secret-alert"
         />
@@ -169,7 +182,7 @@ const columns = [
   { title: '状态', dataIndex: 'is_enabled', key: 'status', width: '14%' },
   { title: '最后使用', dataIndex: 'last_used_at', key: 'lastUsed', width: '18%' },
   { title: '过期时间', dataIndex: 'expires_at', key: 'expiresAt', width: '18%' },
-  { title: '操作', key: 'action', width: '10%', align: 'center' }
+  { title: '操作', key: 'action', width: 90, align: 'center' }
 ]
 
 const createForm = reactive({
@@ -267,6 +280,22 @@ const copySecret = async () => {
     message.success('已复制到剪贴板')
   } catch {
     message.error('复制失败')
+  }
+}
+
+// 列表行复制：服务端重新派生完整密钥后写入剪贴板
+const revealLoadingId = ref(null)
+const copyKeySecret = async (key) => {
+  revealLoadingId.value = key.id
+  try {
+    const res = await apikeyApi.revealSecret(key.id)
+    await copyTextToClipboard(res.secret)
+    message.success('已复制到剪贴板')
+  } catch (e) {
+    // 409 = CLI 授权等派生域密钥无法重建，base.js 会把它泛化成"请刷新重试"，这里给出准确提示
+    message.error(e.status === 409 ? '该密钥不支持在此查看，请在创建它的客户端中获取' : e.message || '复制失败')
+  } finally {
+    revealLoadingId.value = null
   }
 }
 
@@ -457,6 +486,12 @@ onMounted(() => {
       .time-text {
         color: var(--gray-500);
         font-size: 12px;
+      }
+
+      .action-btns {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
       }
 
       .action-btn {

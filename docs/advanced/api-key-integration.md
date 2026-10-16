@@ -45,10 +45,11 @@ Content-Type: application/json
 | --- | --- | --- |
 | `GET` | `/api/user/apikey/` | 查看当前用户可见的 Key |
 | `POST` | `/api/user/apikey/` | 创建 Key |
+| `POST` | `/api/user/apikey/{api_key_id}/reveal` | 重新获取该 Key 的完整 secret |
 | `PUT` | `/api/user/apikey/{api_key_id}` | 修改名称、过期时间或启用状态 |
 | `DELETE` | `/api/user/apikey/{api_key_id}` | 撤销 Key |
 
-`superadmin` 可以查看和管理全局可见的 Key；其他用户只能操作自己有权限的 Key。删除用户或撤销 Key 后，旧 secret 不能继续使用，也不会因为重复提交旧的创建请求而复活。列表和详情响应还包含 `last_used_at`：它表示最近一次成功认证时间，`null` 表示尚未使用；`key_prefix` 只用于识别 Key，服务端不会再次返回完整 secret。
+`superadmin` 可以查看和管理全局可见的 Key；其他用户只能操作自己有权限的 Key。删除用户或撤销 Key 后，旧 secret 不能继续使用，也不会因为重复提交旧的创建请求而复活。列表和详情响应还包含 `last_used_at`：它表示最近一次成功认证时间，`null` 表示尚未使用；`key_prefix` 只用于识别 Key。页面创建的 Key 可随时通过 reveal 接口重新获得完整 secret（服务端按幂等域重新派生并与存储哈希核对）；CLI 授权等其他派生域创建的 Key 不支持 reveal，返回 409。
 
 ## 选择调用地址
 

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from yuxi.services.oidc_service import restore_deleted_oidc_user
 from yuxi.storage.postgres.models_business import APIKey, User
+from yuxi.utils.auth_utils import AuthUtils
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -102,6 +103,82 @@ async def test_get_api_key(test_client, admin_headers):
     data = response.json()
     assert data["api_key"]["id"] == created["id"]
     assert data["api_key"]["name"] == "Get Test"
+
+
+async def test_reveal_api_key_returns_creation_secret(test_client, admin_headers):
+    """Reveal 应重新返回创建时的同一密钥，且该密钥可通过 Bearer 鉴权。"""
+    create_response = await test_client.post(
+        API_KEYS_PATH, json=_create_payload("Reveal Test"), headers=admin_headers
+    )
+    assert create_response.status_code == 200, create_response.text
+    created = create_response.json()
+    api_key_id = created["api_key"]["id"]
+
+    reveal_response = await test_client.post(
+        f"{API_KEYS_PATH}{api_key_id}/reveal", headers=admin_headers
+    )
+    assert reveal_response.status_code == 200, reveal_response.text
+    assert reveal_response.json()["secret"] == created["secret"]
+
+    auth_response = await test_client.get(
+        "/api/auth/me",
+        headers={"Authorization": f"Bearer {reveal_response.json()['secret']}"},
+    )
+    assert auth_response.status_code == 200, auth_response.text
+
+    await test_client.delete(f"{API_KEYS_PATH}{api_key_id}", headers=admin_headers)
+
+
+async def test_reveal_api_key_requires_auth(test_client):
+    """Reveal 必须要求登录。"""
+    response = await test_client.post(f"{API_KEYS_PATH}1/reveal")
+    assert response.status_code == 401, response.text
+
+
+async def test_reveal_api_key_rejects_non_derivable_key(test_client, admin_headers):
+    """CLI 授权创建的密钥无法重建派生域，reveal 必须在 hash 比对上失败。"""
+    engine = create_async_engine(os.environ["POSTGRES_URL"], pool_pre_ping=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    suffix = uuid.uuid4().hex[:8]
+    user_response = await test_client.post(
+        "/api/auth/users",
+        json={"username": f"cli_{suffix}", "password": "routerTest123!", "role": "user"},
+        headers=admin_headers,
+    )
+    assert user_response.status_code == 200, user_response.text
+    user_id = user_response.json()["id"]
+    cli_key_id = None
+    try:
+        async with factory() as db:
+            # CLI 流程的 request_id 形如 c:{device_code_hash[:62]}，派生域是 cli-session:*
+            _, key_hash, key_prefix = AuthUtils.derive_api_key(f"cli-session:{'a' * 64}", user_id)
+            cli_key = APIKey(
+                key_hash=key_hash,
+                key_prefix=key_prefix,
+                request_id=f"c:{'a' * 62}",
+                name="CLI Key",
+                user_id=user_id,
+                department_id=None,
+                expires_at=None,
+                created_by=str(user_id),
+            )
+            db.add(cli_key)
+            await db.commit()
+            await db.refresh(cli_key)
+            cli_key_id = cli_key.id
+
+        response = await test_client.post(
+            f"{API_KEYS_PATH}{cli_key_id}/reveal", headers=admin_headers
+        )
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "该密钥不支持再次查看"
+    finally:
+        async with factory() as db:
+            if cli_key_id is not None:
+                await db.execute(delete(APIKey).where(APIKey.id == cli_key_id))
+            await db.execute(delete(User).where(User.id == user_id))
+            await db.commit()
+        await engine.dispose()
 
 
 async def test_update_api_key(test_client, admin_headers):
