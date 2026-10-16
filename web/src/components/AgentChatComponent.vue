@@ -981,7 +981,7 @@ const steeringRequestIds = reactive(new Set())
 let sendCooldownTimer = null
 // 预设的打招呼文本
 const greetingMessages = [
-  'Synlora，析万物之语',
+  'Synlora，你的科研智能助手',
   'Synlora，与知识对话',
   '答案藏在知识里，我来找',
   '与知识对话，与答案相遇',
