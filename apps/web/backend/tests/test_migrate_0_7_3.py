@@ -270,3 +270,36 @@ def test_load_snapshot_full_mode_matches_placeholders_and_params(monkeypatch):
     assert executed
     for query, params in executed:
         assert query.count("%s") == len(params)
+
+
+def test_load_snapshot_delta_sql_uses_explicit_timestamp_cast(monkeypatch):
+    """delta 参数显式 cast，PostgreSQL 不需要额外推断类型。"""
+    queries = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params=()):
+            queries.append(query)
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    monkeypatch.setattr("psycopg.connect", lambda *_args, **_kwargs: Connection())
+    load_snapshot("dsn", dt("2026-11-02T00:00:00"))
+    assert queries
+    assert all("::timestamptz" in query for query in queries if "%s" in query)

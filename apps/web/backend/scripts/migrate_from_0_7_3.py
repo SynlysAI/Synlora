@@ -588,7 +588,7 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
     import psycopg
     from psycopg.rows import dict_row
 
-    since_sql = "%s" if since else "NULL"
+    since_sql = "%s::timestamptz" if since else "NULL::timestamptz"
     queries = {
         "users": "SELECT * FROM users WHERE is_deleted=0",
         "api_keys": "SELECT ak.*, u.uid AS user_uid FROM api_keys ak JOIN users u ON u.id=ak.user_id",
@@ -599,11 +599,11 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
         "conversations": f"SELECT * FROM conversations WHERE status <> 'deleted' AND ({since_sql} IS NULL OR updated_at >= {since_sql})",
         "messages": """
             SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id
-            WHERE c.status <> 'deleted' AND (%s IS NULL OR m.created_at >= %s)
+            WHERE c.status <> 'deleted' AND (%s::timestamptz IS NULL OR m.created_at >= %s::timestamptz)
         """,
         "runs": """
             SELECT r.* FROM agent_runs r JOIN conversations c ON c.id=r.conversation_id
-            WHERE c.status <> 'deleted' AND (%s IS NULL OR r.updated_at >= %s)
+            WHERE c.status <> 'deleted' AND (%s::timestamptz IS NULL OR r.updated_at >= %s::timestamptz)
         """,
         "operation_logs": f"SELECT * FROM operation_logs WHERE ({since_sql} IS NULL OR timestamp >= {since_sql})",
         "mcp_servers": f"SELECT * FROM mcp_servers WHERE ({since_sql} IS NULL OR updated_at >= {since_sql})",
