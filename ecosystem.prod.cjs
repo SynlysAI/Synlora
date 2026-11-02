@@ -1,4 +1,4 @@
-/** Synlora main 1.8.0 Linux/PM2 生产配置。 */
+/** Synlora main 1.8.1 Linux/PM2 生产配置。 */
 module.exports = {
   apps: [
     {

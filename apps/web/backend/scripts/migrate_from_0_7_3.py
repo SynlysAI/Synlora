@@ -1,4 +1,4 @@
-"""将 Synlora 0.7.3 Postgres 数据迁移到 main 1.8.0 文档存储。
+"""将 Synlora 0.7.3 Postgres 数据迁移到 main 1.8.1 文档存储。
 
 工具分三层：读取快照、纯函数映射、幂等写入。敏感字段只进入目标库，
 不进入迁移报告或日志。
@@ -266,7 +266,7 @@ def build_message_events(session_id: str, messages: list[dict[str, Any]]) -> lis
     for row in sorted(messages, key=lambda item: (int(item.get("sequence") or 0), int(item.get("id") or 0))):
         role = str(row.get("role") or "").lower()
         timestamp = _timestamp(row.get("created_at"))
-        if role == "user":
+        if role in {"user", "human"}:
             if turn_open:
                 events.append({
                     "session_id": session_id, "seq": seq, "type": "turn/end",
@@ -285,7 +285,7 @@ def build_message_events(session_id: str, messages: list[dict[str, Any]]) -> lis
             })
             seq += 1
             turn_open = True
-        elif role == "assistant":
+        elif role in {"assistant", "ai"}:
             events.append({
                 "session_id": session_id, "seq": seq, "type": "assistant/message",
                 "payload": {"content": str(row.get("content") or "")}, "ts": timestamp,
@@ -393,6 +393,34 @@ async def _upsert(store: Any, collection: str, doc: dict[str, Any]) -> None:
     await store.update(collection, doc_id, fields)
 
 
+async def _disable_missing_migrated_users(
+    store: Any,
+    collection: str,
+    active_user_ids: set[str],
+) -> int:
+    """停用源端已删除或不再有效的迁移用户。
+
+    Args:
+        store: 目标文档存储。
+        collection: 目标用户集合名称。
+        active_user_ids: 当前源端有效用户 ID 集合。
+
+    Returns:
+        本次停用的用户数量。
+    """
+    disabled_count = 0
+    for user in await store.list(collection):
+        if not isinstance(user.get("legacy"), dict):
+            continue
+        if str(user.get("_id") or "") in active_user_ids:
+            continue
+        if user.get("status") == "disabled":
+            continue
+        await store.update(collection, str(user["_id"]), {"status": "disabled"})
+        disabled_count += 1
+    return disabled_count
+
+
 async def _encrypt_provider(store: Any, provider: dict[str, Any], fernet_key: str) -> dict[str, Any]:
     """加密 provider API key 后返回可写入文档。"""
     body = dict(provider)
@@ -467,10 +495,14 @@ async def migrate_snapshot(
     skipped_deleted_user_keys = 0
     for row in snapshot.get("api_keys", []):
         owner = users_by_source_id.get(int(row.get("user_id") or -1))
-        if owner is None:
+        if owner is None or owner.get("status") != "active":
             skipped_deleted_user_keys += 1
             continue
         api_keys.append(map_api_key(row, owner))
+    active_user_ids = {
+        str(user["_id"]) for user in users if user.get("status") == "active"
+    }
+    source_api_key_ids = {str(api_key["_id"]) for api_key in api_keys}
     top_agents = [row for row in snapshot.get("agents", []) if not row.get("is_subagent")]
     subagents = [row for row in snapshot.get("agents", []) if row.get("is_subagent")]
     assistants = [map_agent(row) for row in top_agents]
@@ -505,14 +537,29 @@ async def migrate_snapshot(
 
     file_count = 0
     file_checksum = ""
+    deleted_stale_api_keys = 0
+    disabled_missing_users = 0
     if not dry_run:
+        user_collection = "local_users" if target_backend == "sqlite" else "legacy_users"
         for user in users:
             if target_backend == "sqlite":
                 await _upsert(store, "local_users", user)
             else:
                 await _upsert(store, "legacy_users", user)
+        disabled_missing_users = await _disable_missing_migrated_users(
+            store, user_collection, active_user_ids
+        )
         for doc in api_keys:
             await _upsert(store, "api_keys", doc)
+        for existing_key in await store.list("api_keys"):
+            key_id = str(existing_key.get("_id") or "")
+            if (
+                existing_key.get("migrated")
+                and key_id.startswith("legacy-api-key-")
+                and key_id not in source_api_key_ids
+            ):
+                await store.delete("api_keys", key_id)
+                deleted_stale_api_keys += 1
         for doc in assistants:
             await _upsert(store, "assistants", doc)
         for doc in legacy_agents:
@@ -534,8 +581,13 @@ async def migrate_snapshot(
 
         source_root = Path(source_data_root)
         target_root = Path(target_data_root)
-        for project, source_row in zip(projects, snapshot.get("projects", []), strict=False):
-            if source_row.get("deleted_at") is not None:
+        source_projects = {
+            str(row.get("id") or ""): row
+            for row in snapshot.get("projects", [])
+        }
+        for project in projects:
+            source_row = source_projects.get(str(project["_id"]))
+            if source_row is None or source_row.get("deleted_at") is not None:
                 continue
             source_dir = source_root / "shared" / str(source_row["uid"]) / "workspace" / str(source_row["workdir_path"])
             target_dir = target_root / "users" / str(source_row["uid"]) / "projects" / project["dir_name"]
@@ -562,8 +614,13 @@ async def migrate_snapshot(
         "projects": len(projects),
         "sessions": len(sessions),
         "messages": len(snapshot.get("messages", [])),
-        "messages_preserved": sum(1 for row in snapshot.get("messages", []) if str(row.get("role")) in {"user", "assistant", "tool"}),
+        "messages_preserved": sum(
+            1 for row in snapshot.get("messages", [])
+            if str(row.get("role") or "").lower() in {"user", "human", "assistant", "ai", "tool"}
+        ),
         "skipped_deleted_user_api_keys": skipped_deleted_user_keys,
+        "deleted_stale_api_keys": deleted_stale_api_keys,
+        "disabled_missing_users": disabled_missing_users,
         "runs": len(runs),
         "operation_logs": len(logs),
         "mcp_servers": len(mcps),
@@ -599,7 +656,11 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
         "conversations": f"SELECT * FROM conversations WHERE status <> 'deleted' AND ({since_sql} IS NULL OR updated_at >= {since_sql})",
         "messages": """
             SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id
-            WHERE c.status <> 'deleted' AND (%s::timestamptz IS NULL OR m.created_at >= %s::timestamptz)
+            WHERE c.status <> 'deleted' AND (
+                %s::timestamptz IS NULL
+                OR c.updated_at >= %s::timestamptz
+                OR m.created_at >= %s::timestamptz
+            )
         """,
         "runs": """
             SELECT r.* FROM agent_runs r JOIN conversations c ON c.id=r.conversation_id
@@ -611,7 +672,9 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
     snapshot: dict[str, list[dict[str, Any]]] = {}
     with psycopg.connect(dsn, row_factory=dict_row) as connection:
         for name, query in queries.items():
-            if name in {"messages", "runs"}:
+            if name == "messages":
+                params = (since, since, since)
+            elif name == "runs":
                 params = (since, since)
             elif name in {"users", "api_keys", "providers", "skills"}:
                 params = ()
@@ -620,9 +683,18 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
             with connection.cursor() as cursor:
                 cursor.execute(query, params)
                 snapshot[name] = [dict(row) for row in cursor.fetchall()]
-    # delta 消息可能属于未因自身 updated_at 变化的 conversation；补齐这些会话。
+    # 事件会按会话完整重建，因此 delta 也要取回受影响会话的完整消息历史。
     message_conversation_ids = {int(row["conversation_id"]) for row in snapshot.get("messages", [])}
     if message_conversation_ids and since is not None:
+        with psycopg.connect(dsn, row_factory=dict_row) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                WHERE c.status <> 'deleted' AND c.id = ANY(%s)
+                """,
+                (sorted(message_conversation_ids),),
+            )
+            snapshot["messages"] = [dict(row) for row in cursor.fetchall()]
         existing_ids = {int(row.get("id") or -1) for row in snapshot.get("conversations", [])}
         missing = message_conversation_ids - existing_ids
         if missing:
@@ -644,6 +716,13 @@ async def _import_mongo_users(uri: str, users: list[dict[str, Any]]) -> None:
         collection = client["ai4ms"]["users"]
         for user in users:
             await collection.replace_one({"_id": user["_id"]}, user, upsert=True)
+        await collection.update_many(
+            {
+                "legacy.source_id": {"$exists": True},
+                "_id": {"$nin": [str(user["_id"]) for user in users]},
+            },
+            {"$set": {"status": "disabled"}},
+        )
     finally:
         client.close()
 
@@ -654,17 +733,14 @@ async def run(args: argparse.Namespace) -> MigrationReport:
     snapshot = load_snapshot(args.source_dsn, since)
     users = [map_user(row) for row in snapshot.get("users", [])]
     if args.dry_run:
-        return MigrationReport(
-            counts={
-                "users": len(snapshot.get("users", [])),
-                "api_keys": len(snapshot.get("api_keys", [])),
-                "agents": len(snapshot.get("agents", [])),
-                "projects": len(snapshot.get("projects", [])),
-                "conversations": len(snapshot.get("conversations", [])),
-                "messages": len(snapshot.get("messages", [])),
-                "runs": len(snapshot.get("runs", [])),
-            },
+        return await migrate_snapshot(
+            snapshot,
+            None,
+            args.source_data_root,
+            args.target_data_root,
             dry_run=True,
+            target_backend=args.target_backend,
+            fernet_key=args.fernet_key,
         )
     store = create_store(
         args.target_backend,

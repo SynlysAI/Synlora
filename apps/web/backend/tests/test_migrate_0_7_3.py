@@ -1,4 +1,4 @@
-"""Synlora 0.7.3 -> main 1.8.0 迁移工具测试。"""
+"""Synlora 0.7.3 -> main 1.8.1 迁移工具测试。"""
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -158,6 +158,20 @@ def test_map_project_session_events_and_run():
     assert run["status"] == "completed"
 
 
+def test_build_message_events_accepts_legacy_human_and_ai_roles():
+    events = build_message_events("thread-legacy", [
+        {"id": 1, "role": "human", "content": "旧问题", "sequence": 1,
+         "created_at": dt("2026-10-21T00:00:01")},
+        {"id": 2, "role": "ai", "content": "旧回答", "sequence": 2,
+         "created_at": dt("2026-10-21T00:00:02")},
+    ])
+    assert [event["type"] for event in events] == [
+        "turn/start", "user/message", "assistant/message", "turn/end",
+    ]
+    assert events[1]["payload"] == {"text": "旧问题"}
+    assert events[2]["payload"] == {"content": "旧回答"}
+
+
 @pytest.mark.asyncio
 async def test_migrate_snapshot_is_idempotent_and_copies_project_files(tmp_path):
     store = create_store("sqlite", sqlite_path=str(tmp_path / "target.db"))
@@ -183,6 +197,12 @@ async def test_migrate_snapshot_is_idempotent_and_copies_project_files(tmp_path)
         }],
         "providers": [],
         "projects": [{
+            "id": "deleted-project", "uid": "fangyikai", "name": "已删除项目",
+            "workdir_path": "projects/deleted", "status": "deleted",
+            "deleted_at": dt("2026-10-20T00:00:00"),
+            "created_at": dt("2026-10-20T00:00:00"),
+            "updated_at": dt("2026-10-20T00:00:00"),
+        }, {
             "id": "p1", "uid": "fangyikai", "name": "项目", "workdir_path": "projects/project-dir",
             "status": "active", "deleted_at": None, "created_at": dt("2026-10-21T00:00:00"),
             "updated_at": dt("2026-10-21T00:00:00"),
@@ -200,6 +220,13 @@ async def test_migrate_snapshot_is_idempotent_and_copies_project_files(tmp_path)
         "operation_logs": [],
         "mcp_servers": [],
     }
+    dry_run = await migrate_snapshot(
+        snapshot, None, str(source_root), str(target_root), dry_run=True
+    )
+    assert dry_run.dry_run is True
+    assert dry_run.counts["messages_preserved"] == 1
+    assert await store.list("local_users") == []
+
     first = await migrate_snapshot(snapshot, store, str(source_root), str(target_root), dry_run=False)
     second = await migrate_snapshot(snapshot, store, str(source_root), str(target_root), dry_run=False)
     assert first.counts["users"] == second.counts["users"] == 1
@@ -213,6 +240,72 @@ async def test_migrate_snapshot_is_idempotent_and_copies_project_files(tmp_path)
     assert copied.read_text(encoding="utf-8") == "hello"
     report_text = first.model_dump_json()
     assert "argon2" not in report_text and "key_hash" not in report_text
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_delta_removes_stale_keys_and_disables_deleted_users(tmp_path):
+    """delta 会撤销已删除主体的旧 key，并停用迁移过的用户记录。"""
+    import hashlib
+
+    store = create_store("sqlite", sqlite_path=str(tmp_path / "target.db"))
+    await store.init()
+    source_key = {
+        "id": 3,
+        "key_hash": hashlib.sha256(b"yxkey_legacy").hexdigest(),
+        "key_prefix": "yxkey_lega",
+        "name": "旧令牌",
+        "user_id": 1,
+        "expires_at": None,
+        "is_enabled": True,
+        "revoked_at": None,
+        "last_used_at": None,
+        "created_at": dt("2026-10-16T00:00:00"),
+    }
+    initial_snapshot = {
+        "users": [user_row()], "api_keys": [source_key], "agents": [], "providers": [],
+        "projects": [], "conversations": [], "messages": [], "runs": [],
+        "operation_logs": [], "mcp_servers": [], "skills": [],
+    }
+    await migrate_snapshot(initial_snapshot, store, tmp_path, tmp_path / "data")
+
+    delta_snapshot = {
+        "users": [], "api_keys": [source_key], "agents": [], "providers": [],
+        "projects": [], "conversations": [], "messages": [], "runs": [],
+        "operation_logs": [], "mcp_servers": [], "skills": [],
+    }
+    report = await migrate_snapshot(delta_snapshot, store, tmp_path, tmp_path / "data")
+
+    user = await store.get("local_users", "fangyikai")
+    assert user["status"] == "disabled"
+    assert await store.list("api_keys") == []
+    assert report.counts["skipped_deleted_user_api_keys"] == 1
+    assert report.counts["deleted_stale_api_keys"] == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_delta_removes_key_deleted_from_source(tmp_path):
+    """有效用户的 key 从源端删除后，目标端不会继续接受旧 key。"""
+    store = create_store("sqlite", sqlite_path=str(tmp_path / "target.db"))
+    await store.init()
+    key = {
+        "id": 4, "key_hash": "d" * 64, "key_prefix": "yxkey_delete", "name": "待删除",
+        "user_id": 1, "expires_at": None, "is_enabled": True, "revoked_at": None,
+        "last_used_at": None, "created_at": dt("2026-10-16T00:00:00"),
+    }
+    base = {
+        "users": [user_row()], "api_keys": [key], "agents": [], "providers": [],
+        "projects": [], "conversations": [], "messages": [], "runs": [],
+        "operation_logs": [], "mcp_servers": [], "skills": [],
+    }
+    await migrate_snapshot(base, store, tmp_path, tmp_path / "data")
+    deleted_key_snapshot = {**base, "api_keys": []}
+    report = await migrate_snapshot(
+        deleted_key_snapshot, store, tmp_path, tmp_path / "data"
+    )
+    assert await store.list("api_keys") == []
+    assert report.counts["deleted_stale_api_keys"] == 1
     await store.close()
 
 
@@ -303,3 +396,58 @@ def test_load_snapshot_delta_sql_uses_explicit_timestamp_cast(monkeypatch):
     load_snapshot("dsn", dt("2026-11-02T00:00:00"))
     assert queries
     assert all("::timestamptz" in query for query in queries if "%s" in query)
+
+
+def test_load_snapshot_delta_expands_messages_for_affected_conversations(monkeypatch):
+    """重建会话事件前，delta 会加载受影响会话的完整历史消息。"""
+    recent_message = {
+        "id": 2, "conversation_id": 9, "role": "ai", "content": "新增回答",
+        "sequence": 2, "created_at": dt("2026-11-02T00:00:02"),
+    }
+    full_messages = [
+        {
+            "id": 1, "conversation_id": 9, "role": "human", "content": "旧问题",
+            "sequence": 1, "created_at": dt("2026-11-01T00:00:01"),
+        },
+        recent_message,
+    ]
+    conversation = {
+        "id": 9, "thread_id": "thread-9", "uid": "fangyikai", "status": "active",
+        "updated_at": dt("2026-11-02T00:00:03"),
+    }
+
+    class Cursor:
+        query = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, _params=()):
+            self.query = query
+
+        def fetchall(self):
+            if "FROM messages" in self.query and "ANY(%s)" in self.query:
+                return full_messages
+            if "FROM messages" in self.query:
+                return [recent_message]
+            if "FROM conversations WHERE id = ANY(%s)" in self.query:
+                return [conversation]
+            return []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    monkeypatch.setattr("psycopg.connect", lambda *_args, **_kwargs: Connection())
+    snapshot = load_snapshot("dsn", dt("2026-11-02T00:00:00"))
+    assert snapshot["messages"] == full_messages
+    assert snapshot["conversations"] == [conversation]
