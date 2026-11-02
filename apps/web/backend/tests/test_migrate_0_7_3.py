@@ -139,10 +139,11 @@ def test_map_project_session_events_and_run():
         {"id": 3, "role": "tool", "content": "skipped", "sequence": 3, "created_at": dt("2026-10-21T00:00:03")},
     ])
     types = [event["type"] for event in events]
-    assert types == ["turn/start", "user/message", "assistant/message", "turn/end"]
+    assert types == ["turn/start", "user/message", "assistant/message", "tool/result", "turn/end"]
     assert events[1]["payload"] == {"text": "你好"}
     assert events[2]["payload"]["content"] == "你好，我是 Synlora。"
-    assert [event["seq"] for event in events] == [0, 1, 2, 3]
+    assert [event["seq"] for event in events] == [0, 1, 2, 3, 4]
+    assert events[3]["payload"]["name"] == "legacy_tool"
 
     run = map_run({
         "id": "run-1",
@@ -211,4 +212,26 @@ async def test_migrate_snapshot_is_idempotent_and_copies_project_files(tmp_path)
     assert copied.read_text(encoding="utf-8") == "hello"
     report_text = first.model_dump_json()
     assert "argon2" not in report_text and "key_hash" not in report_text
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_migrate_snapshot_skips_api_keys_for_deleted_users(tmp_path):
+    """已删除用户的 key 不导入，避免失效主体重新获得访问权限。"""
+    store = create_store("sqlite", sqlite_path=str(tmp_path / "target.db"))
+    await store.init()
+    snapshot = {
+        "users": [],
+        "api_keys": [{
+            "id": 1, "key_hash": "c" * 64, "key_prefix": "yxkey_old", "name": "Deleted owner",
+            "user_id": 99, "expires_at": None, "is_enabled": True, "revoked_at": None,
+            "last_used_at": None, "created_at": dt("2026-10-16T00:00:00"),
+        }],
+        "agents": [], "providers": [], "projects": [], "conversations": [], "messages": [],
+        "runs": [], "operation_logs": [], "mcp_servers": [], "skills": [],
+    }
+    report = await migrate_snapshot(snapshot, store, tmp_path, tmp_path / "data", dry_run=False)
+    assert report.counts["api_keys"] == 0
+    assert report.counts["skipped_deleted_user_api_keys"] == 1
+    assert await store.list("api_keys") == []
     await store.close()

@@ -32,6 +32,7 @@ class MigrationReport(BaseModel):
     file_count: int = 0
     file_checksum: str = ""
     warnings: list[str] = Field(default_factory=list)
+    source_skills: list[str] = Field(default_factory=list)
     dry_run: bool = False
 
 
@@ -291,6 +292,21 @@ def build_message_events(session_id: str, messages: list[dict[str, Any]]) -> lis
             })
             seq += 1
             turn_open = True
+        elif role == "tool":
+            metadata = _mapping(row.get("extra_metadata"))
+            output = _mapping(metadata.get("output"))
+            events.append({
+                "session_id": session_id, "seq": seq, "type": "tool/result",
+                "payload": {
+                    "name": str(metadata.get("tool_name") or "legacy_tool"),
+                    "tool_call_id": str(metadata.get("tool_call_id") or row.get("run_id") or row.get("id") or ""),
+                    "content": str(output.get("content") or row.get("content") or ""),
+                    "ok": str(output.get("status") or "success") != "error",
+                },
+                "ts": timestamp,
+            })
+            seq += 1
+            turn_open = True
         last_timestamp = timestamp
     if turn_open:
         events.append({
@@ -447,11 +463,14 @@ async def migrate_snapshot(
         int(row.get("id") or -1): mapped
         for row, mapped in zip(snapshot.get("users", []), users, strict=False)
     }
-    user_by_uid = {str(doc["_id"]): doc for doc in users}
-    api_keys = [
-        map_api_key(row, users_by_source_id.get(int(row.get("user_id") or -1), user_by_uid.get(str(row.get("user_id") or ""), {"_id": str(row.get("user_id")), "username": "", "role": "user"})))
-        for row in snapshot.get("api_keys", [])
-    ]
+    api_keys: list[dict[str, Any]] = []
+    skipped_deleted_user_keys = 0
+    for row in snapshot.get("api_keys", []):
+        owner = users_by_source_id.get(int(row.get("user_id") or -1))
+        if owner is None:
+            skipped_deleted_user_keys += 1
+            continue
+        api_keys.append(map_api_key(row, owner))
     top_agents = [row for row in snapshot.get("agents", []) if not row.get("is_subagent")]
     subagents = [row for row in snapshot.get("agents", []) if row.get("is_subagent")]
     assistants = [map_agent(row) for row in top_agents]
@@ -538,9 +557,13 @@ async def migrate_snapshot(
         "legacy_agents": len(legacy_agents),
         "subagents_preserved": len(subagents),
         "providers": len(providers),
+        "skipped_disabled_providers": sum(1 for row in snapshot.get("providers", []) if not row.get("is_enabled")),
+        "source_skills": len(snapshot.get("skills", [])),
         "projects": len(projects),
         "sessions": len(sessions),
         "messages": len(snapshot.get("messages", [])),
+        "messages_preserved": sum(1 for row in snapshot.get("messages", []) if str(row.get("role")) in {"user", "assistant", "tool"}),
+        "skipped_deleted_user_api_keys": skipped_deleted_user_keys,
         "runs": len(runs),
         "operation_logs": len(logs),
         "mcp_servers": len(mcps),
@@ -553,7 +576,9 @@ async def migrate_snapshot(
     report = MigrationReport(
         counts=dict(counts), checksums=checksums,
         file_count=file_count, file_checksum=file_checksum,
-        warnings=warnings, dry_run=dry_run,
+        warnings=warnings,
+        source_skills=[str(row.get("slug") or "") for row in snapshot.get("skills", [])],
+        dry_run=dry_run,
     )
     return report
 
@@ -565,10 +590,11 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
 
     since_sql = "%s" if since else "NULL"
     queries = {
-        "users": f"SELECT * FROM users WHERE is_deleted=0",
+        "users": "SELECT * FROM users WHERE is_deleted=0",
         "api_keys": "SELECT ak.*, u.uid AS user_uid FROM api_keys ak JOIN users u ON u.id=ak.user_id",
         "agents": f"SELECT * FROM agents WHERE ({since_sql} IS NULL OR updated_at >= {since_sql})",
-        "providers": "SELECT * FROM model_providers WHERE is_enabled AND provider_id='HW-LOCAL'",
+        "providers": "SELECT * FROM model_providers",
+        "skills": "SELECT slug, name, version, enabled FROM skills",
         "projects": f"SELECT * FROM projects WHERE deleted_at IS NULL AND ({since_sql} IS NULL OR updated_at >= {since_sql})",
         "conversations": f"SELECT * FROM conversations WHERE status <> 'deleted' AND ({since_sql} IS NULL OR updated_at >= {since_sql})",
         "messages": """
@@ -587,10 +613,10 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
         for name, query in queries.items():
             if name in {"messages", "runs"}:
                 params = (since, since)
-            elif name in {"users", "api_keys", "providers"}:
+            elif name in {"users", "api_keys", "providers", "skills"}:
                 params = ()
             else:
-                params = (since,)
+                params = (since, since)
             with connection.cursor() as cursor:
                 cursor.execute(query, params)
                 snapshot[name] = [dict(row) for row in cursor.fetchall()]
