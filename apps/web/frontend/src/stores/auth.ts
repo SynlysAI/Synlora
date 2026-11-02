@@ -134,7 +134,7 @@ export const useAuthStore = create<AuthState>((set) => ({
  */
 function resetAccountRoute() {
   const router = useRouterStore.getState()
-  if (router.route.kind === 'chat-session' || router.route.kind === 'admin') {
+  if (router.route.kind === 'chat-session' || router.route.kind === 'admin' || router.route.kind === 'api-keys') {
     router.navigate({ kind: 'chat-new' }, { replace: true })
   }
 }
