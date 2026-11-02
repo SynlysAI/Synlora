@@ -1,5 +1,6 @@
 /** 个人 yxkey 访问令牌设置页：列表、创建、启停、删除与一次性复制。 */
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Check, Copy, Trash2, X } from 'lucide-react'
 import { api } from '@/api/client'
 import { PageTopBar, ToastHost } from '@/components/layout'
 import { Switch } from '@/components/admin/shared'
@@ -107,7 +108,7 @@ export default function ApiKeySettings() {
     <div className="flex h-dvh flex-col overflow-hidden bg-[var(--sa-alias-bg-base)] text-[var(--sa-alias-label-primary)]">
       <PageTopBar title="个人访问令牌" />
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[880px] px-8 pt-10 pb-12">
+        <div className="mx-auto w-full max-w-[880px] px-5 pt-8 pb-12 sm:px-8 sm:pt-10">
           <header className="mb-6">
             <h1 className="text-2xl font-semibold leading-9">访问令牌</h1>
             <p className="mt-1 text-sm text-[var(--sa-alias-label-tertiary)]">
@@ -120,7 +121,7 @@ export default function ApiKeySettings() {
           )}
 
           {createdKey && (
-            <section aria-label="新访问令牌" className="mb-6 rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-5">
+            <section aria-label="新访问令牌" className="mb-6 border-l-2 border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-4">
               <h2 className="text-[14px] font-medium">新令牌已创建</h2>
               <p className="mt-1 text-[13px] text-[var(--sa-alias-label-tertiary)]">
                 请立即复制保存；关闭或刷新页面后，系统只能显示前缀，无法找回完整令牌。
@@ -130,14 +131,14 @@ export default function ApiKeySettings() {
                   {createdKey}
                 </code>
                 <div className="flex gap-2">
-                  <button type="button" className={primaryButtonClass} onClick={() => void copy()}>{copied ? '已复制' : '复制'}</button>
-                  <button type="button" className={secondaryButtonClass} onClick={() => setCreatedKey('')}>关闭</button>
+                  <button type="button" className={`${secondaryButtonClass} !h-9 !w-9 !p-0`} title={copied ? '已复制' : '复制'} aria-label={copied ? '已复制' : '复制'} onClick={() => void copy()}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
+                  <button type="button" className={`${secondaryButtonClass} !h-9 !w-9 !p-0`} title="关闭" aria-label="关闭" onClick={() => setCreatedKey('')}><X size={16} /></button>
                 </div>
               </div>
             </section>
           )}
 
-          <section className="mb-6 rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-5">
+          <section className="mb-8 border-t border-[var(--sa-alias-border-l1)] pt-5">
             <h2 className="text-[14px] font-medium">创建令牌</h2>
             <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_190px_auto] sm:items-end">
               <label className="flex flex-col gap-1.5 text-[13px] text-[var(--sa-alias-label-secondary)]">
@@ -154,8 +155,8 @@ export default function ApiKeySettings() {
             </div>
           </section>
 
-          <section className="rounded-[var(--sa-radius-lg)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)]">
-            <div className="border-b border-[var(--sa-alias-border-l1)] px-5 py-4">
+          <section className="border-t border-[var(--sa-alias-border-l1)]">
+            <div className="py-4">
               <h2 className="text-[14px] font-medium">已有令牌</h2>
             </div>
             {loading ? (
@@ -163,7 +164,8 @@ export default function ApiKeySettings() {
             ) : items.length === 0 ? (
               <p className="px-5 py-8 text-center text-[13px] text-[var(--sa-alias-label-tertiary)]">暂无访问令牌。</p>
             ) : (
-              <table className="w-full table-fixed border-collapse text-left text-[13px]">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] table-fixed border-collapse text-left text-[13px]">
                 <thead>
                   <tr className="text-[12px] text-[var(--sa-alias-label-tertiary)]">
                     <th className="w-[28%] px-5 py-3 font-medium">名称</th>
@@ -188,12 +190,13 @@ export default function ApiKeySettings() {
                       <td className="px-3 py-3 text-[var(--sa-alias-label-secondary)]">{item.last_used_at ? formatRelativeTime(item.last_used_at) : '未使用'}</td>
                       <td className="px-3 py-3 text-[var(--sa-alias-label-secondary)]">{formatDate(item.expires_at)}</td>
                       <td className="px-5 py-3 text-right">
-                        <button type="button" className={secondaryButtonClass} onClick={() => setDeleteId(item.id)}>删除</button>
+                        <button type="button" className={`${secondaryButtonClass} !h-8 !w-8 !p-0`} title="删除令牌" aria-label={`删除令牌 ${item.name}`} onClick={() => setDeleteId(item.id)}><Trash2 size={15} /></button>
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </section>
         </div>

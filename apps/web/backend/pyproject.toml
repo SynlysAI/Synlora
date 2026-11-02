@@ -1,6 +1,6 @@
 [project]
 name = "synlys-web"
-version = "1.8.2"
+version = "1.8.3"
 description = "SynlysAgent Web 后端（FastAPI，harness 宿主）"
 requires-python = ">=3.12"
 dependencies = [
@@ -19,7 +19,7 @@ dependencies = [
 ]
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
-prod = ["motor>=3.4"]
+prod = ["motor>=3.4", "docker>=7.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

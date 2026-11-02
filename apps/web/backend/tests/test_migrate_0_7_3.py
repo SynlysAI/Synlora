@@ -1,4 +1,4 @@
-"""Synlora 0.7.3 -> main 1.8.2 迁移工具测试。"""
+"""Synlora 0.7.3 -> main 迁移工具测试。"""
 from datetime import datetime, timezone
 from pathlib import Path
 
