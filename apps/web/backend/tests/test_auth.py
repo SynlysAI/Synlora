@@ -305,3 +305,18 @@ async def test_login_store_not_ready_503(tmp_path):
         r = await c.post("/api/v1/auth/login",
                          json={"username": "a", "password": "b"})
     assert r.status_code == 503
+
+
+def test_verify_password_accepts_0_7_3_argon2_hash():
+    """兼容 Synlora 0.7. 导入的 argon2 密码哈希。"""
+    from argon2 import PasswordHasher
+
+    stored = PasswordHasher().hash("legacy-password")
+    assert verify_password("legacy-password", stored)
+    assert not verify_password("wrong-password", stored)
+
+
+def test_verify_password_keeps_pbkdf2_compatibility():
+    """main 原 PBKDF2 用户密码继续可用。"""
+    stored = hash_password("legacy-pbkdf2")
+    assert verify_password("legacy-pbkdf2", stored)

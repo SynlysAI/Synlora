@@ -48,6 +48,24 @@ export interface ModelProvider {
   has_key: boolean
 }
 
+/** 个人 yxkey 访问令牌公开视图；服务端永不返回 hash 或明文。 */
+export interface ApiKey {
+  id: string
+  name: string
+  key_prefix: string
+  is_enabled: boolean
+  expires_at: number | null
+  last_used_at: number | null
+  created_at: number
+  migrated?: boolean
+}
+
+/** 创建访问令牌响应；key 仅此响应出现一次。 */
+export interface ApiKeyCreateResponse {
+  key: string
+  item: ApiKey
+}
+
 /** 模型服务连通性测试结果。 */
 export interface ProviderTestResult {
   ok: boolean

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.admin_mcp_api import router as admin_mcp_router
+from app.api.api_keys_api import router as api_keys_router
 from app.api.assistants_api import router as assistants_router
 from app.api.auth_api import router as auth_router
 from app.api.deps import Repos
@@ -34,6 +35,7 @@ from app.catalog.service import CapabilityService
 from app.catalog.user_caps import UserCapabilityRepo
 from app.core.settings import Settings
 from app.db.repos import (
+    APIKeyRepo,
     AssistantRepo,
     EventRepo,
     FileRepo,
@@ -90,6 +92,7 @@ async def lifespan(app: FastAPI):
         logger.info("已清理重启前残留的进行中 run: %d 条", stale)
     app.state.file_repo = FileRepo(store)
     app.state.event_repo = EventRepo(store)
+    app.state.api_key_repo = APIKeyRepo(store)
     app.state.project_service = ProjectService(store, settings.data_root)
     # 用户自建专家：文件为事实源，列「我的专家」时幂等实例化进 assistants
     app.state.expert_service = UserExpertService(settings.data_root)
@@ -165,7 +168,9 @@ async def lifespan(app: FastAPI):
     app.state.repos = Repos(
         provider=app.state.provider_repo, assistant=app.state.assistant_repo,
         session=app.state.session_repo, run=app.state.run_repo,
-        file=app.state.file_repo, event=app.state.event_repo)
+        file=app.state.file_repo,
+        event=app.state.event_repo,
+        api_key=app.state.api_key_repo)
     job_repo = JobRepo(store)
     app.state.workspace_job_guard = WorkspaceJobGuard(job_repo)
     app.state.job_service = JobService(
@@ -222,6 +227,7 @@ def create_app() -> FastAPI:
     )
     app.state.store = None  # lifespan 启动时初始化（未就绪时依赖层 503）
     app.include_router(auth_router)
+    app.include_router(api_keys_router)
     app.include_router(models_router)
     app.include_router(assistants_router)
     app.include_router(sessions_router)
