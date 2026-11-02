@@ -20,6 +20,7 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "projects": ["user_id"],
     "runs": ["session_id", "user_id", "status"],
     "local_users": ["username"],
+    "api_keys": ["key_hash", "user_id"],
     "plugin_configs": [],  # 插件配置：仅按 _id 读写与全量列举，无需提取索引列
     "mcp_connections": ["user_id"],  # 用户 MCP 连接：按 user_id 列举
     "catalog_policy": [],

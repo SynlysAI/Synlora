@@ -10,7 +10,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHash, VerificationError, VerifyMismatchError
+
 from app.core.settings import Settings
+
+_PASSWORD_HASHER = PasswordHasher()
 
 
 def _secret(settings: Settings) -> bytes:
@@ -115,6 +120,11 @@ def verify_password(password: str, stored: str) -> bool:
     Returns:
         匹配 True；格式损坏或不匹配 False。
     """
+    if stored.startswith("$argon2"):
+        try:
+            return _PASSWORD_HASHER.verify(stored, password)
+        except (InvalidHash, VerificationError, VerifyMismatchError):
+            return False
     try:
         _, iterations, salt_hex, expected = stored.split("$")
         digest = hashlib.pbkdf2_hmac(

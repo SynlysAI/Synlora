@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "synlys-harness",
     "fastapi>=0.115",
+    "argon2-cffi>=23.1",
     "uvicorn>=0.30",
     "pydantic-settings>=2.2",
     "aiosqlite>=0.20",

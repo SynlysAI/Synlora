@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Request
 
 from app.core.auth import parse_token
 from app.core.settings import Settings
+from app.services.api_keys import resolve_api_key
 from app.services.tool_registry import REGISTRY as _REGISTRY
 
 
@@ -29,6 +30,7 @@ class Repos:
     run: Any
     file: Any
     event: Any
+    api_key: Any
 
 
 def get_settings(request: Request) -> Settings:
@@ -69,6 +71,14 @@ async def get_current_user(request: Request, settings=Depends(get_settings)) -> 
         return {"sub": "dev", "username": "dev", "role": "admin"}
     if not token:
         raise HTTPException(401, "缺少 token")
+    if token.startswith("yxkey_"):
+        store = getattr(request.app.state, "store", None)
+        if store is None:
+            raise HTTPException(503, "存储未就绪")
+        payload = await resolve_api_key(store, token)
+        if payload is None or not payload.get("sub"):
+            raise HTTPException(401, "token 无效或过期")
+        return payload
     payload = parse_token(token, settings)
     if payload is None:
         raise HTTPException(401, "token 无效或过期")
