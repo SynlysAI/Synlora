@@ -166,8 +166,9 @@ docker build -t synlora-sandbox:latest docker/sandbox/
 
 - **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 URL hash 提取 token 放入 `Authorization: Bearer` 请求头，后端用 `AUTH_SECRET` 校验。
 - **账号打通**：`STORAGE_BACKEND=mongodb` 时，登录直连 MongoDB 的 `ai4ms.users` 集合校验用户名/密码（PBKDF2-SHA256，格式与门户兼容）并签发同格式 token；sqlite 模式使用本地 `local_users`（开发用）。
-- **Plane 科研上下文**：建会话和每轮消息都必须携带 `X-Research-Context-Token`（`agent-context.v2`），校验通过后 scope metadata 落库并以只读 `ResearchContextScope` 注入 Agent 运行；`allowed_tools` 与注册表 / 专家白名单 / 插件可见性取防御性交集，opaque token 本身不落库。
+- **Plane 科研上下文**：建会话和每轮消息都必须携带 `X-Research-Context-Token`。Synlora 同时接受 `agent-context.v2` 与 `agent-context.v3`：v2 自动归一化为 Node target，v3 支持 Workspace / Project / Research Chain / Node 四级目标、能力硬上界和 bounded manifest；校验通过后 metadata 落库，`allowed_tools` / `allowed_plugins` / `allowed_mcp_ids` 与注册表、专家白名单、插件和 MCP 可见性取防御性交集，opaque token 本身不落库。
 - **Plane delegated identity / capability**：Plane BFF 可用 `PLANE_SERVICE_TOKEN` 调 `/api/v1/research/delegated-token` 换取短效用户 token，并用 `/api/v1/research/capabilities` 获取只读 `capability-manifest.v1` 投影；运行事件继续通过 `after_seq` 游标和回写 client 同步回 Plane。
+- **Plane Agent Dock 后台 run**：`POST /api/v1/sessions/{sid}/runs` 与现有 SSE 消息端点共用同一装配和后台执行器，提交后立即返回 `run_id`；Plane BFF 通过 durable events 回放、审批 answer 和显式 cancel 管理生命周期。SSE 断开不会取消 run， transient delta 仍不落盘。
 
 ## 测试
 
