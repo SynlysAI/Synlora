@@ -21,6 +21,9 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "runs": ["session_id", "user_id", "status"],
     "local_users": ["username"],
     "api_keys": ["key_hash", "user_id"],
+    "legacy_operation_logs": [],
+    "legacy_mcp_servers": [],
+    "legacy_agents": [],
     "plugin_configs": [],  # 插件配置：仅按 _id 读写与全量列举，无需提取索引列
     "mcp_connections": ["user_id"],  # 用户 MCP 连接：按 user_id 列举
     "catalog_policy": [],
