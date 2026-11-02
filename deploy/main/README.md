@@ -16,6 +16,13 @@ cd apps/web/backend && uv sync
 cd ../../..
 cp apps/web/backend/.env.example apps/web/backend/.env
 # 按 .env.example 配置 Mongo、认证、Fernet、Plane 回连等持久密钥。
+cat > deploy/main/.env <<'EOF'
+MONGO_USERNAME=synlora
+MONGO_PASSWORD=<持久强密码>
+EOF
+chmod 600 deploy/main/.env
+# backend .env 的 MONGODB_URI 使用同一账号：
+# mongodb://synlora:<持久强密码>@127.0.0.1:27019/?authSource=admin
 
 pm2 start ecosystem.prod.cjs
 docker compose --project-name synlora-main --file deploy/main/docker-compose.yml up --detach

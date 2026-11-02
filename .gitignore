@@ -20,6 +20,7 @@ dist/
 # 运行时数据（用户工作区/会话事件/本地库）
 /.runtime/
 /apps/web/data/
+/deploy/main/mongodb-data/
 
 # 环境与密钥
 .env
