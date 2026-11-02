@@ -1,208 +1,261 @@
 # Synlora 科研智能体平台
 
-（内部代号 SynlysAgent：目录/包/conda 环境沿用早期代号，对外品牌统一为 Synlora）
+Synlora 是一个面向科研人员的 Web 智能体工作台。它在三栏对话界面中组合专家、技能、插件、MCP、知识库和用户文件工作区，让模型能够读取资料、执行分析代码、生成交付文件，并把耗时任务交给后台 Job 跟踪。平台作为 AI⁴MS 生态的独立子平台部署，可与门户及 Plane 科研上下文打通。
 
-类 Claude/DeepSeek Harness 的科研智能体 Web 平台：三栏对话工作台，通过对话形式使用各助手（谱图解析、高分子研发、数据分析、文件处理等），每个用户拥有独立沙箱（文件工作区 + 受限 Python 执行），管理员可在页面上配置模型与助手。作为 AI⁴MS 生态的独立子平台部署，现有 AI⁴MS 能力后续通过 Tool Registry 接入。
+> 仓库内部代号仍为 **SynlysAgent**，部分目录、Python 包和 conda 环境名沿用该代号；对外产品名称统一为 **Synlora**。
 
-平台已具备完整的 Agent 运行时能力：SSE 流式对话与断连续传、**运行中插话**（steering，赶不上本轮自动转下一轮）、**工具级强制审批**（`Permission.ASK_USER`，管线硬约束）、**多题勾选式问询**（ask_user，逐题作答一次提交）、上下文自动压缩（超阈值摘要）、WeKnora 知识库实接（hybrid 检索 + 助手绑定）、文件交付卡（图片内联预览）、**文件工作台**（`file.read/write/edit/list/search`：局部精确替换与内容搜索宿主直跑，零沙箱开销）。后台长任务走统一 Job 注册表（提交即返回、终态在右侧运行信息展示；**任务完成自动唤醒所属会话续跑**——对话进行中不打断，空闲时助手自动汇总结果，连续唤醒有上限防自激）。沙箱输出超限自动 **spill** 全文落工作区 `tmp/spill/`，模型可分段读回，截断不再等于丢失。AI⁴MS 子平台异步任务（Spec_Agent 五种谱图解析）经插件连接器接入，提交后自动跟踪并持久化结果。
+- 当前版本：1.7.1（正式版）
+- 平台设计：[2026-09-10 平台设计文档](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
+- 后端细节：[Web 后端说明](apps/web/backend/README.md)
+- 扩展开发：[插件、技能与后台任务指南](docs/development/plugin-and-skill-guide.md)
 
-- 版本：1.5.1（正式版）
-- 设计文档：[docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
-- 验收报告：[docs/superpowers/acceptance/2026-09-10-验收报告.md](docs/superpowers/acceptance/2026-09-10-验收报告.md)
+## 功能概览
+
+### 1. 科研对话工作台
+
+- 左栏管理项目、会话与助手；中栏承载流式消息、思考过程、工具调用、问询与审批卡片；右栏查看文件、任务与运行信息。
+- 会话可绑定项目工作区，也可使用独立工作区；上传文件、模型生成的报告、图表和表格统一落在用户可管理的工作区中。
+- 模型服务兼容 OpenAI API，管理员可在后台配置多个 provider，用户在会话中选择模型。
+
+### 2. 可审计的 Agent 运行时
+
+- SSE 流式输出支持断连续传；用户可在运行中插话（steering），赶不上本轮边界时自动转为下一轮输入。
+- 事件日志是会话事实源：进入模型上下文的内容先落事件，再投影为消息；瞬态 delta 不落盘。
+- 支持多题问询（`ask_user`）、工具级强制审批（`Permission.ASK_USER`）、上下文自动压缩和运行取消。
+- 会话事件可通过 `after_seq` 游标回放，Plane Agent Dock 也能用非流式接口提交后台 run 并回放终态事件。
+
+### 3. 安全执行与后台任务
+
+- 每个用户拥有独立文件工作区和配额；`python.run` 默认以本机隔离子进程执行，可切换到一次性 Docker 容器。
+- Docker 模式下工作区挂载为 `/workspace`，获准技能只读挂载到 `/skills/<name>`；容器默认断网、非 root、资源受限并在调用后销毁。
+- 执行输出超过 64 KiB 时自动截断，并把全文写入 `tmp/spill/`，模型可用 `file.read` 分段读回。
+- `job.submit` 提交长任务后立即返回 job ID；任务状态由统一注册表轮询，支持查询与取消。
+- 任务成功或失败后可自动唤醒所属会话：会话繁忙时作为插话注入，空闲时自动开启一轮汇总；连续无人输入的唤醒轮有上限，避免自激。
+
+### 4. 能力中心
+
+- **专家**：定义人设、工具白名单、技能引用、MCP 引用和推荐问题；管理员可维护内置专家，用户可自建私有专家。
+- **技能**：以 `SKILL.md` 为入口，可携带 `scripts/`、`references/` 和 `assets/`；支持手动创建和 ZIP 目录包导入。
+- **插件**：面向 AI⁴MS 子平台和外部科研服务，可贡献工具、异步 Job 连接器、技能和专家。
+- **MCP**：用户可配置 Streamable HTTP MCP；管理员可部署支持 stdio 或 Streamable HTTP 的公共 MCP，并在会话中按需附加。
+- 能力目录提供内置、公共、自建、安装、启用、会话开关等多层授权边界；运行时始终对专家白名单、用户可见集和会话选择取防御性交集。
+
+### 5. 内置科研能力
+
+- 内置专家：科研助手、数据分析助手。
+- 内置技能：12 个官方技能，覆盖 PDF / Word / Excel / PPT 文档处理、探索性数据分析、统计检验、Matplotlib / Seaborn / 出版级可视化、RDKit、实验设计与不确定度。
+- 内置插件：
+  - **Spec_Agent**：NMR 正反向预测与库检索，NMR / IR / GPC / Raman / LC-MS 五类谱图异步解析。
+  - **Poly_Agent**：聚酰亚胺 Tg、氟基电解质配方、Raman 解析、共聚竞聚率拟合、硅键谱图集成评分。
+  - **Sciverse**：科技文献语义检索、结构化检索、全文分页读取与附件下载。
+  - **ARS**：深度研究、论文写作、多视角同行评审与端到端学术研究流水线。
 
 ## 总体架构
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  前端 React 19 三栏工作台（apps/web/frontend）                 │
-│  左栏：助手/会话    中栏：消息流+工具卡片+SSE流式   右栏：文件/沙箱产物/运行信息 │
-└──────────────────────────┬──────────────────────────────────┘
-                     REST + SSE（/api/v1）
-┌──────────────────────────▼──────────────────────────────────┐
-│  FastAPI 单进程宿主（apps/web/backend，端口 8005）             │
-│  认证/HMAC token · 助手/模型管理 · 会话编排 · 文件工作区       │
-│  + 静态托管前端构建产物（单端口部署）                           │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ 进程内调用（零 FastAPI 依赖）
-┌──────────────────────────▼──────────────────────────────────┐
-│  synlys-harness 核心运行时（packages/synlys-harness）         │
-│  Agent Loop（turn/step 双层）· Event-sourced Session          │
-│  Tool Registry + 四段管线 · OpenAI 兼容模型路由               │
-└───────┬───────────────────────┬─────────────────────────────┘
-        │                       │
-   存储双后端               LLM / 工具
-   sqlite（开发）           OpenAI 兼容 provider（管理员页面配置）
-   mongodb（生产）          python.run / file.* / knowledge.search / http.request
-                           （AI⁴MS 各子平台能力后续以工具形式接入）
+```text
+┌────────────────────────────────────────────────────────────┐
+│ React 19 三栏工作台（apps/web/frontend）                     │
+│ 会话 / 消息流 / 工具卡片 / 能力中心 / 管理后台              │
+└───────────────────────────┬────────────────────────────────┘
+                            │ REST + SSE /api/v1
+┌───────────────────────────▼────────────────────────────────┐
+│ FastAPI 单进程宿主（apps/web/backend）                      │
+│ 认证 · 项目与文件 · 能力目录 · 插件 / MCP · Job · 静态托管 │
+└───────────────────────────┬────────────────────────────────┘
+                            │ 进程内调用
+┌───────────────────────────▼────────────────────────────────┐
+│ synlys-harness（packages/synlys-harness）                  │
+│ Agent loop · 事件会话 · 工具管线 · 模型路由 · 沙箱执行     │
+└──────────┬─────────────────────────────┬───────────────────┘
+           │                             │
+   SQLite / MongoDB                OpenAI 兼容模型与工具
 ```
 
-核心原则（详见设计文档 §3.2）：harness 不 import FastAPI（可被 CLI/worker 等其他宿主复用）；所有进入 LLM 上下文的内容先落 session 事件日志（model-visible ⟺ logged）；工具 = 声明 + 统一管线，接入新能力零侵入。
+关键边界：
 
-## 目录结构
-
-```
-Synlora/
-├── packages/synlys-harness/     # 纯 Python Agent 运行时（零 FastAPI 依赖）
-│   └── src/synlys_harness/      #   agent loop / session 事件 / tools 管线 / models 路由
-├── apps/web/
-│   ├── backend/                 # FastAPI 应用（唯一进程，PM2 部署单元）
-│   │   ├── app/                 #   api（REST+SSE）/ services / core（配置+认证）/ db（双后端存储）
-│   │   ├── catalog/             #   内置内容（experts/ skills/ plugins/，按类型分目录，非 Python 包）
-│   │   └── run_uvicorn.py       #   启动入口（读 .env）
-│   └── frontend/                # React 19 + TS + Vite 三栏工作台（npm run build 产物由后端托管）
-├── docs/superpowers/            # 设计文档（specs/）、实施计划（plans/）、验收报告与截图（acceptance/）
-├── ecosystem.config.cjs         # PM2 部署配置
-└── .runtime/data/               # 运行时数据（不入库）：public/{skills,catalog}（公共层）、users/<uid>/{workspaces,sessions,skills,experts}（用户层；不选工作区的会话以 sessions/{sid}/workspace 为工作区，文件与产物跟会话走）、sqlite 库
-```
+- `synlys-harness` 不依赖 FastAPI，可被其他宿主复用；Web 层负责认证、持久化、目录与产品能力装配。
+- 机制归 harness，内容归宿主：内置专家、技能、插件和公共 MCP 放在 `catalog/`，不硬编码进运行时。
+- 所有进入模型上下文的内容必须先进入事件日志，便于回放、审计与上下文压缩。
+- 当前运行中的 run、SSE 队列和问询 future 是进程内状态，应用必须单实例部署。
 
 ## 快速开始
 
-Python 环境为 conda 环境 `synlysagent`（Python 3.12）。
+### 环境要求
 
-### 1. 后端安装与启动（开发）
+- Python 3.12+（推荐 conda 环境名 `synlysagent`）
+- Node.js 20+ 与 npm
+- SQLite 用于本地开发；生产建议 MongoDB
+- Docker 仅在启用容器沙箱或构建沙箱镜像时需要
+
+### 1. 启动后端
 
 ```bash
+conda create -n synlysagent python=3.12 -y
 conda activate synlysagent
-cd apps/web/backend
-pip install -e ../../../packages/synlys-harness   # 核心运行时
-pip install -e ".[dev]"                        # 后端本体 + 测试依赖
 
-python run_uvicorn.py        # 默认 0.0.0.0:8005，健康检查 curl http://127.0.0.1:8005/api/health
+cd apps/web/backend
+python -m pip install -e ../../../packages/synlys-harness
+python -m pip install -e ".[dev]"
+cp .env.example .env
+
+python run_uvicorn.py
 ```
 
-### 2. 前端开发模式（热更新，代理 /api 到 8005）
+默认监听 `0.0.0.0:8005`。健康检查：
+
+```bash
+curl http://127.0.0.1:8005/api/health
+```
+
+### 2. 启动前端开发服务
 
 ```bash
 cd apps/web/frontend
 npm install
-npm run dev                  # Vite dev server（5173），API 经代理走后端
+npm run dev
 ```
 
-### 3. 单端口构建部署（V1 最终形态）
+Vite 默认运行在 `http://127.0.0.1:5173`，`/api` 请求会代理到 8005。
+
+### 3. 单端口构建部署
 
 ```bash
 cd apps/web/frontend
-npm run build                # 产物 dist/（已在 .gitignore）
+npm run build
+
 cd ../backend
-python run_uvicorn.py        # 后端启动时检测到 dist/index.html 即托管前端
-uvicorn app.main:app --host 0.0.0.0 --port 8005   # 方式二：uvicorn 直启
+python run_uvicorn.py
 ```
 
-浏览器访问 `http://127.0.0.1:8005/`：同一端口同时提供页面与 API；无 dist 时自动退化为仅 API 模式（日志有提示）。
+后端检测到 `frontend/dist/index.html` 后会托管 SPA，访问 `http://<host>:8005/` 即可同时使用页面与 API。无构建产物时退化为仅 API 模式。
 
-### 4. PM2 部署（生产）
-
-```bash
-pm2 start ecosystem.config.cjs    # interpreter 已指向 conda 环境 synlysagent 的 python
-pm2 logs synlys-agent
-```
-
-**部署硬约束：必须单实例。** 运行时（进行中的 run、SSE 消费队列、待作答 future）是单进程内存态，**`uvicorn` 只能用 `workers=1`、PM2 只能起一个实例**；多副本会让插话（steering）、问答回填与取消失效。当前明确不做 run 状态外置，横向扩展需先改造运行时。另注意 `ecosystem.config.cjs` 中的 `interpreter` 是 conda 环境 python 的绝对路径，换机器部署需同步修改。
-
-## 配置要点
-
-配置在 `apps/web/backend/.env`（模板见 `.env.example`，全部有默认值）：
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `STORAGE_BACKEND` | `sqlite` | 存储后端：`sqlite`（开发零依赖）或 `mongodb`（生产） |
-| `AUTH_SECRET` | 空 | 与 AI⁴MS 门户共享的 HMAC-SHA256 secret；为空时按门户规则派生，多实例部署必须显式配置同一值 |
-| `DEV_AUTH_TOKEN` | 空 | sqlite 开发模式的固定 token，仅本地显式启用（前端需同值配置 `VITE_DEV_TOKEN`；生产构建不显示快捷入口） |
-| `FERNET_KEY` | 空 | provider api_key 落库加密 key（Fernet）；生成方式见 `.env.example` |
-| `HTTP_ALLOWED_HOSTS` | 空 | `http.request` 工具域名白名单（逗号分隔），空则全部拒绝 |
-| `SANDBOX_MODE` | `local` | `python.run` 执行形态：`local`（本机 `-I` 子进程，事故围栏）或 `docker`（临时容器强隔离，多用户部署用） |
-| `SANDBOX_STRICT` | `false` | `docker` 模式不可用时：`false` 回退本机执行（事件标 `sandbox=local-weak`）；`true` 拒绝执行（fail-closed，公网部署建议开启） |
-| `SANDBOX_MEM_LIMIT` / `SANDBOX_CPUS` / `SANDBOX_PIDS_LIMIT` | `512m` / `1.0` / `256` | docker 模式单容器资源限额 |
-| `SANDBOX_JOB_DEFAULT_TIMEOUT_S` / `SANDBOX_JOB_MAX_TIMEOUT_S` | `1800` / `7200` | 后台沙箱任务独立默认/最大超时；不复用前台工具预算 |
-| `SANDBOX_DEPLOYMENT_ID` | 空（按 `DATA_DIR` 派生） | 精确标记本部署容器，供取消和重启清理 |
-
-其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`/`SANDBOX_DOCKER_IMAGE`/`SANDBOX_DOCKER_USER`/`SANDBOX_DOCKER_NETWORK`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
-
-### 插件机制（AI⁴MS 子平台接入）
-
-一切皆插件：新增子平台 = 新增 `apps/web/backend/catalog/plugins/<id>/`（`plugin.json` 声明配置 schema/工具模块/技能/专家模板），宿主与 harness 零改动。插件配置由插件自己声明，在管理后台「插件」页填写后**落库加密**（敏感字段），**不进 `.env`/`settings.py`**；运行期按命名空间注入 `ctx.extra["plugins"]`。配置字段按 `scope` 分层：`"scope": "admin"` 为管理员公共配置（管理后台填写，用户侧不透出、不可写，插件全量 admin 字段时用户安装**不出配置表单一键装**，管理员未配置则调用时 fail-closed 报错），缺省为用户可填（安装时/详情页编辑，个人层优先于公共兜底）。已接入插件：`spec_agent`（核磁预测三件套 + 五类谱图异步解析）、`poly_agent`（Poly_Agent 高分子垂类预测五件套：聚酰亚胺 Tg / 氟基电解质配方 / Raman 光谱解析 / 共聚竞聚率拟合 / 硅键谱图集成）、`sciverse`（科技文献检索）、`ars`（学术研究全流程技能套件：深度研究/综述/证据核验、学术论文写作、多视角同行评审、端到端流水线），各自动播种对应专家，详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
-
-### 能力目录与统一扩展中心（市场）
-
-「专家 / 技能 / 扩展」统一纳入能力中心。平台插件仍使用能力目录与用户安装权限模型；用户 MCP 是独立的 Streamable HTTP 扩展配置，不复制插件文件、不绕过用户权限。
-
-专家支持人设提示词、技能引用、MCP 引用、可用工具和推荐问题；专家只保存引用，不复制技能文件或 MCP 凭证。运行时会将专家引用与当前用户可用能力合并，并继续受插件会话开关、用户安装状态和工具白名单约束。内置专家随 catalog 升级自愈刷新（`seed.py` 按播种指纹判定，管理员在后台编辑过的记录不覆盖）。
-
-技能支持上传包含 `SKILL.md` 的 ZIP 目录包，保留 `scripts/`、`references/`、`assets/` 等附属文件；详情页提供左侧文件树与右侧文本/图片预览，压缩包大小、文件数量、解压大小和路径逃逸均有安全限制。
-
-内置技能库（`catalog/skills/`，1.1.0 官方化重构为 12 个）：**文档四件套** `docx` / `xlsx` / `pptx` / `pdf`（基于 Anthropic 官方技能方法论适配到沙箱 Python 栈：python-docx / openpyxl / python-pptx / pypdf+pdfplumber+reportlab）+ **数据分析与可视化** `exploratory-data-analysis` / `statistical-analysis` / `matplotlib` / `seaborn` / `scientific-visualization` + **科研方向** `rdkit` / `experimental-design` / `uncertainty-and-units`（后三者及分析类取自 K-Dense scientific-agent-skills，MIT）。其中文档四件套 + EDA 为平台基线，启动时由 `app/catalog/seed.py::seed_skill_policies` 幂等播种为**全员默认启用**（不覆盖管理员显式配置）；其余深度技能走市场、用户按需自行安装。技能正文头部带「Synlora 沙箱适配」块（依赖已预装、禁止 pip/uv 安装、产物写 `output/`），对应依赖已同步进 `docker/sandbox/requirements.txt` 与 conda 环境。
-
-扩展中心统一展示插件市场、MCP 接入和我的扩展。普通用户首期仅开放 Streamable HTTP MCP，可配置 URL、Headers、Bearer Token、启用状态，并支持测试连接和发现远程工具；凭证加密存储，接口只返回字段名和是否已配置。
-
-MCP 支持两档来源与会话级附加：**公共 MCP** 由管理员维护（catalog 第 4 类条目 `catalog/mcp/<id>/mcp.json`，支持 stdio 与 Streamable HTTP；管理后台「MCP 服务」页新增/覆盖编辑/恢复默认/策略控制/测试连接，写入即热重载生效），走市场安装模型（内置 = 全员可用只读）；**用户自建 MCP** 仍限 Streamable HTTP。聊天输入框「+ → MCP」面板可按会话勾选附加（我的 / 公共分组、连接状态徽标，默认不附加、切换即落库刷新），运行时附加集 = 会话勾选 ∪ 专家 `mcp_refs`（自建优先于公共同名），工具按 `mcp.<id>.<tool>` 命名注入本轮工具面，stdio 子进程懒拉起、失败销毁重建。
-
-三层可见性模型：**内置目录**（随仓库，只读，`apps/web/backend/catalog/{experts,skills,plugins}/` 按类型分目录）→ **管理员策略**（`catalog_policy` 配可见性 `public`/`hidden` + 是否默认启用，缺省 = public + 非默认启用，即条目在市场可见但需用户安装后才可用）→ **用户安装**（`user_capabilities`，只写记录、**不复制文件**，升级即生效）。
-
-能力中心按「**市场 / 我的**」页签组织：市场是「可安装的内置条目」，我的 = 用户自建能力 + 已安装能力。用户在市场安装后可**启用 / 停用**（`user_capabilities.enabled`，停用优先于默认启用）；用户还可**自建技能与专家**（落各自 `{data_dir}/users/<uid>/{skills,experts}/`，技能同名全局唯一，内置条目不可编辑、想定制请自建换名）。**自建技能与专家仅本人可见**：文件只存在作者目录里（专家为纯文件事实源，不实例化进全局助手集合；`assistants` 集合仅存管理员资产——目录播种/插件播种/后台自建），专家选择列表由「集合管理员资产 ∪ 本人文件根专家」组装，会话绑定与运行期按 id 前缀路由解析。管理员在管理后台左侧导航（常规/模型服务/助手管理/技能管理/插件）逐项配可见性与默认。运行期可见集由 `CapabilityService` 按用户计算，统一过滤插件工具、技能索引、专家列表与 `ctx.extra["plugins"]`（内置工具不受影响）。
-
-**当前状态**：已上线（1.0.0）——用户侧「能力中心」（`/capabilities`）按**专家 / 技能 / 扩展**分类；专家与技能保留市场 / 我的卡片视图，扩展进入统一的插件市场、MCP 接入和我的扩展页面。技能可手动创建或上传 ZIP，专家可在完整编排表单中选择技能、MCP、工具和推荐问题。
-
-点卡片进入**详情页**（路由 `/capabilities/<类型>/<条目 id>`），按条目类型展示技能说明与目录文件预览、专家人设与能力编排、插件配置字段与附属清单；**安装 / 卸载 / 启用 / 停用 / 编辑 / 删除**按类型在详情或扩展中心完成。**内置条目对普通用户只读**（标「内置 · 全员可用」，无启停与编辑入口），管理员在详情页有「在管理后台编辑」跳转直达对应管理页。
-
-后端接口：`/api/v1/market/{kind}`、`GET /api/v1/me/capabilities/{kind}/{item_id}`、`PUT /api/v1/me/capabilities/{kind}/{id}`、`/api/v1/me/{skills,experts}`、`POST /api/v1/me/skills/import`、`GET /api/v1/me/skills/{name}/files`、`GET /api/v1/me/skills/{name}/file`、`GET/POST/PATCH/DELETE /api/v1/me/mcps`、`POST /api/v1/me/mcps/{id}/test`、`GET /api/v1/me/mcps/panel`（+ 面板合并视图）与 `GET/POST/PUT/DELETE /api/v1/admin/mcp[/{id}]`、`POST /api/v1/admin/mcp/{id}/{test,reset}`（公共 MCP 管理）。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
-
-### 内置内容布局（catalog/）
-
-**位置即类型，加一个目录即扩展**：内置专家 / 技能 / 插件 / 公共 MCP 统一落在 `apps/web/backend/catalog/`（`experts/<dir>/expert.json`、`skills/<name>/SKILL.md`、`plugins/<id>/plugin.json`、`mcp/<id>/mcp.json`），由 `app/catalog/loader.py` 的 `scan_catalog()` 一次性扫入；`catalog/skills/` 作为**只读技能根**直接提供，`{data_dir}/public/skills/` 为可写公共层（同名公共层优先），用户自建技能另落 `{data_dir}/users/<uid>/skills/`。**harness 内不含任何内置内容（内容归宿主、机制归 harness）**，宿主的 `catalog/` 是数据目录而非 Python 包，非 editable 部署需与 `app/` 同级一起放。详见 [apps/web/backend/README.md](apps/web/backend/README.md)。
-
-### Docker 沙箱（多用户/云部署）
-
-`SANDBOX_MODE=docker` 时，`python.run` 与 `shell.run` 在临时容器中执行：workspace 以 `/workspace` 读写挂载，本轮获准技能分别以 `/skills/<name>` 只读挂载；容器默认断网（`SANDBOX_DOCKER_NETWORK=true` 可放开联网，仅建议可信内网部署）、非 root、资源受限、每次调用后删除，运行用户动态对齐宿主工作区属主（Linux bind mount 权限对齐，保证容器内可写工作区；`SANDBOX_DOCKER_USER` 可显式覆盖）。公共技能保持单份存储，不复制进用户目录。镜像需预构建：
+### 4. 启用 Docker 沙箱
 
 ```bash
 docker build -t synlora-sandbox:latest docker/sandbox/
+
+cd apps/web/backend
+python -m pip install -e "../../../packages/synlys-harness[docker]"
 ```
 
-宿主需安装 docker SDK：`pip install "synlys-harness[docker]"`。探测失败（daemon 不可达/镜像缺失）按 `SANDBOX_STRICT` 决定回退或拒绝；每次执行结果带 `sandbox` 标记（`docker`/`local`/`local-weak`）随事件可观测。
+在 `.env` 中配置：
 
-其余变量（`MONGODB_URI`/`MONGODB_DB`/`SQLITE_PATH`/`HOST`/`PORT`/`DATA_DIR`/`AUTH_ENABLED`/`USER_QUOTA_BYTES`）见 [apps/web/backend/README.md](apps/web/backend/README.md)。
+```dotenv
+SANDBOX_MODE=docker
+SANDBOX_STRICT=true
+```
 
-## 与 AI⁴MS 门户对接
+多用户或公网部署建议保持 `SANDBOX_STRICT=true`。若 Docker 探测失败，严格模式会拒绝执行；非严格模式会回退本机执行，并在事件中标记 `sandbox=local-weak`。
 
-- **免登录跳转**：门户 AppCard 配置跳转 `http://<host>:8005/#token=<token>`，前端从 URL hash 提取 token 放入 `Authorization: Bearer` 请求头，后端用 `AUTH_SECRET` 校验。
-- **账号打通**：`STORAGE_BACKEND=mongodb` 时，登录直连 MongoDB 的 `ai4ms.users` 集合校验用户名/密码（PBKDF2-SHA256，格式与门户兼容）并签发同格式 token；sqlite 模式使用本地 `local_users`（开发用）。
-- **Plane 科研上下文**：建会话和每轮消息都必须携带 `X-Research-Context-Token`。Synlora 同时接受 `agent-context.v2` 与 `agent-context.v3`：v2 自动归一化为 Node target，v3 支持 Workspace / Project / Research Chain / Node 四级目标、能力硬上界和 bounded manifest；校验通过后 metadata 落库，`allowed_tools` / `allowed_plugins` / `allowed_mcp_ids` 与注册表、专家白名单、插件和 MCP 可见性取防御性交集，opaque token 本身不落库。
-- **Plane delegated identity / capability**：Plane BFF 可用 `PLANE_SERVICE_TOKEN` 调 `/api/v1/research/delegated-token` 换取短效用户 token，并用 `/api/v1/research/capabilities` 获取只读 `capability-manifest.v1` 投影；运行事件继续通过 `after_seq` 游标和回写 client 同步回 Plane。
-- **Plane Agent Dock 后台 run**：`POST /api/v1/sessions/{sid}/runs` 与现有 SSE 消息端点共用同一装配和后台执行器，提交后立即返回 `run_id`；Plane BFF 通过 durable events 回放、审批 answer 和显式 cancel 管理生命周期。SSE 断开不会取消 run， transient delta 仍不落盘。
+## 关键配置
 
-## 测试
+配置文件位于 `apps/web/backend/.env`，模板见 [`.env.example`](apps/web/backend/.env.example)。
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `STORAGE_BACKEND` | `sqlite` | `sqlite` 用于开发，`mongodb` 用于生产。 |
+| `SQLITE_PATH` | `.runtime/data/synlys_agent.db` | SQLite 数据库路径。 |
+| `MONGODB_URI` / `MONGODB_DB` | 空 / `synlys_agent` | MongoDB 模式必填；账号认证读取 `ai4ms.users`。 |
+| `AUTH_ENABLED` / `AUTH_SECRET` | `true` / 空 | 与 AI⁴MS 门户共享的 HMAC secret；跨机器部署必须显式配置。 |
+| `DEV_AUTH_TOKEN` | 空 | SQLite 开发模式固定 token，仅本地调试使用。 |
+| `FERNET_KEY` | 空 | 模型 API key 与 MCP 凭证加密 key；生产必须配置。 |
+| `DATA_DIR` | `.runtime/data` | 公共能力、用户工作区、会话事件等运行数据根目录。 |
+| `USER_QUOTA_BYTES` | `1073741824` | 单用户工作区配额。 |
+| `HTTP_ALLOWED_HOSTS` | 空 | `http.request` 域名白名单；空表示全部拒绝。 |
+| `WEKNORA_BASE_URL` / `WEKNORA_API_KEY` | 空 | WeKnora 知识库连接；为空时知识工具报未配置。 |
+| `ASSISTANT_WEB_SEARCH_ENDPOINT` | 空 | SearXNG 搜索服务；为空时禁用 `web.search`。 |
+| `PLANE_BASE_URL` / `PLANE_API_TOKEN` / `PLANE_SERVICE_TOKEN` | 空 | Plane 科研上下文与 delegated token 集成。 |
+| `SANDBOX_MODE` | `local` | `local` 或 `docker`。 |
+| `SANDBOX_DOCKER_IMAGE` | `synlora-sandbox:latest` | 容器沙箱镜像。 |
+| `SANDBOX_STRICT` | `false` | Docker 不可用时是否 fail-closed。 |
+| `SANDBOX_MEM_LIMIT` / `SANDBOX_CPUS` / `SANDBOX_PIDS_LIMIT` | `512m` / `1.0` / `256` | 单容器资源限额。 |
+| `SANDBOX_DOCKER_NETWORK` | `false` | 是否放开容器网络；仅建议可信内网开启。 |
+| `SANDBOX_JOB_DEFAULT_TIMEOUT_S` / `SANDBOX_JOB_MAX_TIMEOUT_S` | `1800` / `7200` | 后台任务默认与最大超时。 |
+| `SANDBOX_DEPLOYMENT_ID` | 按 `DATA_DIR` 派生 | 部署标识，用于取消与重启清理容器。 |
+
+完整配置说明见 [Web 后端说明](apps/web/backend/README.md)。
+
+## 生产部署检查清单
+
+1. **单实例运行**：`uvicorn` 只能 `workers=1`，PM2 只能启动一个应用实例；多副本会破坏插话、问答回填、取消和任务轮询。
+2. **存储**：使用 MongoDB，显式配置 `MONGODB_URI` 与 `AUTH_SECRET`，并规划数据库备份。
+3. **密钥**：配置 `FERNET_KEY`，并在更换密钥前确认已加密数据可解密或已重新录入。
+4. **沙箱**：多用户部署启用 Docker 沙箱、严格模式和资源限额；公网部署保持容器断网。
+5. **前端**：执行 `npm run build`，由后端单端口托管；部署包必须同时包含 `app/`、`catalog/` 和前端 `dist/`。
+6. **PM2**：仓库提供 [ecosystem.config.cjs](ecosystem.config.cjs)，但其中的 Python 解释器绝对路径需按目标机器修改。
+7. **外部能力**：为 Spec_Agent、Poly_Agent、Sciverse、WeKnora、SearXNG 和 Plane 配置服务地址与凭证；插件敏感配置在管理后台填写并落库加密。
+
+## 扩展与生态集成
+
+### 插件和技能扩展
+
+内置与私有扩展统一放在能力目录：
+
+```text
+apps/web/backend/catalog/
+├── experts/<id>/expert.json
+├── skills/<name>/SKILL.md
+├── plugins/<id>/plugin.json
+└── mcp/<id>/mcp.json
+```
+
+运行期私有扩展放在 `{DATA_DIR}/public/catalog/`，同 ID 条目会覆盖仓库内置版本。插件代码属于管理员可信部署内容；普通用户只能安装、启用和配置被授权的能力，不能上传 Python 插件代码。
+
+开发规范、manifest 字段、Job 连接器契约和技能包约束见[插件、技能与后台任务指南](docs/development/plugin-and-skill-guide.md)。
+
+### AI⁴MS 门户
+
+- 门户 AppCard 可配置 `http://<host>:8005/#token=<token>`，前端从 URL hash 提取 token 并放入 `Authorization: Bearer` 请求头。
+- MongoDB 模式下，Synlora 直连 `ai4ms.users` 校验门户账号密码，并签发同格式 token。
+- SQLite 模式使用本地用户集合和 `DEV_AUTH_TOKEN`，仅用于开发。
+
+### Plane 科研上下文
+
+- 建会话和发送消息时可携带 `X-Research-Context-Token`；平台接受 `agent-context.v2` 与 `agent-context.v3`。
+- v3 支持 Workspace / Project / Research Chain / Node 四级目标、能力硬上界和 bounded manifest。
+- 通过校验后，上下文元数据落库，`allowed_tools`、`allowed_plugins` 和 `allowed_mcp_ids` 会与注册表、专家白名单、插件与 MCP 可见性取防御性交集；opaque token 本身不落库。
+- Plane BFF 可用服务凭证调用 `/api/v1/research/delegated-token` 换取短效用户 token，并通过 `/api/v1/research/capabilities` 获取只读能力清单。
+- `POST /api/v1/sessions/{sid}/runs` 提交后台 run 后立即返回 `run_id`；Plane 可通过 durable events 回放、审批 answer 和显式 cancel 管理生命周期。
+
+## 目录结构
+
+```text
+Synlora/
+├── apps/web/
+│   ├── backend/              # FastAPI 宿主、API、服务层、能力目录与测试
+│   └── frontend/             # React 19 + TypeScript + Vite 工作台
+├── packages/synlys-harness/  # 纯 Python Agent 运行时
+├── docker/                   # 沙箱镜像与 Spec_Agent 相关镜像
+├── docs/
+│   ├── development/          # 扩展与运维指南
+│   └── superpowers/          # 设计文档、实施计划与验收材料
+├── ecosystem.config.cjs      # PM2 示例配置
+└── .runtime/data/            # 运行数据（不入库）
+```
+
+## 测试与质量检查
 
 ```bash
-# harness 核心运行时（含 Docker 沙箱集成用例；无 daemon/镜像时按条件跳过）
+# Agent 核心运行时
 cd packages/synlys-harness
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
-# web 后端（默认 sqlite 后端；设置 TEST_MONGODB_URI 后 mongodb 用例自动加入）
+# Web 后端；设置 TEST_MONGODB_URI 后自动加入 MongoDB 用例
 cd apps/web/backend
 conda run -n synlysagent --no-capture-output python -m pytest -v
 
-# 前端类型检查 + 构建 / lint
+# 前端类型检查、构建与 lint
 cd apps/web/frontend
 npm run build
 npm run lint
 ```
 
-## 后续路线
+后台沙箱 Docker 集成用例在无 daemon 或镜像时按条件跳过。提交代码前请至少运行与改动相关的测试集，并保持版本号口径一致。
 
-当前判断：**Agent 能力面已足够完整**（事件内核 / 工具管线 / steering / 强制审批 / 上下文压缩 / docker 沙箱 / 插件机制 / 能力市场），**薄弱的是产品化运维面**（用量看不清、成本无闸门、用户管不了、数据没备份、部署迁移脆弱）。因此路线按「先补齐多人使用不出事，再纵深能力」排序；其中统一 Job 注册表因近期要推 Spec_Agent 异步任务而单独提前。
+## 文档索引
 
-**近期起点：统一 Job 注册表**（Spec_Agent 异步任务的地基，提交即返回 job_id，终态写入任务面板并支持主动查询）。
-
-| 阶段 | 内容 | 说明 |
-|---|---|---|
-| **A 内测期打磨** | 工具结果 spill · CI 流水线 · 可观测性（结构化日志 / 工具调用审计 / 用量聚合）· 会话导出 Markdown | 每项 0.5~2 天，不依赖外部系统，内测期即可做 |
-| **B 多人用之前必须** | 管理员用户管理页 · LLM 用量配额 · run 崩溃恢复 · 应用容器化 · 备份与数据迁移 | 不做则开放多人有实质风险 |
-| **C 能力纵深** | 统一 Job 注册表（最高优先）→ Spec_Agent 异步任务 → SpecLabOS 设备工作流 → 跨会话长期记忆 → MCP adapter → 多 Agent / SwarmFlow | AI⁴MS 生态接入主线 |
-
-**进展**：统一 Job 注册表（C1）✅ 已实现——后台任务提交即返回、轮询器同步状态、终态更新右侧运行信息并支持主动查询；Spec_Agent 异步谱图任务（C2）✅ 已实现——插件连接器接入 5 类谱图解析（NMR/IR/GPC/Raman/LC-MS），走通「上传 → 提交 → 轮询 → 结果回填」全链路；下一步 SpecLabOS 设备工作流（C3）建在其上。
-
-完整计划（含每项的做法与验收标准）见 [docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md](docs/superpowers/plans/2026-09-16-synlysagent-13-next-roadmap.md)；06 号 backlog 保留为历史记录。
-
-**已完成的主要演进**：沙箱 Docker 化（0.4.0）· AI⁴MS 首期接入（Spec_Agent 同步三件套 + 按登录用户代签凭证，0.5.0）· 能力市场三层可见性模型（0.6.0）· 内置内容统一 `catalog/`（0.7.0）· 用户自建技能与专家（0.8.0）· 能力中心「市场 / 我的」两栏（0.9.0）· 能力中心左导航 + 卡片 + 详情页改版（0.10.0）· 统一 Job 注册表（0.11.0）· Spec_Agent 五类谱图异步任务（0.12.0）· 1.0.0 正式版 · 内置技能库官方化扩容（3 → 15 个，1.1.0）。
-
-**当前明确不做**：按角色 / 按用户白名单的细粒度可见性、插件市场远程下载、用户自建插件、双进程 headless 运行时、移动端适配。
+- [平台架构设计](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
+- [能力中心设计](docs/superpowers/specs/2026-09-16-synlysagent-capability-center-redesign-design.md)
+- [MCP 会话附加设计](docs/superpowers/specs/2026-09-27-mcp-session-attach-design.md)
+- [插件、技能与后台任务指南](docs/development/plugin-and-skill-guide.md)
+- [Web 后端说明](apps/web/backend/README.md)
