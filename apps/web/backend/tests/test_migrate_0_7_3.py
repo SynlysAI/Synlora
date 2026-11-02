@@ -1,4 +1,4 @@
-"""Synlora 0.7.3 -> main 1.8.1 迁移工具测试。"""
+"""Synlora 0.7.3 -> main 1.8.2 迁移工具测试。"""
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -158,6 +158,12 @@ def test_map_project_session_events_and_run():
     assert run["status"] == "completed"
 
 
+def test_map_run_uses_production_conversation_thread_id():
+    """生产 0.7.3 的 run 使用 conversation_thread_id 关联会话。"""
+    run = map_run({"id": "r1", "conversation_thread_id": "t1", "uid": "user1"})
+    assert run["session_id"] == "t1"
+
+
 def test_build_message_events_accepts_legacy_human_and_ai_roles():
     events = build_message_events("thread-legacy", [
         {"id": 1, "role": "human", "content": "旧问题", "sequence": 1,
@@ -234,6 +240,8 @@ async def test_migrate_snapshot_is_idempotent_and_copies_project_files(tmp_path)
     assert first.counts["sessions"] == 1
     assert first.counts["events"] == 3
     assert second.counts["events"] == first.counts["events"]
+    assert first.project_files[0]["matches"] is True
+    assert first.project_files[0]["source_count"] == 1
     assert len(await store.list("api_keys")) == 1
     assert len(await store.list("sessions")) == 1
     copied = target_root / "users" / "fangyikai" / "projects" / "project-dir" / "a.txt"
@@ -437,7 +445,12 @@ def test_load_snapshot_delta_expands_messages_for_affected_conversations(monkeyp
                 return [conversation]
             return []
 
+    connections = []
+
     class Connection:
+        def __init__(self):
+            connections.append(self)
+
         def __enter__(self):
             return self
 
@@ -451,3 +464,27 @@ def test_load_snapshot_delta_expands_messages_for_affected_conversations(monkeyp
     snapshot = load_snapshot("dsn", dt("2026-11-02T00:00:00"))
     assert snapshot["messages"] == full_messages
     assert snapshot["conversations"] == [conversation]
+    assert len(connections) == 1
+
+
+@pytest.mark.asyncio
+async def test_delta_deletes_tombstones_and_disables_removed_provider(tmp_path):
+    """delta 同步源端删除状态，并停用源端已不再提供的迁移模型。"""
+    store = create_store("sqlite", sqlite_path=str(tmp_path / "target.db"))
+    await store.init()
+    await store.insert("projects", {"_id": "p1", "legacy": {}})
+    await store.insert("sessions", {"_id": "t1", "legacy": {}})
+    await store.insert("events", {"_id": "e1", "session_id": "t1", "seq": 0})
+    await store.insert("runs", {"_id": "r1", "session_id": "t1"})
+    await store.insert("providers", {
+        "_id": "old:model", "enabled": True, "legacy": {"provider_id": "old"},
+    })
+    snapshot = {
+        "deleted_projects": [{"id": "p1"}],
+        "deleted_conversations": [{"thread_id": "t1"}],
+    }
+    await migrate_snapshot(snapshot, store, tmp_path, tmp_path / "data")
+    for collection in ("projects", "sessions", "events", "runs"):
+        assert await store.list(collection) == []
+    assert (await store.get("providers", "old:model"))["enabled"] is False
+    await store.close()

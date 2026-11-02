@@ -1,4 +1,4 @@
-"""将 Synlora 0.7.3 Postgres 数据迁移到 main 1.8.1 文档存储。
+"""将 Synlora 0.7.3 Postgres 数据迁移到 main 1.8.2 文档存储。
 
 工具分三层：读取快照、纯函数映射、幂等写入。敏感字段只进入目标库，
 不进入迁移报告或日志。
@@ -31,6 +31,7 @@ class MigrationReport(BaseModel):
     checksums: dict[str, str] = Field(default_factory=dict)
     file_count: int = 0
     file_checksum: str = ""
+    project_files: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     source_skills: list[str] = Field(default_factory=list)
     dry_run: bool = False
@@ -327,7 +328,7 @@ def map_run(row: dict[str, Any]) -> dict[str, Any]:
         status = "failed" if source_status in {"failed", "error"} else "aborted"
     return {
         "_id": str(row["id"]),
-        "session_id": str(row["thread_id"]),
+        "session_id": str(row.get("conversation_thread_id") or row.get("thread_id") or ""),
         "user_id": str(row["uid"]),
         "status": status,
         "started_at": _timestamp(row.get("started_at") or row.get("created_at")),
@@ -539,6 +540,7 @@ async def migrate_snapshot(
     file_checksum = ""
     deleted_stale_api_keys = 0
     disabled_missing_users = 0
+    project_files: list[dict[str, Any]] = []
     if not dry_run:
         user_collection = "local_users" if target_backend == "sqlite" else "legacy_users"
         for user in users:
@@ -566,6 +568,22 @@ async def migrate_snapshot(
             await _upsert(store, "legacy_agents", doc)
         for provider in providers:
             await _upsert(store, "providers", await _encrypt_provider(store, provider, fernet_key))
+        active_provider_ids = {provider["_id"] for provider in providers}
+        for existing in await store.list("providers"):
+            if existing.get("legacy", {}).get("provider_id") and existing["_id"] not in active_provider_ids:
+                await store.update("providers", str(existing["_id"]), {"enabled": False})
+        for row in snapshot.get("deleted_projects", []):
+            existing = await store.get("projects", str(row["id"]))
+            if existing and isinstance(existing.get("legacy"), dict):
+                await store.delete("projects", str(row["id"]))
+        for row in snapshot.get("deleted_conversations", []):
+            session_id = str(row["thread_id"])
+            existing = await store.get("sessions", session_id)
+            if existing and isinstance(existing.get("legacy"), dict):
+                for collection in ("events", "runs"):
+                    for doc in await store.list(collection, filters={"session_id": session_id}):
+                        await store.delete(collection, str(doc["_id"]))
+                await store.delete("sessions", session_id)
         for doc in projects:
             await _upsert(store, "projects", doc)
         for doc in sessions:
@@ -596,6 +614,19 @@ async def migrate_snapshot(
                 continue
             target_dir.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source_dir, target_dir, dirs_exist_ok=True)
+            source_count, source_checksum = _directory_hash(source_dir)
+            target_count, target_checksum = _directory_hash(target_dir)
+            matches = (source_count, source_checksum) == (target_count, target_checksum)
+            project_files.append({
+                "project_id": project["_id"],
+                "source_count": source_count,
+                "target_count": target_count,
+                "source_checksum": source_checksum,
+                "target_checksum": target_checksum,
+                "matches": matches,
+            })
+            if not matches:
+                warnings.append(f"项目文件校验不一致: {project['_id']}")
 
         user_project_root = target_root / "users"
         if user_project_root.is_dir():
@@ -633,6 +664,7 @@ async def migrate_snapshot(
     report = MigrationReport(
         counts=dict(counts), checksums=checksums,
         file_count=file_count, file_checksum=file_checksum,
+        project_files=project_files,
         warnings=warnings,
         source_skills=[str(row.get("slug") or "") for row in snapshot.get("skills", [])],
         dry_run=dry_run,
@@ -668,42 +700,46 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
         """,
         "operation_logs": f"SELECT * FROM operation_logs WHERE ({since_sql} IS NULL OR timestamp >= {since_sql})",
         "mcp_servers": f"SELECT * FROM mcp_servers WHERE ({since_sql} IS NULL OR updated_at >= {since_sql})",
+        "deleted_projects": "SELECT id FROM projects WHERE deleted_at IS NOT NULL",
+        "deleted_conversations": "SELECT thread_id FROM conversations WHERE status = 'deleted'",
     }
     snapshot: dict[str, list[dict[str, Any]]] = {}
     with psycopg.connect(dsn, row_factory=dict_row) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         for name, query in queries.items():
             if name == "messages":
                 params = (since, since, since)
             elif name == "runs":
                 params = (since, since)
-            elif name in {"users", "api_keys", "providers", "skills"}:
+            elif name in {"users", "api_keys", "providers", "skills", "deleted_projects", "deleted_conversations"}:
                 params = ()
             else:
                 params = (since, since) if since is not None else ()
             with connection.cursor() as cursor:
                 cursor.execute(query, params)
                 snapshot[name] = [dict(row) for row in cursor.fetchall()]
-    # 事件会按会话完整重建，因此 delta 也要取回受影响会话的完整消息历史。
-    message_conversation_ids = {int(row["conversation_id"]) for row in snapshot.get("messages", [])}
-    if message_conversation_ids and since is not None:
-        with psycopg.connect(dsn, row_factory=dict_row) as connection, connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id
-                WHERE c.status <> 'deleted' AND c.id = ANY(%s)
-                """,
-                (sorted(message_conversation_ids),),
-            )
-            snapshot["messages"] = [dict(row) for row in cursor.fetchall()]
-        existing_ids = {int(row.get("id") or -1) for row in snapshot.get("conversations", [])}
-        missing = message_conversation_ids - existing_ids
-        if missing:
-            with psycopg.connect(dsn, row_factory=dict_row) as connection, connection.cursor() as cursor:
+        # delta 的完整消息和会话补查也必须使用同一事务快照。
+        message_conversation_ids = {int(row["conversation_id"]) for row in snapshot.get("messages", [])}
+        if message_conversation_ids and since is not None:
+            with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT * FROM conversations WHERE id = ANY(%s)",
-                    (sorted(missing),),
+                    """
+                    SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id
+                    WHERE c.status <> 'deleted' AND c.id = ANY(%s)
+                    """,
+                    (sorted(message_conversation_ids),),
                 )
-                snapshot["conversations"].extend(dict(row) for row in cursor.fetchall())
+                snapshot["messages"] = [dict(row) for row in cursor.fetchall()]
+            existing_ids = {int(row.get("id") or -1) for row in snapshot.get("conversations", [])}
+            missing = message_conversation_ids - existing_ids
+            if missing:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT * FROM conversations WHERE id = ANY(%s)",
+                        (sorted(missing),),
+                    )
+                    snapshot["conversations"].extend(dict(row) for row in cursor.fetchall())
     return snapshot
 
 
