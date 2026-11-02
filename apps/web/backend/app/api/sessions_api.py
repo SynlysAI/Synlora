@@ -209,6 +209,21 @@ def _validate_research_plugin_scope(plugin_ids: list[str], metadata: ResearchCon
         raise HTTPException(403, f"科研上下文未授权插件: {', '.join(invalid)}")
 
 
+def _validate_research_mcp_scope(mcp_ids: list[str], metadata: ResearchContextMetadata) -> None:
+    """确保科研会话 MCP 不超出 Plane Context 授权范围。
+
+    Args:
+        mcp_ids: 请求启用的 MCP id。
+        metadata: Plane 签发的 agent-context 元数据。
+
+    Raises:
+        HTTPException: 任一 MCP 不在授权范围内时返回 403。
+    """
+    invalid = sorted(set(mcp_ids) - set(metadata.allowed_mcp_ids or []))
+    if invalid:
+        raise HTTPException(403, f"科研上下文未授权 MCP: {', '.join(invalid)}")
+
+
 async def _validate_mcp_ids(request: Request, user_id: str, mcp_ids: list[str]) -> None:
     """校验会话级 MCP 附加里的 id 可用（勾选不能放大可见性）。
 
@@ -311,6 +326,8 @@ async def create_session(body: SessionCreateBody, request: Request,
             _validate_research_plugin_scope(body.enabled_plugins, body.research_context)
     if body.enabled_mcp is not None:
         await _validate_mcp_ids(request, user["sub"], body.enabled_mcp)
+        if body.research_context is not None:
+            _validate_research_mcp_scope(body.enabled_mcp, body.research_context)
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
@@ -389,6 +406,12 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
     if "enabled_mcp" in body.model_fields_set:
         if body.enabled_mcp is not None:
             await _validate_mcp_ids(request, user["sub"], body.enabled_mcp)
+            research_context = doc.get("research_context")
+            if research_context is not None:
+                _validate_research_mcp_scope(
+                    body.enabled_mcp,
+                    ResearchContextMetadata.model_validate(research_context),
+                )
         # 显式 null 与空列表同义：本会话不附加任何 MCP
         fields["enabled_mcp"] = body.enabled_mcp
     return await repos.session.update(doc["_id"], fields)
@@ -461,30 +484,23 @@ async def list_events(sid: str, request: Request, after_seq: int = -1,
             for e in events]
 
 
-@router.post("/sessions/{sid}/messages")
-async def send_message(sid: str, body: MessageIn, request: Request,
-                       user=Depends(get_current_user),
-                       repos=Depends(get_repos)) -> EventSourceResponse:
-    """发消息并以 SSE 流式返回本轮事件（event=事件类型、data=JSON、id=seq）。
+async def _start_message(sid: str, body: MessageIn, request: Request,
+                          user: dict, repos: Repos) -> str:
+    """执行消息提交前置步骤并启动后台 run（不依赖 SSE 消费者）。
 
     Args:
         sid: 会话 id。
-        body: 消息体；skills 为本轮勾选的技能名，透传给 AgentService.chat 的
-            requested_skills（None/空 = 用全部可用技能，老前端不带该字段时行为不变）。
-        request: 当前请求（取 agent_service 与 app.state 上的 settings /
-            project_service，后者交给 session_runtime 解析运行装配）。
+        body: 消息请求体。
+        request: 当前请求（取 agent、运行时与配置服务）。
         user: 当前用户 payload。
         repos: repo 集中访问对象。
 
     Returns:
-        SSE 事件流响应。
-
-    会话未绑定专家（或专家已被删）时按 agent 传 None：只走平台默认提示词、
-    放开全部内置工具；模型须由会话级 model_provider_id 提供。
+        Synlora run id。
 
     Raises:
-        HTTPException: 会话不存在或非本人（404）、provider 未关联/停用（422）、
-            并发超限（429）。
+        HTTPException: 会话不存在或非本人（404）、Context token 无效（401/403）、
+            provider 不可用（422）、同会话并发（429）。
     """
     doc = await _own_session(sid, user, repos)
     if doc.get("research_context"):
@@ -500,53 +516,67 @@ async def send_message(sid: str, body: MessageIn, request: Request,
         doc["research_context"] = metadata.model_dump(mode="json")
         if body.research_context is not None:
             await repos.session.update(sid, {"research_context": doc["research_context"]})
-    # 助手 / 模型 / 工作根 / 归属统一由 session_runtime 解析；
-    # 服务层抛领域异常，这里映射成对外 422
     try:
         runtime = await resolve_session_runtime(
             request.app.state.settings, request.app.state.project_service,
             repos, doc, user, expert_service=request.app.state.expert_service)
     except NoUsableProvider as exc:
         raise HTTPException(422, str(exc)) from exc
-    assistant = runtime.assistant
-    cfg = runtime.provider_cfg
-    workspace_root = runtime.workspace_root
-    ownership = runtime.ownership
-    service = _agent_service(request)
 
-    # 附件归一化：文件复制进本会话工作根（跨根时），agent 按相对路径可读
     attachments_meta = None
     if body.attachments:
         attachments_meta = await _normalize_attachments(
             request, user, repos, [a.file_id for a in body.attachments],
-            workspace_root, ownership)
+            runtime.workspace_root, runtime.ownership)
 
-    # 先 chat（可能 429）：被拒消息不计数、不生成标题、不建 run 记录，无需回滚。
-    # 前置步骤按需创建会话目录 / 清理失效绑定，均幂等、可安全重试。
+    service = _agent_service(request)
     try:
-        run_id = await service.chat(sid, user, assistant, cfg, body.text,
-                                    workspace_root=workspace_root,
-                                    requested_skills=body.skills,
-                                    attachments=attachments_meta,
-                                    file_ownership=ownership,
-                                    enabled_plugins=doc.get("enabled_plugins"),
-                                    enabled_mcp=doc.get("enabled_mcp"),
-                                    research_context=doc.get("research_context"))
+        run_id = await service.chat(
+            sid, user, runtime.assistant, runtime.provider_cfg, body.text,
+            workspace_root=runtime.workspace_root,
+            requested_skills=body.skills,
+            attachments=attachments_meta,
+            file_ownership=runtime.ownership,
+            enabled_plugins=doc.get("enabled_plugins"),
+            enabled_mcp=doc.get("enabled_mcp"),
+            research_context=doc.get("research_context"),
+        )
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
 
-    active = service.get_active(run_id)  # 紧随 chat 返回（其间无 await），run 必在注册表
-    if active is None:  # 防御：仅当未来改动在 chat 与此处之间插入 await 才可能触发
-        raise HTTPException(500, "运行句柄丢失")
-
-    # chat 成功后原子累加 message_count（并发请求不互相覆盖）；
-    # 累加到 1 的请求负责生成自动标题（首条消息，前 24 字）
     updated = await repos.session.bump_message_count(sid)
     if updated and int(updated["message_count"]) == 1 and not updated.get("title"):
         await repos.session.update(sid, {"title": body.text[:24]})
+    return run_id
+
+
+@router.post("/sessions/{sid}/messages")
+async def send_message(sid: str, body: MessageIn, request: Request,
+                       user=Depends(get_current_user),
+                       repos=Depends(get_repos)) -> EventSourceResponse:
+    """发消息并以 SSE 流式返回本轮事件。
+
+    Args:
+        sid: 会话 id。
+        body: 消息体。
+        request: 当前请求。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+
+    Returns:
+        SSE 事件流响应；断连不取消 run。
+
+    Raises:
+        HTTPException: 会话/运行装配/科研上下文校验失败。
+    """
+    run_id = await _start_message(sid, body, request, user, repos)
+    service = _agent_service(request)
+    active = service.get_active(run_id)
+    if active is None:
+        raise HTTPException(500, "运行句柄丢失")
 
     async def sse_gen():
-        """SSE 事件生成器：消费 ActiveRun.queue，None 哨兵结束（断连不 cancel run）。"""
+        """消费 ActiveRun.queue，None 哨兵结束。"""
         while True:
             ev = await active.queue.get()
             if ev is None:
@@ -555,6 +585,28 @@ async def send_message(sid: str, body: MessageIn, request: Request,
 
     return EventSourceResponse(sse_gen())
 
+
+@router.post("/sessions/{sid}/runs", status_code=202)
+async def start_run(sid: str, body: MessageIn, request: Request,
+                    user=Depends(get_current_user),
+                    repos=Depends(get_repos)) -> dict:
+    """提交后台 run 并立即返回 run id（Plane BFF 使用的事件稳定接口）。
+
+    Args:
+        sid: 会话 id。
+        body: 与 messages 相同的消息体。
+        request: 当前请求。
+        user: 当前用户 payload。
+        repos: repo 集中访问对象。
+
+    Returns:
+        `{session_id, run_id}`。
+
+    Raises:
+        HTTPException: 会话、上下文、装配或并发约束失败。
+    """
+    run_id = await _start_message(sid, body, request, user, repos)
+    return {"session_id": sid, "run_id": run_id}
 
 @router.get("/sessions/{sid}/events")
 async def subscribe_session(sid: str, request: Request,

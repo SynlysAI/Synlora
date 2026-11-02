@@ -188,6 +188,50 @@ async def _wait_for_running_runs(app, count: int, timeout_s: float = 5.0) -> lis
     raise AssertionError(f"{timeout_s}s 内未等到 {count} 个 running run")
 
 
+async def _wait_for_event(client, headers, sid: str, event_type: str,
+                          timeout_s: float = 5.0) -> list[dict]:
+    """轮询事件回放，直到出现指定事件类型。"""
+    for _ in range(int(timeout_s / 0.02)):
+        response = await client.get(f"/api/v1/sessions/{sid}/events", headers=headers)
+        assert response.status_code == 200, response.text
+        events = response.json()
+        if any(event["type"] == event_type for event in events):
+            return events
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"{timeout_s}s 内未等到 {event_type} 事件")
+
+
+async def test_non_stream_run_endpoint_starts_background_run_and_replays_events(
+        app, client, admin_headers, monkeypatch):
+    """Plane BFF 用非流式接口拿 run id；事件经 after_seq 回放。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend", FakeBackend)
+    FakeBackend.script = [[TextDelta(text="后台答"), Usage()]]
+    sid = await _make_session(client, admin_headers)
+
+    response = await client.post(
+        f"/api/v1/sessions/{sid}/runs", headers=admin_headers, json={"text": "后台问"}
+    )
+    assert response.status_code == 202, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    payload = response.json()
+    assert payload["session_id"] == sid
+    assert payload["run_id"]
+
+    events = await _wait_for_event(client, admin_headers, sid, "turn/end")
+    assert [event["type"] for event in events] == [
+        "turn/start", "user/message", "assistant/message", "turn/end"
+    ]
+    assert events[0]["payload"]["run_id"] == payload["run_id"]
+    for _ in range(250):
+        run = await app.state.store.get("runs", payload["run_id"])
+        if run and run.get("status") in {"completed", "failed", "aborted"}:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        raise AssertionError("后台 run 未在测试结束前落终态")
+
+
 # ---------- 完整工具链路（HTTP + SSE + python.run 子进程 + 持久化） ----------
 
 

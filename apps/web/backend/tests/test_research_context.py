@@ -60,6 +60,47 @@ def _plane_response(metadata: ResearchContextMetadata) -> dict:
     }
 
 
+def _v3_metadata(**overrides) -> ResearchContextMetadata:
+    payload = {
+        "schema_version": "agent-context.v3",
+        "context_id": "context-v3",
+        "context_hash": "hash-v3",
+        "expires_at": (datetime.now(UTC) + timedelta(minutes=10)).isoformat(),
+        "target": {
+            "type": "RESEARCH_CHAIN",
+            "workspace_id": "workspace-1",
+            "workspace_slug": "pi-lab",
+            "project_id": "project-1",
+            "research_chain_id": "chain-1",
+        },
+        "subject": {
+            "plane_user_id": "user-1",
+            "delegated_subject": "plane-ws-workspace-1-user-user-1",
+            "scope_kind": "OWNER",
+            "scope_source": "chain_owner",
+        },
+        "policy": {
+            "policy_id": "policy-v3",
+            "policy_hash": "policy-hash-v3",
+            "policy_version": "research-agent-policy.v2",
+            "visibility_scope": "UNIT",
+            "allowed_tools": ["knowledge.search", "file.read"],
+            "allowed_plugins": ["plugin-a"],
+            "allowed_mcp_ids": ["mcp-a"],
+            "allowed_knowledge_base_ids": ["kb-1"],
+            "allowed_file_ids": ["file-1"],
+        },
+        "manifest": {
+            "version": 7,
+            "hash": "manifest-hash",
+            "summary": "Research chain summary",
+            "resources": [{"kind": "task", "id": "task-1", "title": "Task"}],
+        },
+    }
+    payload.update(overrides)
+    return ResearchContextMetadata.model_validate(payload)
+
+
 async def test_context_adapter_validates_scope_without_widening():
     """Plane response 必须与请求 metadata 六个 scope 字段全部一致。"""
     metadata = _metadata()
@@ -98,6 +139,65 @@ async def test_context_adapter_rejects_scope_mismatch_and_expiry():
             transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=expired_response)),
         )
     assert error.value.status_code == 401
+
+
+def test_v2_context_normalizes_to_node_target_without_loss():
+    """v2 输入继续可用，并同步得到 v3 node target/policy 投影。"""
+    metadata = _metadata()
+    assert metadata.target is not None
+    assert metadata.target.type == "RESEARCH_CHAIN_NODE"
+    assert metadata.target.chain_node_id == "node-1"
+    assert metadata.policy is not None
+    assert metadata.policy.allowed_tools == metadata.allowed_tools
+
+
+async def test_v3_context_adapter_validates_target_policy_and_manifest_identity():
+    """v3 校验 target、policy 与 manifest version/hash，不导出摘要正文。"""
+    metadata = _v3_metadata()
+    projection = metadata.normalized_projection()
+    manifest = {"version": 7, "hash": "manifest-hash"}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("X-Research-Context-Token") == "opaque"
+        return httpx.Response(200, json={
+            "context": {
+                "schema_version": "agent-context.v3",
+                "context_id": projection["context_id"],
+                "context_hash": projection["context_hash"],
+                "expires_at": metadata.expires_at.isoformat(),
+                "target": projection["target"],
+                "subject": projection["subject"],
+                "policy": projection["policy"],
+                "manifest": manifest,
+            },
+        })
+
+    adapter = ResearchContextAdapter("http://plane.test")
+    await adapter.validate(
+        token="opaque", expected=metadata, transport=httpx.MockTransport(handler)
+    )
+
+    mismatch = _v3_metadata()
+    mismatch.policy = mismatch.policy.model_copy(update={"allowed_tools": ["file.read"]})
+    mismatch.allowed_tools = mismatch.policy.allowed_tools
+    with pytest.raises(ResearchContextError) as error:
+        await adapter.validate(
+            token="opaque",
+            expected=mismatch,
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={
+                "context": {
+                    "schema_version": "agent-context.v3",
+                    "context_id": projection["context_id"],
+                    "context_hash": projection["context_hash"],
+                    "expires_at": mismatch.expires_at.isoformat(),
+                    "target": projection["target"],
+                    "subject": projection["subject"],
+                    "policy": projection["policy"],
+                    "manifest": manifest,
+                },
+            })),
+        )
+    assert error.value.status_code == 403
 
 
 async def test_plane_event_client_uses_backend_token_and_idempotency():
