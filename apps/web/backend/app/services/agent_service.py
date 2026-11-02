@@ -77,15 +77,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def apply_research_tool_policy(tool_names: list[str], research_context: dict | None) -> list[str]:
-    """按 agent-context.v2 的 Plane allowed_tools 取防御性交集。"""
-    if not research_context or research_context.get("schema_version") != "agent-context.v2":
+    """按 Plane allowed_tools 取防御性交集。"""
+    if not research_context or research_context.get("schema_version") not in (
+        "agent-context.v2", "agent-context.v3"
+    ):
         return tool_names
     allowed = set(research_context.get("allowed_tools") or [])
     return [name for name in tool_names if name in allowed]
 
 
 def apply_research_plugin_policy(plugin_ids: list[str], research_context: dict | None) -> list[str]:
-    """按 agent-context.v2 的 Plane allowed_plugins 收紧会话插件开关。
+    """按 Plane allowed_plugins 收紧会话插件开关。
 
     Args:
         plugin_ids: 会话请求启用的插件 ID。
@@ -94,10 +96,30 @@ def apply_research_plugin_policy(plugin_ids: list[str], research_context: dict |
     Returns:
         同时被会话请求和 Plane Context 授权的插件 ID。
     """
-    if not research_context or research_context.get("schema_version") != "agent-context.v2":
+    if not research_context or research_context.get("schema_version") not in (
+        "agent-context.v2", "agent-context.v3"
+    ):
         return plugin_ids
     allowed = set(research_context.get("allowed_plugins") or [])
     return [plugin_id for plugin_id in plugin_ids if plugin_id in allowed]
+
+
+def apply_research_mcp_policy(mcp_ids: list[str], research_context: dict | None) -> list[str]:
+    """按 Plane allowed_mcp_ids 收紧科研会话可附加的 MCP。
+
+    Args:
+        mcp_ids: 会话或专家请求启用的 MCP id。
+        research_context: Plane 签发的科研上下文元数据。
+
+    Returns:
+        同时被请求方和 Plane 授权的 MCP id。
+    """
+    if not research_context or research_context.get("schema_version") not in (
+        "agent-context.v2", "agent-context.v3"
+    ):
+        return mcp_ids
+    allowed = set(research_context.get("allowed_mcp_ids") or [])
+    return [mcp_id for mcp_id in mcp_ids if mcp_id in allowed]
 
 
 async def assemble_mcp_tools(
@@ -500,10 +522,14 @@ class AgentService:
             run_registry = ToolRegistry()
             for name in _REGISTRY.names:
                 run_registry.register(_REGISTRY.get(name))
+            requested_mcp_ids = list(dict.fromkeys(
+                [*list(enabled_mcp or []), *[str(i) for i in ((assistant or {}).get("mcp_refs") or []) if i]]
+            ))
+            authorized_mcp_ids = apply_research_mcp_policy(requested_mcp_ids, research_context)
             mcp_tool_names = await assemble_mcp_tools(
                 self._mcp_service, self._capability_service, user_sub,
-                list(enabled_mcp or []),
-                [str(i) for i in ((assistant or {}).get("mcp_refs") or []) if i],
+                authorized_mcp_ids,
+                [],
                 run_registry,
             ) if self._mcp_service is not None else []
             run_pipeline = ToolPipeline(run_registry)
@@ -522,6 +548,7 @@ class AgentService:
                     getattr(executor, "network_enabled", False)
                 ),
                 shell_available=executor.sandbox == "docker",
+                research_context=research_context,
             )
             # 有白名单时严格使用显式授权；无专家或未限制时放开注册表工具。
             # 技能和任务工具不再自动追加，避免升级代码静默扩大旧专家权限。

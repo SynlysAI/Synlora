@@ -3,23 +3,74 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
+
+
+ResearchContextTargetType = Literal[
+    "WORKSPACE",
+    "PROJECT",
+    "RESEARCH_CHAIN",
+    "RESEARCH_CHAIN_NODE",
+]
+
+
+class ResearchContextTarget(BaseModel):
+    """Plane 授权对象的窄化描述；只含 ID，不含业务正文。"""
+
+    type: ResearchContextTargetType
+    workspace_id: str = ""
+    workspace_slug: str = ""
+    project_id: str | None = None
+    research_chain_id: str | None = None
+    chain_node_id: str | None = None
+
+
+class ResearchContextSubject(BaseModel):
+    """发起本轮 Agent 的 Plane 用户与授权来源。"""
+
+    plane_user_id: str = ""
+    delegated_subject: str = ""
+    scope_kind: str = "OWNER"
+    scope_source: str = "chain_owner"
+
+
+class ResearchContextPolicy(BaseModel):
+    """Plane 签发的能力硬上界。"""
+
+    policy_id: str = ""
+    policy_hash: str = ""
+    policy_version: str = "research-agent-policy.v1"
+    visibility_scope: str = "PRIVATE"
+    allowed_tools: list[str] = Field(default_factory=list)
+    allowed_plugins: list[str] = Field(default_factory=list)
+    allowed_mcp_ids: list[str] = Field(default_factory=list)
+    allowed_knowledge_base_ids: list[str] = Field(default_factory=list)
+    allowed_file_ids: list[str] = Field(default_factory=list)
+
+
+class ResearchContextManifest(BaseModel):
+    """进入系统提示词的 bounded 摘要与资源引用。"""
+
+    version: int = 1
+    hash: str
+    summary: str = ""
+    resources: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ResearchContextMetadata(BaseModel):
     """Metadata persisted on a Synlora session; never contains a token."""
 
     schema_version: str = "agent-context.v2"
-    workspace_id: str
-    workspace_slug: str
-    research_project_id: str
-    chain_node_id: str
+    workspace_id: str = ""
+    workspace_slug: str = ""
+    research_project_id: str | None = None
+    chain_node_id: str | None = None
     context_id: str
     context_hash: str
-    visibility_scope: str
+    visibility_scope: str = "PRIVATE"
     expires_at: datetime
     allowed_knowledge_base_ids: list[str] = Field(default_factory=list)
     allowed_file_ids: list[str] = Field(default_factory=list)
@@ -30,13 +81,97 @@ class ResearchContextMetadata(BaseModel):
     scope_kind: str = "OWNER"
     scope_source: str = "chain_owner"
     policy_version: str = "research-agent-policy.v1"
+    plane_user_id: str = ""
+    delegated_subject: str = ""
+    allowed_mcp_ids: list[str] = Field(default_factory=list)
+    target: ResearchContextTarget | None = None
+    subject: ResearchContextSubject | None = None
+    policy: ResearchContextPolicy | None = None
+    manifest: ResearchContextManifest | None = None
 
     @model_validator(mode="after")
-    def validate_v2_scope(self) -> "ResearchContextMetadata":
-        """v2 必须携带可执行的工具白名单。"""
-        if self.schema_version == "agent-context.v2" and not self.allowed_tools:
-            raise ValueError("agent-context.v2 requires allowed_tools")
+    def normalize_context_shape(self) -> "ResearchContextMetadata":
+        """归一化 v2/v3 输入，并同步既有扁平字段投影。"""
+        if self.schema_version == "agent-context.v2":
+            if not self.workspace_id or not self.workspace_slug or not self.research_project_id:
+                raise ValueError("agent-context.v2 requires workspace and project scope")
+            if not self.chain_node_id:
+                raise ValueError("agent-context.v2 requires chain_node_id")
+            if not self.allowed_tools:
+                raise ValueError("agent-context.v2 requires allowed_tools")
+            self.target = ResearchContextTarget(
+                type="RESEARCH_CHAIN_NODE",
+                workspace_id=self.workspace_id,
+                workspace_slug=self.workspace_slug,
+                project_id=self.research_project_id,
+                chain_node_id=self.chain_node_id,
+            )
+            self.subject = ResearchContextSubject(
+                plane_user_id=self.plane_user_id,
+                delegated_subject=self.delegated_subject,
+                scope_kind=self.scope_kind,
+                scope_source=self.scope_source,
+            )
+            self.policy = ResearchContextPolicy(
+                policy_id=self.policy_id,
+                policy_hash=self.policy_hash,
+                policy_version=self.policy_version,
+                visibility_scope=self.visibility_scope,
+                allowed_tools=self.allowed_tools,
+                allowed_plugins=self.allowed_plugins,
+                allowed_mcp_ids=self.allowed_mcp_ids,
+                allowed_knowledge_base_ids=self.allowed_knowledge_base_ids,
+                allowed_file_ids=self.allowed_file_ids,
+            )
+            return self
+
+        if self.schema_version != "agent-context.v3":
+            raise ValueError("unsupported research context schema")
+        if self.target is None or self.policy is None:
+            raise ValueError("agent-context.v3 requires target and policy")
+        if not self.target.workspace_id or not self.target.workspace_slug:
+            raise ValueError("agent-context.v3 requires workspace target fields")
+        if self.target.type == "PROJECT" and not self.target.project_id:
+            raise ValueError("PROJECT context requires project_id")
+        if self.target.type == "RESEARCH_CHAIN" and not self.target.research_chain_id:
+            raise ValueError("RESEARCH_CHAIN context requires research_chain_id")
+        if self.target.type == "RESEARCH_CHAIN_NODE" and not self.target.chain_node_id:
+            raise ValueError("RESEARCH_CHAIN_NODE context requires chain_node_id")
+
+        policy = self.policy
+        self.workspace_id = self.target.workspace_id
+        self.workspace_slug = self.target.workspace_slug
+        self.research_project_id = self.target.project_id
+        self.chain_node_id = self.target.chain_node_id
+        self.allowed_tools = policy.allowed_tools
+        self.allowed_plugins = policy.allowed_plugins
+        self.allowed_mcp_ids = policy.allowed_mcp_ids
+        self.allowed_knowledge_base_ids = policy.allowed_knowledge_base_ids
+        self.allowed_file_ids = policy.allowed_file_ids
+        self.policy_id = policy.policy_id
+        self.policy_hash = policy.policy_hash
+        self.policy_version = policy.policy_version
+        self.visibility_scope = policy.visibility_scope
+        if self.subject is not None:
+            self.plane_user_id = self.subject.plane_user_id
+            self.delegated_subject = self.subject.delegated_subject
+            self.scope_kind = self.subject.scope_kind
+            self.scope_source = self.subject.scope_source
         return self
+
+    def normalized_projection(self) -> dict[str, Any]:
+        """返回 Context token 校验使用的稳定比较结构。"""
+        if self.target is None or self.policy is None:
+            raise ValueError("research context is not normalized")
+        return {
+            "schema_version": self.schema_version,
+            "context_id": self.context_id,
+            "context_hash": self.context_hash,
+            "target": self.target.model_dump(mode="json"),
+            "subject": self.subject.model_dump(mode="json") if self.subject else {},
+            "policy": self.policy.model_dump(mode="json"),
+            "manifest": self.manifest.model_dump(mode="json") if self.manifest else None,
+        }
 
 
 class ResearchContextError(Exception):
@@ -101,42 +236,70 @@ class ResearchContextAdapter:
         payload = response.json()
         actual_context = payload.get("context") or {}
         actual_scope = payload.get("scope") or {}
-        expected_values = {
-            "context_id": expected.context_id,
-            "context_hash": expected.context_hash,
-            "workspace_id": expected.workspace_id,
-            "research_project_id": expected.research_project_id,
-            "chain_node_id": expected.chain_node_id,
-            "visibility_scope": expected.visibility_scope,
-            "allowed_knowledge_base_ids": expected.allowed_knowledge_base_ids,
-            "allowed_file_ids": expected.allowed_file_ids,
-            "allowed_plugins": expected.allowed_plugins,
-            "allowed_tools": expected.allowed_tools,
-            "policy_id": expected.policy_id,
-            "policy_hash": expected.policy_hash,
-            "scope_kind": expected.scope_kind,
-            "scope_source": expected.scope_source,
-            "policy_version": expected.policy_version,
-        }
-        actual_values = {
-            "context_id": actual_context.get("context_id"),
-            "context_hash": actual_context.get("context_hash"),
-            "workspace_id": (payload.get("workspace") or {}).get("id"),
-            "research_project_id": actual_scope.get("project_id"),
-            "chain_node_id": actual_context.get("chain_node_id"),
-            "visibility_scope": actual_context.get("visibility_scope"),
-            "allowed_knowledge_base_ids": actual_context.get("allowed_knowledge_base_ids") or [],
-            "allowed_file_ids": actual_context.get("allowed_file_ids") or [],
-            "allowed_plugins": actual_context.get("allowed_plugins") or [],
-            "allowed_tools": actual_context.get("allowed_tools") or [],
-            "policy_id": actual_context.get("policy_id") or "",
-            "policy_hash": actual_context.get("policy_hash") or "",
-            "scope_kind": actual_context.get("scope_kind") or "OWNER",
-            "scope_source": actual_context.get("scope_source") or "chain_owner",
-            "policy_version": actual_context.get("policy_version") or "research-agent-policy.v1",
-        }
-        if expected_values != actual_values:
-            raise ResearchContextError(403, "Research context scope mismatch")
+        if expected.schema_version == "agent-context.v3":
+            expected_projection = expected.normalized_projection()
+            # Plane returns only the manifest identity (version/hash), never the
+            # summary body, so validation does not turn into a content export.
+            expected_manifest = expected_projection["manifest"]
+            actual_manifest = actual_context.get("manifest")
+            if expected_manifest is not None:
+                expected_projection["manifest"] = {
+                    "version": expected_manifest["version"],
+                    "hash": expected_manifest["hash"],
+                }
+                if isinstance(actual_manifest, dict):
+                    actual_manifest = {
+                        "version": actual_manifest.get("version"),
+                        "hash": actual_manifest.get("hash"),
+                    }
+            actual_projection = {
+                "schema_version": actual_context.get("schema_version"),
+                "context_id": actual_context.get("context_id"),
+                "context_hash": actual_context.get("context_hash"),
+                "target": actual_context.get("target"),
+                "subject": actual_context.get("subject") or {},
+                "policy": actual_context.get("policy"),
+                "manifest": actual_manifest,
+            }
+            if expected_projection != actual_projection:
+                raise ResearchContextError(403, "Research context scope mismatch")
+        else:
+            expected_values = {
+                "context_id": expected.context_id,
+                "context_hash": expected.context_hash,
+                "workspace_id": expected.workspace_id,
+                "research_project_id": expected.research_project_id,
+                "chain_node_id": expected.chain_node_id,
+                "visibility_scope": expected.visibility_scope,
+                "allowed_knowledge_base_ids": expected.allowed_knowledge_base_ids,
+                "allowed_file_ids": expected.allowed_file_ids,
+                "allowed_plugins": expected.allowed_plugins,
+                "allowed_tools": expected.allowed_tools,
+                "policy_id": expected.policy_id,
+                "policy_hash": expected.policy_hash,
+                "scope_kind": expected.scope_kind,
+                "scope_source": expected.scope_source,
+                "policy_version": expected.policy_version,
+            }
+            actual_values = {
+                "context_id": actual_context.get("context_id"),
+                "context_hash": actual_context.get("context_hash"),
+                "workspace_id": (payload.get("workspace") or {}).get("id"),
+                "research_project_id": actual_scope.get("project_id"),
+                "chain_node_id": actual_context.get("chain_node_id"),
+                "visibility_scope": actual_context.get("visibility_scope"),
+                "allowed_knowledge_base_ids": actual_context.get("allowed_knowledge_base_ids") or [],
+                "allowed_file_ids": actual_context.get("allowed_file_ids") or [],
+                "allowed_plugins": actual_context.get("allowed_plugins") or [],
+                "allowed_tools": actual_context.get("allowed_tools") or [],
+                "policy_id": actual_context.get("policy_id") or "",
+                "policy_hash": actual_context.get("policy_hash") or "",
+                "scope_kind": actual_context.get("scope_kind") or "OWNER",
+                "scope_source": actual_context.get("scope_source") or "chain_owner",
+                "policy_version": actual_context.get("policy_version") or "research-agent-policy.v1",
+            }
+            if expected_values != actual_values:
+                raise ResearchContextError(403, "Research context scope mismatch")
         expires_at = actual_context.get("expires_at")
         try:
             expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
