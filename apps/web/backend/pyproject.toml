@@ -1,15 +1,17 @@
 [project]
 name = "synlys-web"
-version = "1.7.1"
+version = "1.8.1"
 description = "SynlysAgent Web 后端（FastAPI，harness 宿主）"
 requires-python = ">=3.12"
 dependencies = [
     "synlys-harness",
     "fastapi>=0.115",
+    "argon2-cffi>=23.1",
     "uvicorn>=0.30",
     "pydantic-settings>=2.2",
     "aiosqlite>=0.20",
     "cryptography>=42",
+    "psycopg[binary]>=3.2",
     "sse-starlette>=2.1",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0",

@@ -6,6 +6,7 @@
  * - `/`、`/chat`、`/chat/new` → 新对话草稿态
  * - `/chat/<id>`             → 指定会话（URL 是会话选中态的唯一事实源）
  * - `/admin/<tab>`           → 管理后台五页签
+ * - `/account/api-keys`      → 个人访问令牌
  * - `/capabilities[/<kind>[/<id>]]` → 用户侧能力中心（列表 / 详情，任意登录用户）
  * - 其余                     → not-found
  */
@@ -20,6 +21,7 @@ export type CapabilityKind = 'expert' | 'skill' | 'plugin'
 export type AppRoute =
   | { kind: 'chat-new' }
   | { kind: 'chat-session'; sessionId: string }
+  | { kind: 'api-keys' }
   | { kind: 'admin'; tab: AdminTab }
   | { kind: 'capabilities'; capabilityKind: CapabilityKind }
   | { kind: 'capability-detail'; capabilityKind: CapabilityKind; itemId: string }
@@ -42,6 +44,7 @@ export function parseAppRoute(pathname: string): AppRoute {
   if (path === '/' || path === '/chat' || path === '/chat/new') return { kind: 'chat-new' }
   const chatMatch = path.match(/^\/chat\/([^/]+)$/)
   if (chatMatch) return { kind: 'chat-session', sessionId: decodeURIComponent(chatMatch[1]) }
+  if (path === '/account/api-keys') return { kind: 'api-keys' }
   const adminMatch = path.match(/^\/admin\/(general|models|assistants|skills|plugins)$/)
   if (adminMatch) return { kind: 'admin', tab: adminMatch[1] as AdminTab }
   // /capabilities 不带类型时按专家渲染（不重写 URL，旧链接继续可用）
@@ -71,6 +74,7 @@ export function parseAppRoute(pathname: string): AppRoute {
 export function appRoutePath(route: AppRoute): string {
   if (route.kind === 'chat-new') return '/chat/new'
   if (route.kind === 'chat-session') return `/chat/${encodeURIComponent(route.sessionId)}`
+  if (route.kind === 'api-keys') return '/account/api-keys'
   if (route.kind === 'admin') return `/admin/${route.tab}`
   if (route.kind === 'capabilities') return `/capabilities/${route.capabilityKind}`
   if (route.kind === 'capability-detail') {

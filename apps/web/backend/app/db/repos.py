@@ -78,6 +78,23 @@ class BaseRepo:
         return await self._store.delete(self.collection, doc_id)
 
 
+class APIKeyRepo(BaseRepo):
+    """个人 yxkey 访问令牌（只存 hash，明文仅创建时返回一次）。"""
+
+    collection = "api_keys"
+
+    async def list_for_user(self, user_id: str) -> list[dict]:
+        """列出一名用户拥有的访问令牌。
+
+        Args:
+            user_id: 当前用户标识。
+
+        Returns:
+            按创建时间倒序的令牌文档列表。
+        """
+        return await self.list(filters={"user_id": user_id}, sort=[("created_at", -1)])
+
+
 class ProviderRepo(BaseRepo):
     """模型 provider 配置（api_key 写前 Fernet 加密）。"""
 

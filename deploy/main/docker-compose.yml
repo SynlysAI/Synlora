@@ -1,0 +1,31 @@
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:?set in deploy/main/.env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?set in deploy/main/.env}
+    ports:
+      - "127.0.0.1:27019:27017"
+    volumes:
+      - ./mongodb-data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD", "mongosh", "--quiet",
+          "-u", "${MONGO_USERNAME}",
+          "-p", "${MONGO_PASSWORD}",
+          "--authenticationDatabase", "admin",
+          "--eval", "db.adminCommand('ping').ok",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  web:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ../../apps/web/frontend/dist:/srv:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro

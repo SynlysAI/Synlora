@@ -200,6 +200,22 @@ function UserMenu() {
               </svg>
               能力中心
             </a>
+            <a
+              role="menuitem"
+              href="/account/api-keys"
+              onClick={(e) => {
+                e.preventDefault()
+                setOpen(false)
+                navigate({ kind: 'api-keys' })
+              }}
+              className={itemClass}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="5.5" cy="10.5" r="2.5" />
+                <path d="M7.5 8.5 13 3m-2 0h2v2" />
+              </svg>
+              访问令牌
+            </a>
             {user.role === 'admin' && (
               <a
                 role="menuitem"
