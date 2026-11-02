@@ -30,7 +30,7 @@ class Repos:
     run: Any
     file: Any
     event: Any
-    api_key: Any
+    api_key: Any = None
 
 
 def get_settings(request: Request) -> Settings:

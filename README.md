@@ -4,7 +4,7 @@ Synlora 是一个面向科研人员的 Web 智能体工作台。它在三栏对�
 
 > 仓库内部代号仍为 **SynlysAgent**，部分目录、Python 包和 conda 环境名沿用该代号；对外产品名称统一为 **Synlora**。
 
-- 当前版本：1.7.1（正式版）
+- 当前版本：1.8.0（正式版）
 - 平台设计：[2026-09-10 平台设计文档](docs/superpowers/specs/2026-09-10-synlysagent-platform-design.md)
 - 后端细节：[Web 后端说明](apps/web/backend/README.md)
 - 扩展开发：[插件、技能与后台任务指南](docs/development/plugin-and-skill-guide.md)
