@@ -616,7 +616,7 @@ def load_snapshot(dsn: str, since: datetime | None = None) -> dict[str, list[dic
             elif name in {"users", "api_keys", "providers", "skills"}:
                 params = ()
             else:
-                params = (since, since)
+                params = (since, since) if since is not None else ()
             with connection.cursor() as cursor:
                 cursor.execute(query, params)
                 snapshot[name] = [dict(row) for row in cursor.fetchall()]

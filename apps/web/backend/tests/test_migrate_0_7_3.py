@@ -15,6 +15,7 @@ from scripts.migrate_from_0_7_3 import (
     map_user,
     migrate_snapshot,
     split_provider,
+    load_snapshot,
 )
 
 UTC = timezone.utc
@@ -235,3 +236,37 @@ async def test_migrate_snapshot_skips_api_keys_for_deleted_users(tmp_path):
     assert report.counts["skipped_deleted_user_api_keys"] == 1
     assert await store.list("api_keys") == []
     await store.close()
+
+
+def test_load_snapshot_full_mode_matches_placeholders_and_params(monkeypatch):
+    """全量模式不向无占位符 SQL 传参数，避免 psycopg 运行期失败。"""
+    executed = []
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, query, params=()):
+            executed.append((query, tuple(params)))
+
+        def fetchall(self):
+            return []
+
+    class Connection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def cursor(self):
+            return Cursor()
+
+    monkeypatch.setattr("psycopg.connect", lambda *_args, **_kwargs: Connection())
+    load_snapshot("dsn", None)
+    assert executed
+    for query, params in executed:
+        assert query.count("%s") == len(params)
