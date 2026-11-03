@@ -8,6 +8,7 @@ import { appRoutePath } from '@/routing/route'
 import { useRouterStore } from '@/routing/router'
 import { useAuthStore } from '@/stores/auth'
 import { useDarkTheme } from '@/utils/theme'
+import { Settings } from 'lucide-react'
 
 interface PageTopBarProps {
   /** 页面标题（顶栏分隔符右侧文字）。 */
@@ -51,6 +52,18 @@ export default function PageTopBar({ title }: PageTopBarProps) {
       <h1 className="text-[14px] font-medium tracking-tight">{title}</h1>
 
       <div className="flex-1" />
+      <a
+        href="/settings"
+        onClick={(e) => {
+          e.preventDefault()
+          navigate({ kind: 'settings' })
+        }}
+        aria-label="设置"
+        title="设置"
+        className="flex h-8 w-8 items-center justify-center rounded-[var(--sa-radius-sm)] text-[var(--sa-alias-label-secondary)] transition-colors duration-[var(--sa-duration-base)] hover:bg-[var(--sa-alias-interactive-bg-hover)]"
+      >
+        <Settings size={16} aria-hidden="true" />
+      </a>
       <button
         type="button"
         title={dark ? '切换浅色主题' : '切换深色主题'}

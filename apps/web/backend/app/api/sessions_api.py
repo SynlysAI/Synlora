@@ -608,8 +608,8 @@ async def start_run(sid: str, body: MessageIn, request: Request,
     run_id = await _start_message(sid, body, request, user, repos)
     return {"session_id": sid, "run_id": run_id}
 
-@router.get("/sessions/{sid}/events")
-async def subscribe_session(sid: str, request: Request,
+@router.get("/sessions/{sid}/events/stream")
+async def subscribe_session(sid: str, request: Request, after_seq: int = -1,
                             user=Depends(get_current_user),
                             repos=Depends(get_repos)) -> EventSourceResponse:
     """订阅会话的全部后续事件（会话页常驻，含任务唤醒轮与瞬态流）。
@@ -633,13 +633,36 @@ async def subscribe_session(sid: str, request: Request,
     """
     await _own_session(sid, user, repos)
     service = _agent_service(request)
+    # 先注册实时订阅，再读取持久事件，避免历史回放与订阅建立之间丢事件。
+    cursor = request.headers.get("Last-Event-ID")
+    if cursor is not None:
+        try:
+            after_seq = int(cursor)
+        except ValueError as exc:
+            raise HTTPException(400, "Last-Event-ID must be an integer") from exc
     queue = service.subscribe_session_events(sid)
+    try:
+        replay = await service.events_after(sid, after_seq)
+    except Exception:
+        service.unsubscribe_session_events(sid, queue)
+        raise
 
     async def sse_gen():
         """消费会话订阅队列直至客户端断连（finally 注销防队列泄漏）。"""
+        last_sent_seq = after_seq
         try:
+            for ev in replay:
+                if ev.seq <= last_sent_seq:
+                    continue
+                last_sent_seq = ev.seq
+                yield {"event": ev.type.value, "data": ev.model_dump_json(), "id": str(ev.seq)}
             while True:
                 ev = await queue.get()
+                if ev is None:
+                    break
+                if ev.seq <= last_sent_seq:
+                    continue
+                last_sent_seq = ev.seq
                 yield {"event": ev.type.value, "data": ev.model_dump_json(),
                        "id": str(ev.seq)}
         finally:

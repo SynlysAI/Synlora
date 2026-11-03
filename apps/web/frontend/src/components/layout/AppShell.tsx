@@ -19,6 +19,7 @@ import { FolderIcon } from '@/components/sidebar/icons'
 import { useProjectsStore } from '@/stores/projects'
 import { useSessionsStore } from '@/stores/sessions'
 import { useDarkTheme } from '@/utils/theme'
+import { Settings } from 'lucide-react'
 
 /** 左栏宽度默认值与拖拽钳制范围（px）。 */
 const LEFT_DEFAULT = 280
@@ -182,6 +183,19 @@ function UserMenu() {
             role="menu"
             className="absolute bottom-full left-0 z-50 mb-1.5 w-44 rounded-[var(--sa-radius-md)] border border-[var(--sa-alias-border-l2)] bg-[var(--sa-alias-bg-layer-1)] p-1 shadow-lg"
           >
+            <a
+              role="menuitem"
+              href="/settings"
+              onClick={(e) => {
+                e.preventDefault()
+                setOpen(false)
+                navigate({ kind: 'settings' })
+              }}
+              className={itemClass}
+            >
+              <Settings size={14} aria-hidden="true" />
+              设置
+            </a>
             <a
               role="menuitem"
               href="/capabilities"
