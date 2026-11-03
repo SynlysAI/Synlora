@@ -18,6 +18,7 @@ from app.services.mcp_stdio import connect_stdio
 MCP_COLLECTION = "mcp_connections"
 MCP_PROTOCOL_VERSION = "2026-07-28"
 MCP_LEGACY_PROTOCOL_VERSION = "2025-11-25"
+PLANE_MCP_PROTOCOL_VERSION = "2025-03-26"
 MCP_ID_OK = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
@@ -156,6 +157,49 @@ class McpService:
         config = await self.resolved(user_id, mcp_id)
         if config.get("enabled") is not True:
             raise ValueError(f"MCP 已停用: {mcp_id}")
+        return await self._request(
+            config,
+            "tools/call",
+            {"name": tool_name, "arguments": arguments},
+        )
+
+    async def discover_inline_tools(self, config: dict) -> list[dict]:
+        """Discover tools from an in-memory connection without persisting secrets.
+
+        Args:
+            config: Runtime config containing url/bearer_token and optional protocol_version.
+
+        Returns:
+            Normalized tool definitions, following the server's opaque catalogue cursor.
+        """
+        tools: list[dict] = []
+        cursor: str | None = None
+        while True:
+            result = await self._request(
+                config,
+                "tools/list",
+                {"cursor": cursor} if cursor else {},
+            )
+            tools.extend(
+                self._normalize_tool(item)
+                for item in (result.get("tools") or [])
+                if isinstance(item, dict)
+            )
+            cursor = result.get("nextCursor")
+            if not cursor:
+                return tools
+
+    async def call_inline_tool(self, config: dict, tool_name: str, arguments: dict) -> dict:
+        """Call one tool on an in-memory connection.
+
+        Args:
+            config: Runtime config containing url/bearer_token and optional protocol_version.
+            tool_name: Remote MCP tool name.
+            arguments: JSON object arguments.
+
+        Returns:
+            MCP tools/call result.
+        """
         return await self._request(
             config,
             "tools/call",
@@ -406,7 +450,9 @@ class McpService:
     async def _modern_request(self, config: dict, method: str, params: dict) -> dict:
         request_id = uuid.uuid4().hex
         headers = self._headers(config)
-        headers["MCP-Protocol-Version"] = MCP_PROTOCOL_VERSION
+        headers["MCP-Protocol-Version"] = str(
+            config.get("protocol_version") or MCP_PROTOCOL_VERSION
+        )
         headers["Mcp-Method"] = method
         if isinstance(params.get("name"), str):
             headers["Mcp-Name"] = params["name"]

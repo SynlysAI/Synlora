@@ -31,6 +31,7 @@ class Repos:
     file: Any
     event: Any
     api_key: Any = None
+    plane_account_link: Any = None
 
 
 def get_settings(request: Request) -> Settings:

@@ -9,13 +9,14 @@ from __future__ import annotations
 import shutil
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from app.api.assistants_api import _validate_provider
 from app.api.deps import Repos, get_current_user, get_repos
 from app.services import workspace
 from app.services.agent_service import AgentService, TooManyRuns
+from app.services.plane_mcp import PlaneMcpUnavailable
 from app.services.research_context import ResearchContextError, ResearchContextMetadata
 from app.services.session_runtime import NoUsableProvider, resolve_session_runtime
 
@@ -70,9 +71,47 @@ async def _own_session(sid: str, user: dict, repos: Repos) -> dict:
         会话文档。
     """
     doc = await repos.session.get(sid)
-    if doc is None or doc.get("user_id") != user["sub"]:
+    if doc is not None and doc.get("user_id") != user["sub"]:
+        link_repo = getattr(repos, "plane_account_link", None)
+        links = await link_repo.list_for_user(user["sub"]) if link_repo is not None else []
+        subjects = {str(item.get("delegated_subject")) for item in links}
+        if str(doc.get("user_id")) not in subjects:
+            raise HTTPException(404, "会话不存在")
+    elif doc is None:
         raise HTTPException(404, "会话不存在")
     return doc
+
+
+async def _can_operate_alias_session(doc: dict, user: dict, repos: Repos) -> bool:
+    """判断当前用户能否操作历史 synthetic delegated 会话。
+
+    普通浏览器登录只读可见；携带 Plane 服务端委托声明且绑定匹配时允许
+    继续原线程，保证升级后本地 Agent thread 不被强制重建。
+    """
+    if str(doc.get("user_id")) == str(user.get("sub")):
+        return True
+    if not user.get("plane_delegated"):
+        return False
+    link_repo = getattr(repos, "plane_account_link", None)
+    if link_repo is None:
+        return False
+    links = await link_repo.list_for_user(str(user.get("sub")))
+    return any(
+        str(item.get("delegated_subject")) == str(doc.get("user_id"))
+        and str(item.get("plane_user_id")) == str(user.get("plane_user_id"))
+        and str(item.get("plane_workspace_id")) == str(user.get("plane_workspace_id"))
+        for item in links
+    )
+
+
+def _validate_plane_mcp_scope(metadata: PlaneMcpRuntime, context: ResearchContextMetadata) -> None:
+    """确保 Plane MCP 描述不超出签发 context 的 issuer 与工具上界。"""
+    issuer = str(context.issuer or "").rstrip("/")
+    if not metadata.url.startswith(f"{issuer}/") or not metadata.connection_id:
+        raise HTTPException(403, "科研上下文未授权该 Plane MCP 连接")
+    invalid = sorted(set(metadata.allowed_tools) - set(context.allowed_tools or []))
+    if invalid:
+        raise HTTPException(403, f"科研上下文未授权 MCP 工具: {', '.join(invalid)}")
 
 
 async def _normalize_attachments(request: Request, user: dict, repos: Repos,
@@ -139,6 +178,15 @@ async def _normalize_attachments(request: Request, user: dict, repos: Repos,
     return out
 
 
+class PlaneMcpRuntime(BaseModel):
+    """Plane BFF 下发的 token-free unified MCP 描述。"""
+
+    schema_version: str = "plane-mcp-runtime.v1"
+    url: str
+    connection_id: str
+    allowed_tools: list[str] = Field(default_factory=list)
+
+
 class SessionCreateBody(BaseModel):
     """新建会话请求体。
 
@@ -158,6 +206,7 @@ class SessionCreateBody(BaseModel):
     enabled_plugins: list[str] | None = None
     enabled_mcp: list[str] | None = None
     research_context: ResearchContextMetadata | None = None
+    plane_mcp: PlaneMcpRuntime | None = None
 
 
 class SessionUpdateBody(BaseModel):
@@ -265,6 +314,9 @@ class MessageIn(BaseModel):
     skills: list[str] | None = None
     attachments: list[AttachmentIn] | None = None
     research_context: ResearchContextMetadata | None = None
+    plane_mcp: PlaneMcpRuntime | None = None
+    page_context: dict | None = None
+    external_run_id: str = ""
 
     @field_validator("text")
     @classmethod
@@ -280,6 +332,14 @@ async def list_sessions(user=Depends(get_current_user),
                         repos=Depends(get_repos)) -> list[dict]:
     """当前用户会话列表（按 updated_at 倒序；时间戳浮点存 TEXT，Python 端排序）。"""
     docs = await repos.session.list(filters={"user_id": user["sub"]})
+    link_repo = getattr(repos, "plane_account_link", None)
+    if link_repo is not None:
+        links = await link_repo.list_for_user(user["sub"])
+        subjects = {str(item.get("delegated_subject")) for item in links}
+        for subject in subjects:
+            docs.extend(await repos.session.list(filters={"user_id": subject}))
+        seen: set[str] = set()
+        docs = [doc for doc in docs if not (doc["_id"] in seen or seen.add(doc["_id"]))]
     return sorted(docs, key=lambda d: float(d.get("updated_at") or 0), reverse=True)
 
 
@@ -320,6 +380,8 @@ async def create_session(body: SessionCreateBody, request: Request,
                 token=context_token, expected=body.research_context)
         except ResearchContextError as exc:
             raise HTTPException(exc.status_code, exc.message) from exc
+        if body.plane_mcp is not None:
+            _validate_plane_mcp_scope(body.plane_mcp, body.research_context)
     if body.enabled_plugins is not None:
         await _validate_plugin_ids(request, body.enabled_plugins)
         if body.research_context is not None:
@@ -342,6 +404,10 @@ async def create_session(body: SessionCreateBody, request: Request,
             body.research_context.model_dump(mode="json")
             if body.research_context is not None else None
         ),
+        **({"origin": "PLANE"} if body.research_context is not None else {}),
+        **({
+            "plane_mcp": body.plane_mcp.model_dump(mode="json")
+        } if body.plane_mcp is not None else {}),
     })
 
 
@@ -373,6 +439,8 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
             model_provider_id 非法（422）。
     """
     doc = await _own_session(sid, user, repos)
+    if not await _can_operate_alias_session(doc, user, repos):
+        raise HTTPException(409, "历史 Plane 会话为只读记录")
     fields: dict = {}
     if body.title is not None:
         fields["title"] = body.title.strip()
@@ -428,6 +496,8 @@ async def delete_session(sid: str, request: Request,
     删"；workspace 里上传文件的记录（session_id 归属）同步删除，不留孤儿记录。
     """
     doc = await _own_session(sid, user, repos)
+    if not await _can_operate_alias_session(doc, user, repos):
+        raise HTTPException(409, "历史 Plane 会话为只读记录")
     async def remove_session_data() -> None:
         """删除当前会话的事件、文件记录、目录和主记录。"""
         for ev in await repos.event.list(filters={"session_id": sid}):
@@ -484,6 +554,41 @@ async def list_events(sid: str, request: Request, after_seq: int = -1,
             for e in events]
 
 
+@router.get("/sessions/{sid}/runs")
+async def list_session_runs(sid: str, status: str | None = None,
+                            user=Depends(get_current_user),
+                            repos=Depends(get_repos)) -> list[dict]:
+    """按时间倒序返回一个会话的 run 元数据与事件计数。
+
+    Args:
+        sid: 会话 id。
+        status: 可选状态过滤（running/completed/aborted/failed）。
+        user: 当前用户 payload。
+        repos: repo 聚合。
+
+    Returns:
+        Run 文档列表；每项补充 duration_ms 与 event_count。
+    """
+    await _own_session(sid, user, repos)
+    filters = {"session_id": sid}
+    if status:
+        filters["status"] = status
+    docs = await repos.run.list(filters=filters)
+    docs = sorted(docs, key=lambda item: float(item.get("started_at") or 0), reverse=True)
+    events = await repos.event.list_events(sid)
+    counts: dict[str, int] = {}
+    for event in events:
+        run_id = str((event.payload or {}).get("run_id") or "")
+        if run_id:
+            counts[run_id] = counts.get(run_id, 0) + 1
+    for doc in docs:
+        started = float(doc.get("started_at") or 0)
+        ended = float(doc.get("ended_at") or 0)
+        doc["duration_ms"] = int((ended - started) * 1000) if ended and ended >= started else None
+        doc["event_count"] = counts.get(str(doc.get("_id")), 0)
+    return docs
+
+
 async def _start_message(sid: str, body: MessageIn, request: Request,
                           user: dict, repos: Repos) -> str:
     """执行消息提交前置步骤并启动后台 run（不依赖 SSE 消费者）。
@@ -503,6 +608,8 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
             provider 不可用（422）、同会话并发（429）。
     """
     doc = await _own_session(sid, user, repos)
+    if not await _can_operate_alias_session(doc, user, repos):
+        raise HTTPException(409, "历史 Plane 会话为只读记录，请发起新会话")
     if doc.get("research_context"):
         metadata = body.research_context or ResearchContextMetadata.model_validate(doc["research_context"])
         context_token = request.headers.get("X-Research-Context-Token", "")
@@ -516,6 +623,20 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
         doc["research_context"] = metadata.model_dump(mode="json")
         if body.research_context is not None:
             await repos.session.update(sid, {"research_context": doc["research_context"]})
+        plane_mcp = body.plane_mcp or (
+            PlaneMcpRuntime.model_validate(doc["plane_mcp"])
+            if doc.get("plane_mcp") is not None
+            else None
+        )
+        if plane_mcp is not None:
+            _validate_plane_mcp_scope(plane_mcp, metadata)
+    else:
+        plane_mcp = body.plane_mcp
+        if plane_mcp is not None:
+            raise HTTPException(403, "Plane MCP 需要有效的科研上下文")
+    mcp_token = request.headers.get("X-Plane-MCP-Token", "")
+    if plane_mcp is not None and not mcp_token:
+        raise HTTPException(401, "缺少 Plane MCP 令牌")
     try:
         runtime = await resolve_session_runtime(
             request.app.state.settings, request.app.state.project_service,
@@ -540,9 +661,15 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
             enabled_plugins=doc.get("enabled_plugins"),
             enabled_mcp=doc.get("enabled_mcp"),
             research_context=doc.get("research_context"),
+            page_context=body.page_context,
+            plane_mcp=plane_mcp.model_dump(mode="json") if plane_mcp is not None else None,
+            plane_mcp_token=mcp_token,
+            external_run_id=body.external_run_id,
         )
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc
+    except PlaneMcpUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
 
     updated = await repos.session.bump_message_count(sid)
     if updated and int(updated["message_count"]) == 1 and not updated.get("title"):

@@ -40,6 +40,7 @@ from app.db.repos import (
     EventRepo,
     FileRepo,
     JobRepo,
+    PlaneAccountLinkRepo,
     ProviderRepo,
     RunRepo,
     SessionRepo,
@@ -170,7 +171,8 @@ async def lifespan(app: FastAPI):
         session=app.state.session_repo, run=app.state.run_repo,
         file=app.state.file_repo,
         event=app.state.event_repo,
-        api_key=app.state.api_key_repo)
+        api_key=app.state.api_key_repo,
+        plane_account_link=PlaneAccountLinkRepo(store))
     job_repo = JobRepo(store)
     app.state.workspace_job_guard = WorkspaceJobGuard(job_repo)
     app.state.job_service = JobService(

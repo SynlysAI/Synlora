@@ -13,6 +13,7 @@ import { useSessionsStore } from '@/stores/sessions'
 import Composer from './Composer'
 import InteractionSlot from './InteractionSlot'
 import MessageList from './MessageList'
+import RunTimeline from './RunTimeline'
 
 /** 聊天面板组件（AppShell 中间列）。 */
 export default function ChatPanel() {
@@ -68,6 +69,7 @@ export default function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col">
+      {currentId && <RunTimeline sessionId={currentId} refreshKey={messages.length} />}
       <MessageList assistantName={assistantName} platformDefault={platformDefault} />
       {/* 交互吸附槽：待作答的 ask_user 卡浮在输入框正上方，不占消息流 */}
       <InteractionSlot />

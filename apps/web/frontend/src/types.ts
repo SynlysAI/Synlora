@@ -284,8 +284,27 @@ export interface Session {
   enabled_plugins?: string[] | null
   /** 会话级 MCP 附加：null/缺省/[] = 不附加任何 MCP；列表 = 附加这些（自建 ∪ 可见公共）。 */
   enabled_mcp?: string[] | null
+  /** 来源标记：PLANE 表示 Plane Agent Dock 发起。 */
+  origin?: 'PLANE' | 'SYNLORA' | string
+  /** Plane Agent Dock 的 token-free unified MCP 描述。 */
+  plane_mcp?: Record<string, unknown> | null
   created_at: number
   updated_at: number
+}
+
+/** GET /api/v1/sessions/{sid}/runs 返回的运行记录。 */
+export interface SessionRun {
+  _id: string
+  session_id: string
+  user_id: string
+  status: 'running' | 'completed' | 'aborted' | 'failed' | string
+  started_at: number
+  ended_at?: number | null
+  duration_ms?: number | null
+  event_count?: number
+  origin?: string
+  label?: string
+  external_run_id?: string
 }
 
 /** 「+」面板 MCP 合并视图行（GET /me/mcps/panel）。 */

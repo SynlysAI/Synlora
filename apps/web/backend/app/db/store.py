@@ -29,6 +29,7 @@ COLLECTION_INDEXES: dict[str, list[str]] = {
     "catalog_policy": [],
     "user_capabilities": ["user_id"],  # 安装记录：按 user_id 过滤列举
     "jobs": ["session_id", "user_id"],  # 后台任务：按会话/用户检索（状态筛选在服务层，不走 store）
+    "plane_account_links": ["account_link_id", "plane_workspace_id", "plane_user_id", "synlora_user_id"],
 }
 
 

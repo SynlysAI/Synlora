@@ -95,6 +95,23 @@ class APIKeyRepo(BaseRepo):
         return await self.list(filters={"user_id": user_id}, sort=[("created_at", -1)])
 
 
+class PlaneAccountLinkRepo(BaseRepo):
+    """Plane delegated identity to Synlora account immutable links."""
+
+    collection = "plane_account_links"
+
+    async def list_for_user(self, user_id: str) -> list[dict]:
+        """列出一名 Synlora 用户绑定的 Plane delegated identity。
+
+        Args:
+            user_id: 当前用户标识。
+
+        Returns:
+            按创建时间倒序的令牌文档列表。
+        """
+        return await self.list(filters={"synlora_user_id": user_id}, sort=[("created_at", -1)])
+
+
 class ProviderRepo(BaseRepo):
     """模型 provider 配置（api_key 写前 Fernet 加密）。"""
 

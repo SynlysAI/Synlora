@@ -57,6 +57,7 @@ from app.runtime.interactions import make_approval_handler
 from app.services.job_access import JobSubmissionScope
 from app.services import workspace
 from app.services.session_runtime import TooManyRuns
+from app.services.plane_mcp import assemble_plane_mcp_tools
 from app.services.skill_service import SkillService
 from app.services.tool_registry import PIPELINE as _PIPELINE, REGISTRY as _REGISTRY
 
@@ -367,6 +368,10 @@ class AgentService:
                    enabled_plugins: list[str] | None = None,
                    enabled_mcp: list[str] | None = None,
                    research_context: dict | None = None,
+                   page_context: dict | None = None,
+                   plane_mcp: dict | None = None,
+                   plane_mcp_token: str = "",
+                   external_run_id: str = "",
                    notice: bool = False) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
@@ -400,6 +405,10 @@ class AgentService:
                 None 与空列表同为"不附加任何 MCP"。
             research_context: Plane 签发的只读科研范围（会话创建时已校验），
                 经 ctx.extra 透传给工具；None 表示普通 Synlora 会话。
+            page_context: Plane 服务端生成的当前页面种子；只进系统提示词。
+            plane_mcp: token-free Plane unified MCP 描述。
+            plane_mcp_token: 仅本轮内存持有的短期 MCP Bearer token。
+            external_run_id: Plane Agent Dock 的 run UUID，用于跨系统对账。
             notice: 本轮为任务完成唤醒（非用户输入）：user/message payload 带
                 kind=job_completed（前端渲染为居中提示条），跳过唤醒链清零
                 （链计数由 notify_job_finished 维护），其余装配与用户消息一致。
@@ -532,6 +541,17 @@ class AgentService:
                 [],
                 run_registry,
             ) if self._mcp_service is not None else []
+            plane_tool_names = (
+                await assemble_plane_mcp_tools(
+                    self._mcp_service,
+                    metadata=plane_mcp or {},
+                    token=plane_mcp_token,
+                    allowed_tools=list((research_context or {}).get("allowed_tools") or []),
+                    registry=run_registry,
+                )
+                if self._mcp_service is not None and plane_mcp is not None and plane_mcp_token
+                else []
+            )
             run_pipeline = ToolPipeline(run_registry)
             # 执行器就在这里解析（后面 ctx.extra 还要用同一个），拿它的 sandbox 标记
             # 写进提示词：模型必须知道代码执行的能力边界（docker 断网、跑完即删；
@@ -549,6 +569,7 @@ class AgentService:
                 ),
                 shell_available=executor.sandbox == "docker",
                 research_context=research_context,
+                page_context=page_context,
             )
             # 有白名单时严格使用显式授权；无专家或未限制时放开注册表工具。
             # 技能和任务工具不再自动追加，避免升级代码静默扩大旧专家权限。
@@ -580,7 +601,7 @@ class AgentService:
             # MCP 工具独立并集：注册时已按可见性交集过滤，不能拼进专家白名单——
             # 否则未选专家时白名单被撑成非空，select_runtime_tools 会弃用注册表
             # 全部内置工具（用户启用任一 MCP 后内置工具集体消失）
-            tool_names = list(dict.fromkeys([*tool_names, *mcp_tool_names]))
+            tool_names = list(dict.fromkeys([*tool_names, *mcp_tool_names, *plane_tool_names]))
             # http.request 的出口由 HTTP_ALLOWED_HOSTS 定义：未配白名单时
             # 每次调用必然 host_denied，不暴露给模型（白烧步数）。注册表本身
             # 保持完整——助手白名单校验要与运行期看到同一份工具集
@@ -635,6 +656,7 @@ class AgentService:
                 # Plane 签发的只读科研范围（会话创建时已校验落库）；经 extra
                 # 通道透传给工具，harness 不感知业务形状
                 "research_context": research_context,
+                "page_context": page_context,
                 "http_allowed_hosts": self._settings.allowed_hosts,
                 # python.run 执行器（部署级注入，缺省工具回落本机执行；已在上文解析）
                 "code_executor": executor,
@@ -717,7 +739,9 @@ class AgentService:
             notice_meta = {"kind": "job_completed"} if notice else None
             t = asyncio.create_task(
                 self._drive(run_id, session, text, user["sub"], session_id,
-                            attachments=attachments, notice_meta=notice_meta))
+                            attachments=attachments, notice_meta=notice_meta,
+                            external_run_id=external_run_id,
+                            origin="PLANE" if plane_mcp is not None else "SYNLORA"))
             self._bg.add(t)
             t.add_done_callback(self._bg.discard)
         except Exception:
@@ -732,7 +756,9 @@ class AgentService:
     async def _drive(self, run_id: str, session: RunSession, text: str,
                       user_id: str, session_id: str,
                       attachments: list[dict] | None = None,
-                      notice_meta: dict | None = None) -> None:
+                      notice_meta: dict | None = None,
+                      external_run_id: str = "",
+                      origin: str = "SYNLORA") -> None:
         """后台驱动 run 至完成并落盘终态（独立于 SSE 消费者，断连不中断）。
 
         Args:
@@ -749,6 +775,9 @@ class AgentService:
             await self._store.insert("runs", {
                 "_id": run_id, "session_id": session_id, "user_id": user_id,
                 "status": "running", "started_at": time.time(),
+                "origin": origin,
+                "label": str(text or "").strip()[:120],
+                **({"external_run_id": external_run_id} if external_run_id else {}),
             })
         except Exception:
             pass  # run 记录失败不阻断对话流（并发限制会暂时失效，属存储故障降级）

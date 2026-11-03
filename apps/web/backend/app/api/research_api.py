@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import hmac
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.api.deps import get_current_user, get_settings
-from app.core.auth import mint_ai4ms_token
+from app.api.auth_api import find_user
+from app.core.auth import issue_token
 from app.core.settings import Settings
 from app.services.tool_registry import REGISTRY
 
@@ -22,6 +24,7 @@ class DelegatedTokenBody(BaseModel):
     workspace_id: str
     plane_user_id: str
     external_subject: str
+    subject_username: str = ""
 
     @field_validator("schema_version")
     @classmethod
@@ -45,17 +48,85 @@ async def delegated_token(
         supplied[7:], service_token
     ):
         raise HTTPException(403, "Plane delegated auth is not configured or invalid")
-    token = mint_ai4ms_token(
-        body.external_subject,
-        body.external_subject,
-        "user",
-        settings,
-        ttl_hours=1,
+    linked_subject = body.external_subject
+    linked_user_id = ""
+    linked_username = body.external_subject
+    store = getattr(request.app.state, "store", None)
+    username = body.subject_username.strip()
+    matched_user = await find_user(request, username) if store is not None and username else None
+    if matched_user is not None and str(matched_user.get("status", "active")) == "active":
+        candidate_user_id = str(matched_user.get("_id", ""))
+        existing_by_link = await store.get("plane_account_links", body.account_link_id)
+        existing_by_plane = await store.list(
+            "plane_account_links",
+            filters={"plane_workspace_id": body.workspace_id, "plane_user_id": body.plane_user_id},
+        )
+        existing = existing_by_link or (existing_by_plane[0] if existing_by_plane else None)
+        # 两个唯一入口指向不同记录时说明绑定身份冲突，必须 fail-closed，
+        # 不能凭 username 提示改写既有不可变绑定。
+        identities = {
+            str(item.get("account_link_id"))
+            for item in (existing_by_link, *(existing_by_plane or []))
+            if isinstance(item, dict)
+        }
+        binding_conflict = len(identities) > 1 or (
+            existing is not None
+            and (
+                str(existing.get("plane_workspace_id")) != body.workspace_id
+                or str(existing.get("plane_user_id")) != body.plane_user_id
+                or str(existing.get("synlora_user_id")) != candidate_user_id
+            )
+        )
+        if binding_conflict:
+            matched_user = None
+        elif existing is None:
+            await store.insert(
+                "plane_account_links",
+                {
+                    "_id": body.account_link_id,
+                    "account_link_id": body.account_link_id,
+                    "plane_workspace_id": body.workspace_id,
+                    "plane_user_id": body.plane_user_id,
+                    "synlora_user_id": candidate_user_id,
+                    "delegated_subject": body.external_subject,
+                    "created_at": int(time.time()),
+                },
+            )
+            existing = await store.get("plane_account_links", body.account_link_id)
+        if str(existing.get("synlora_user_id")) == candidate_user_id:
+            linked_subject = body.external_subject
+            linked_user_id = candidate_user_id
+            linked_username = str(matched_user.get("username") or username)
+    token = (
+        issue_token(
+            {
+                "sub": linked_user_id,
+                "username": linked_username,
+                "role": "user",
+                "plane_delegated": True,
+                "plane_workspace_id": body.workspace_id,
+                "plane_user_id": body.plane_user_id,
+                "account_link_id": body.account_link_id,
+            },
+            settings,
+            ttl_hours=1,
+        )
+        if linked_user_id
+        else issue_token(
+            {
+                "sub": body.external_subject,
+                "username": body.external_subject,
+                "role": "user",
+            },
+            settings,
+            ttl_hours=1,
+        )
     )
     return {
         "schema_version": "plane-delegated-auth.v1",
         "token": token,
-        "subject": body.external_subject,
+        "subject": linked_subject,
+        "linked_user_id": linked_user_id,
         "account_link_id": body.account_link_id,
         "expires_in": 3600,
     }

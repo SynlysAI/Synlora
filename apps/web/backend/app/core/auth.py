@@ -55,9 +55,10 @@ def parse_token(token: str, settings: Settings) -> dict[str, Any] | None:
     return payload
 
 
-def issue_token(payload: dict[str, Any], settings: Settings) -> str:
-    """签发 token（本地登录用；payload 自动补 iat/exp，exp=7天）。"""
+def issue_token(payload: dict[str, Any], settings: Settings, ttl_hours: int = 7 * 24) -> str:
+    """签发 token（本地登录默认 7 天；委托调用方可显式缩短）。"""
     body = {**payload, "iat": int(time.time()), "exp": int(time.time()) + 7 * 86400}
+    body["exp"] = int(time.time()) + max(1, int(ttl_hours)) * 3600
     payload_b64 = base64.urlsafe_b64encode(
         json.dumps(body, ensure_ascii=False).encode()
     ).decode().rstrip("=")

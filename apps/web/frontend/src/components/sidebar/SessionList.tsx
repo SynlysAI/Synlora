@@ -139,8 +139,15 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
               className="absolute left-0 top-1/2 h-[14px] w-[2.5px] -translate-y-1/2 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
             />
           )}
-          <span className="min-w-0 flex-1 truncate pr-2 text-sm text-[var(--sa-alias-label-primary)]">
-            {session.title || '新对话'}
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
+            {session.origin === 'PLANE' && (
+              <span className="shrink-0 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-subtle)] px-1 py-px text-[10px] leading-[14px] text-[var(--sa-alias-label-tertiary)]">
+                Plane
+              </span>
+            )}
+            <span className="min-w-0 truncate text-sm text-[var(--sa-alias-label-primary)]">
+              {session.title || '新对话'}
+            </span>
           </span>
           {/* 时间：悬停 / 键盘聚焦时淡出，把位置让给右侧「⋯」（两者交叉淡入淡出） */}
           <span className="shrink-0 text-xs text-[var(--sa-alias-label-caption)] transition-opacity duration-[var(--sa-duration-fast)] group-hover:opacity-0 group-focus-within:opacity-0">
