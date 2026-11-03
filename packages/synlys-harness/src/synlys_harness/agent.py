@@ -135,7 +135,9 @@ class RunSession:
         Returns:
             构造完成的 SessionEvent（seq 已分配），供 run 转发 yield。
         """
-        return await self._log.append(type_, payload)
+        enriched_payload = dict(payload)
+        enriched_payload.setdefault("run_id", self._run_id)
+        return await self._log.append(type_, enriched_payload)
 
     async def _fire_tool_hook(self) -> None:
         """触发 on_tool_event 钩子（tool/call 与 tool/result 均触发）。"""

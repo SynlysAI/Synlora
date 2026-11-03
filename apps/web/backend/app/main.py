@@ -219,6 +219,7 @@ def create_app() -> FastAPI:
     app.state.research_context_adapter = ResearchContextAdapter(
         app.state.settings.plane_base_url,
         app.state.settings.plane_request_timeout_seconds,
+        app.state.settings.plane_allowed_issuers or app.state.settings.plane_base_url,
     )
     app.state.plane_research_client = PlaneResearchClient(
         app.state.settings.plane_base_url,

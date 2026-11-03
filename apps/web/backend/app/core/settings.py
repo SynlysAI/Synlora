@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     weknora_base_url: str = ""
     weknora_api_key: str = ""
     plane_base_url: str = ""
+    plane_allowed_issuers: str = ""
     plane_api_token: str = ""
     plane_service_token: str = ""
     plane_request_timeout_seconds: float = 3.0

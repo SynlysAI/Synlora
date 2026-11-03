@@ -200,6 +200,85 @@ async def test_v3_context_adapter_validates_target_policy_and_manifest_identity(
     assert error.value.status_code == 403
 
 
+async def test_v3_context_adapter_routes_allowed_issuer():
+    """签发方在白名单内时，按 metadata issuer 回调对应 Plane 实例。"""
+    metadata = _v3_metadata(issuer="http://dev-plane.test:8000/")
+    projection = metadata.normalized_projection()
+    captured = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={
+            "context": {
+                "schema_version": "agent-context.v3",
+                "issuer": "http://dev-plane.test:8000",
+                "context_id": projection["context_id"],
+                "context_hash": projection["context_hash"],
+                "expires_at": metadata.expires_at.isoformat(),
+                "target": projection["target"],
+                "subject": projection["subject"],
+                "policy": projection["policy"],
+                "manifest": {"version": 7, "hash": "manifest-hash"},
+            },
+        })
+
+    adapter = ResearchContextAdapter(
+        "http://plane.test",
+        allowed_issuers="http://plane.test, http://dev-plane.test:8000/",
+    )
+    await adapter.validate(
+        token="opaque", expected=metadata, transport=httpx.MockTransport(handler)
+    )
+
+    assert captured["url"].startswith("http://dev-plane.test:8000/api/")
+
+
+async def test_v3_context_adapter_rejects_unknown_issuer_without_request():
+    """未授权 issuer 直接 fail closed，不发起网络请求。"""
+    metadata = _v3_metadata(issuer="http://evil.test")
+    adapter = ResearchContextAdapter(
+        "http://plane.test",
+        allowed_issuers="http://plane.test",
+    )
+
+    with pytest.raises(ResearchContextError) as error:
+        await adapter.validate(token="opaque", expected=metadata)
+
+    assert error.value.status_code == 403
+
+
+async def test_v3_context_adapter_keeps_empty_issuer_on_default_plane():
+    """旧 Plane 元数据没有 issuer 时继续回调默认生产 Plane。"""
+    metadata = _v3_metadata(issuer="")
+    projection = metadata.normalized_projection()
+    captured = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={
+            "context": {
+                "schema_version": "agent-context.v3",
+                "context_id": projection["context_id"],
+                "context_hash": projection["context_hash"],
+                "expires_at": metadata.expires_at.isoformat(),
+                "target": projection["target"],
+                "subject": projection["subject"],
+                "policy": projection["policy"],
+                "manifest": {"version": 7, "hash": "manifest-hash"},
+            },
+        })
+
+    adapter = ResearchContextAdapter(
+        "http://plane.test",
+        allowed_issuers="http://plane.test",
+    )
+    await adapter.validate(
+        token="opaque", expected=metadata, transport=httpx.MockTransport(handler)
+    )
+
+    assert captured["url"].startswith("http://plane.test/api/")
+
+
 async def test_plane_event_client_uses_backend_token_and_idempotency():
     """事件回写只经后端 token，并携带稳定 request/event id。"""
     captured = {}

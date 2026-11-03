@@ -4,10 +4,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, Field, model_validator
-
 
 ResearchContextTargetType = Literal[
     "WORKSPACE",
@@ -81,6 +81,7 @@ class ResearchContextMetadata(BaseModel):
     scope_kind: str = "OWNER"
     scope_source: str = "chain_owner"
     policy_version: str = "research-agent-policy.v1"
+    issuer: str = ""
     plane_user_id: str = ""
     delegated_subject: str = ""
     allowed_mcp_ids: list[str] = Field(default_factory=list)
@@ -92,6 +93,7 @@ class ResearchContextMetadata(BaseModel):
     @model_validator(mode="after")
     def normalize_context_shape(self) -> "ResearchContextMetadata":
         """归一化 v2/v3 输入，并同步既有扁平字段投影。"""
+        self.issuer = self.issuer.rstrip("/")
         if self.schema_version == "agent-context.v2":
             if not self.workspace_id or not self.workspace_slug or not self.research_project_id:
                 raise ValueError("agent-context.v2 requires workspace and project scope")
@@ -165,6 +167,7 @@ class ResearchContextMetadata(BaseModel):
             raise ValueError("research context is not normalized")
         return {
             "schema_version": self.schema_version,
+            "issuer": self.issuer,
             "context_id": self.context_id,
             "context_hash": self.context_hash,
             "target": self.target.model_dump(mode="json"),
@@ -186,15 +189,58 @@ class ResearchContextError(Exception):
 class ResearchContextAdapter:
     """Validate an opaque Plane context token against its signed server scope."""
 
-    def __init__(self, base_url: str, timeout_seconds: float = 3.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout_seconds: float = 3.0,
+        allowed_issuers: str | list[str] | None = None,
+    ) -> None:
         """Create an adapter.
 
         Args:
             base_url: Plane base URL, for example ``http://plane:8000``.
             timeout_seconds: Context validation timeout.
+            allowed_issuers: Comma-separated string or list of allowed Plane
+                issuers; omitted values allow only ``base_url``.
         """
-        self._base_url = base_url.rstrip("/")
+        self._base_url = self._normalize_base_url(base_url)
         self._timeout_seconds = timeout_seconds
+        if allowed_issuers is None:
+            raw_issuers = [base_url]
+        elif isinstance(allowed_issuers, str):
+            raw_issuers = [item for item in allowed_issuers.split(",") if item.strip()]
+        else:
+            raw_issuers = list(allowed_issuers)
+        self._allowed_issuers = {
+            issuer
+            for issuer in (self._normalize_base_url(item) for item in raw_issuers)
+            if issuer
+        }
+
+    @staticmethod
+    def _normalize_base_url(raw_url: str) -> str:
+        """Normalize an HTTP(S) base URL for exact issuer allowlist matching.
+
+        Args:
+            raw_url: Configured Plane base URL.
+
+        Returns:
+            Normalized URL without trailing slash, query, fragment, or credentials.
+
+        Raises:
+            ValueError: The value is not an HTTP(S) base URL.
+        """
+        value = str(raw_url or "").strip()
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Plane issuer must be an HTTP(S) URL")
+        if "@" in parsed.netloc or parsed.query or parsed.fragment:
+            raise ValueError("Plane issuer must not contain credentials, query, or fragment")
+        return urlunsplit(
+            (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", "")
+        )
 
     async def validate(
         self,
@@ -216,10 +262,15 @@ class ResearchContextAdapter:
         """
         if not self._base_url:
             raise ResearchContextError(503, "Plane Research Context is not configured")
-        url = (
-            f"{self._base_url}/api/research/workspaces/"
-            f"{expected.workspace_slug}/context/"
-        )
+        try:
+            issuer = self._normalize_base_url(getattr(expected, "issuer", "") or "")
+        except ValueError as exc:
+            raise ResearchContextError(403, "Research context issuer is invalid") from exc
+        if not issuer:
+            issuer = self._base_url
+        if issuer not in self._allowed_issuers:
+            raise ResearchContextError(403, "Research context issuer is not allowed")
+        url = f"{issuer}/api/research/workspaces/{expected.workspace_slug}/context/"
         headers = {
             "X-Research-Context-Token": token,
             "X-Research-Context-Hash": expected.context_hash,
@@ -254,6 +305,7 @@ class ResearchContextAdapter:
                     }
             actual_projection = {
                 "schema_version": actual_context.get("schema_version"),
+                "issuer": str(actual_context.get("issuer") or ""),
                 "context_id": actual_context.get("context_id"),
                 "context_hash": actual_context.get("context_hash"),
                 "target": actual_context.get("target"),

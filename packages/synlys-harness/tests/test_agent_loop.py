@@ -68,6 +68,7 @@ async def test_input_metadata_is_copied_to_user_message():
         "text": "任务通知",
         "kind": "job_completed",
         "job_id": "job-1",
+        "run_id": "r1",
     }
 
 
@@ -96,6 +97,15 @@ async def test_plain_text_turn():
     assert "".join(d["text"] for d in (e.payload for e in deltas)) == "你好"
     assert types[-1] is EventType.TURN_END
     assert EventType.ASSISTANT_MESSAGE in types
+
+
+async def test_every_event_carries_run_id():
+    """所有持久事件都带运行标识，宿主可安全做逐轮回放过滤。"""
+    backend = FakeBackend([[TextDelta(text="完成"), Usage(prompt_tokens=1, completion_tokens=1)]])
+    events = await _collect(_session(backend), "嗨")
+
+    assert events
+    assert all(event.payload.get("run_id") == "r1" for event in events)
 
 
 async def test_tool_call_then_answer():
