@@ -13,6 +13,7 @@ import { AppShell } from '@/components/layout'
 import { CapabilityCenter } from '@/components/catalog'
 import { ConversationNotFound } from '@/components/chat'
 import ApiKeySettings from '@/components/account/ApiKeySettings'
+import SettingsOverview from '@/components/settings/SettingsOverview'
 import LoginPage from '@/components/LoginPage'
 import { useRouterStore } from '@/routing/router'
 import { useAuthStore } from '@/stores/auth'
@@ -49,6 +50,7 @@ function App() {
   if (!ready) return <FullscreenLoading />
   if (!user) return <LoginPage />
   if (route.kind === 'api-keys') return <ApiKeySettings key={user.sub} />
+  if (route.kind === 'settings') return <SettingsOverview key={user.sub} />
   // key=用户 id：切换账号时整树重挂载，杜绝任何跨账号残留
   if (route.kind === 'admin') {
     return (

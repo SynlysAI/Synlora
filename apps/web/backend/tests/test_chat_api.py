@@ -8,11 +8,13 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+from starlette.datastructures import Headers
 from synlys_harness import (
-    ModelProviderConfig, ReasoningDelta, TextDelta, ToolCallChunk, ToolResult, Usage,
+    EventType, ModelProviderConfig, ReasoningDelta, SessionEvent, TextDelta, ToolCallChunk, ToolResult, Usage,
 )
 from synlys_harness.tools.registry import tool
 from synlys_harness.types import Permission
@@ -230,6 +232,64 @@ async def test_non_stream_run_endpoint_starts_background_run_and_replays_events(
         await asyncio.sleep(0.02)
     else:
         raise AssertionError("后台 run 未在测试结束前落终态")
+
+
+async def test_session_event_stream_registers_before_replay_and_drops_stale_queue_events():
+    """验证注册后回放，并按单调序号丢弃回放期间进入队列的旧帧。"""
+    from app.api.sessions_api import subscribe_session
+
+    def event(seq: int) -> SessionEvent:
+        """为事件流契约构造最小事件。"""
+        return SessionEvent(seq=seq, type=EventType.TURN_START, payload={"seq": seq}, ts=float(seq))
+
+    class SessionRepo:
+        """为路由函数提供一个归属当前用户的会话。"""
+
+        async def get(self, session_id: str) -> dict:
+            """返回归属当前用户的会话文档。"""
+            return {"_id": session_id, "user_id": "u-test"}
+
+    class EventService:
+        """模拟实时队列与持久事件回放的重叠。"""
+
+        def __init__(self):
+            self.queue = asyncio.Queue()
+            self.calls: list[str] = []
+            for seq in (2, 4, 6):
+                self.queue.put_nowait(event(seq))
+            self.queue.put_nowait(None)
+
+        def subscribe_session_events(self, session_id: str):
+            """确保路由读取历史前已注册实时队列。"""
+            self.calls.append("subscribe")
+            return self.queue
+
+        def unsubscribe_session_events(self, session_id: str, queue):
+            """记录订阅清理。"""
+            self.calls.append("unsubscribe")
+
+        async def events_after(self, session_id: str, after_seq: int):
+            """返回与队列序号范围重叠的持久事件。"""
+            assert self.calls == ["subscribe"]
+            self.calls.append(f"replay:{after_seq}")
+            return [event(3), event(5)]
+
+    service = EventService()
+    request = SimpleNamespace(
+        headers=Headers({"Last-Event-ID": "1"}),
+        app=SimpleNamespace(state=SimpleNamespace(agent_service=service)),
+    )
+    response = await subscribe_session(
+        "session-1",
+        request,
+        after_seq=0,
+        user={"sub": "u-test"},
+        repos=SimpleNamespace(session=SessionRepo()),
+    )
+    frames = [frame async for frame in response.body_iterator]
+    assert [frame["id"] for frame in frames] == ["3", "5", "6"]
+    assert [json.loads(frame["data"])["seq"] for frame in frames] == [3, 5, 6]
+    assert service.calls == ["subscribe", "replay:1", "unsubscribe"]
 
 
 # ---------- 完整工具链路（HTTP + SSE + python.run 子进程 + 持久化） ----------
