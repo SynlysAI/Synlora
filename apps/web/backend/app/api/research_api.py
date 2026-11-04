@@ -1,10 +1,12 @@
 """Plane Research Agent delegation and capability manifest contracts."""
+
 from __future__ import annotations
 
 import hmac
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from app.api.auth_api import find_user
@@ -44,6 +46,8 @@ class AccountLinkRepairBody(BaseModel):
     external_subject: str
     synlora_user_id: str
     synlora_username: str
+    workspace_slug: str = ""
+    workspace_name: str = ""
 
     @field_validator("schema_version")
     @classmethod
@@ -65,6 +69,80 @@ def _service_token_authorized(supplied: str, expected: str) -> bool:
     )
 
 
+async def _backfill_plane_sessions(
+    store,
+    project_service,
+    *,
+    external_subject: str,
+    synlora_user_id: str,
+    workspace_id: str,
+    workspace_slug: str,
+    workspace_name: str,
+) -> int:
+    """Attach historical delegated Plane sessions to the dedicated Plane workspace.
+
+    Session and event ownership is never changed; only grouping metadata is added.
+    """
+    from app.api.sessions_api import ResearchContextMetadata
+
+    sessions = await store.list("sessions", filters={"user_id": external_subject})
+    updated = 0
+    for session in sessions:
+        raw_context = session.get("research_context")
+        if not raw_context or (session.get("plane_meta") and session.get("project_id")):
+            continue
+        try:
+            context = ResearchContextMetadata.model_validate(raw_context)
+        except ValueError:
+            continue
+        target = context.target
+        target_type = str(target.type if target else "RESEARCH_CHAIN_NODE")
+        target_id = str(
+            (target.chain_node_id if target else context.chain_node_id)
+            or (target.research_chain_id if target else "")
+            or (target.project_id if target else context.research_project_id)
+            or (target.workspace_id if target else context.workspace_id)
+        )
+        workspace = {
+            "id": workspace_id,
+            "slug": workspace_slug
+            or str(target.workspace_slug if target else context.workspace_slug),
+            "name": workspace_name or workspace_slug or workspace_id,
+        }
+        project = await project_service.ensure_plane_project(
+            synlora_user_id,
+            plane_workspace_id=workspace_id,
+            plane_workspace_name=workspace["name"] or workspace["slug"],
+        )
+        plane_meta = {
+            "workspace": workspace,
+            "target": {
+                "type": target_type,
+                "id": target_id,
+                "title": session.get("title") or f"Plane {target_type}",
+                "hierarchy": [
+                    {
+                        "type": "WORKSPACE",
+                        "id": workspace_id,
+                        "title": workspace["name"],
+                    }
+                ],
+            },
+            "page": None,
+        }
+        await store.update(
+            "sessions",
+            str(session["_id"]),
+            {
+                "project_id": str(project["_id"]),
+                "origin": "PLANE",
+                "plane_meta": plane_meta,
+            },
+        )
+        updated += 1
+    return updated
+
+
 @router.post("/delegated-token")
 async def delegated_token(
     body: DelegatedTokenBody,
@@ -74,8 +152,10 @@ async def delegated_token(
     """Exchange a Plane service credential for a short-lived Synlora user token."""
     service_token = settings.plane_service_token
     supplied = request.headers.get("Authorization", "")
-    if not service_token or not supplied.startswith("Bearer ") or not hmac.compare_digest(
-        supplied[7:], service_token
+    if (
+        not service_token
+        or not supplied.startswith("Bearer ")
+        or not hmac.compare_digest(supplied[7:], service_token)
     ):
         raise HTTPException(403, "Plane delegated auth is not configured or invalid")
     linked_subject = body.external_subject
@@ -83,15 +163,25 @@ async def delegated_token(
     linked_username = body.external_subject
     store = getattr(request.app.state, "store", None)
     username = body.subject_username.strip()
-    matched_user = await find_user(request, username) if store is not None and username else None
-    if matched_user is not None and str(matched_user.get("status", "active")) == "active":
+    matched_user = (
+        await find_user(request, username) if store is not None and username else None
+    )
+    if (
+        matched_user is not None
+        and str(matched_user.get("status", "active")) == "active"
+    ):
         candidate_user_id = str(matched_user.get("_id", ""))
         existing_by_link = await store.get("plane_account_links", body.account_link_id)
         existing_by_plane = await store.list(
             "plane_account_links",
-            filters={"plane_workspace_id": body.workspace_id, "plane_user_id": body.plane_user_id},
+            filters={
+                "plane_workspace_id": body.workspace_id,
+                "plane_user_id": body.plane_user_id,
+            },
         )
-        existing = existing_by_link or (existing_by_plane[0] if existing_by_plane else None)
+        existing = existing_by_link or (
+            existing_by_plane[0] if existing_by_plane else None
+        )
         # 两个唯一入口指向不同记录时说明绑定身份冲突，必须 fail-closed，
         # 不能凭 username 提示改写既有不可变绑定。
         identities = {
@@ -176,7 +266,9 @@ async def repair_account_link(
     if not _service_token_authorized(
         request.headers.get("Authorization", ""), settings.plane_service_token
     ):
-        raise HTTPException(403, "Plane account-link repair is not configured or invalid")
+        raise HTTPException(
+            403, "Plane account-link repair is not configured or invalid"
+        )
 
     store = getattr(request.app.state, "store", None)
     if store is None:
@@ -223,7 +315,24 @@ async def repair_account_link(
     ):
         raise HTTPException(409, "Plane 账号绑定冲突")
     if existing is not None:
-        return {"schema_version": body.schema_version, "account_link_id": body.account_link_id}
+        backfilled = await _backfill_plane_sessions(
+            request.app.state.store,
+            request.app.state.project_service,
+            external_subject=body.external_subject,
+            synlora_user_id=body.synlora_user_id,
+            workspace_id=body.workspace_id,
+            workspace_slug=body.workspace_slug,
+            workspace_name=body.workspace_name,
+        )
+        return JSONResponse(
+            {
+                "schema_version": body.schema_version,
+                "account_link_id": body.account_link_id,
+                "idempotent": True,
+                "sessions_backfilled": backfilled,
+            },
+            status_code=200,
+        )
 
     await store.insert(
         "plane_account_links",
@@ -237,7 +346,21 @@ async def repair_account_link(
             "created_at": int(time.time()),
         },
     )
-    return {"schema_version": body.schema_version, "account_link_id": body.account_link_id}
+    backfilled = await _backfill_plane_sessions(
+        store,
+        request.app.state.project_service,
+        external_subject=body.external_subject,
+        synlora_user_id=body.synlora_user_id,
+        workspace_id=body.workspace_id,
+        workspace_slug=body.workspace_slug,
+        workspace_name=body.workspace_name,
+    )
+    return {
+        "schema_version": body.schema_version,
+        "account_link_id": body.account_link_id,
+        "idempotent": False,
+        "sessions_backfilled": backfilled,
+    }
 
 
 @router.get("/capabilities")
@@ -265,7 +388,11 @@ async def capability_manifest(request: Request, user=Depends(get_current_user)) 
     for name in REGISTRY.names:
         definition = REGISTRY.get(name)
         source_plugin = next(
-            (plugin_id for plugin_id, names in tool_by_plugin.items() if definition.name in names),
+            (
+                plugin_id
+                for plugin_id, names in tool_by_plugin.items()
+                if definition.name in names
+            ),
             None,
         )
         tools.append(
@@ -274,8 +401,12 @@ async def capability_manifest(request: Request, user=Depends(get_current_user)) 
                 "description": definition.description,
                 "source_plugin": source_plugin,
                 "permission": definition.permission.value,
-                "risk": "high" if definition.permission.value == "ask_user" else "standard",
-                "health": "OK" if source_plugin is None or source_plugin in plugin_ids else "UNAVAILABLE",
+                "risk": "high"
+                if definition.permission.value == "ask_user"
+                else "standard",
+                "health": "OK"
+                if source_plugin is None or source_plugin in plugin_ids
+                else "UNAVAILABLE",
             }
         )
     return {

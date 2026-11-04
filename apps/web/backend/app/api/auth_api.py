@@ -1,4 +1,5 @@
 """认证 API：登录与当前用户。"""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -81,15 +82,18 @@ async def find_user(request: Request, username: str) -> dict | None:
 
 
 @router.post("/login")
-async def login(body: LoginBody, request: Request,
-                settings=Depends(get_settings)) -> dict:
+async def login(
+    body: LoginBody, request: Request, settings=Depends(get_settings)
+) -> dict:
     """账号密码登录：校验通过后签发 AI4MS 兼容 token。
 
     Raises:
         HTTPException: 用户名/密码错误或账号禁用（401）、存储未就绪（503）。
     """
     user = await find_user(request, body.username)
-    if user is None or not verify_password(body.password, str(user.get("password_hash", ""))):
+    if user is None or not verify_password(
+        body.password, str(user.get("password_hash", ""))
+    ):
         raise HTTPException(401, "用户名或密码错误")
     if str(user.get("status", "active")) != "active":
         raise HTTPException(401, "账号已禁用")
@@ -112,8 +116,9 @@ async def login(body: LoginBody, request: Request,
 
 
 @router.get("/me")
-async def me(request: Request, user=Depends(get_current_user),
-             settings=Depends(get_settings)) -> dict:
+async def me(
+    request: Request, user=Depends(get_current_user), settings=Depends(get_settings)
+) -> dict:
     """当前用户信息（sqlite 模式直接回显；mongodb 模式回查 users 确认 status=active）。
 
     Raises:
@@ -123,4 +128,4 @@ async def me(request: Request, user=Depends(get_current_user),
         record = await find_user(request, str(user.get("username", "")))
         if record is None or str(record.get("status", "active")) != "active":
             raise HTTPException(401, "用户不存在或已禁用")
-    return user
+    return {**user, "deployment_id": settings.deployment_id}

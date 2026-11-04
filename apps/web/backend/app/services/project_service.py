@@ -1,4 +1,5 @@
 """项目服务：项目 CRUD 编排、目录树懒加载。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +20,7 @@ class ProjectNameTaken(ValueError):
     继承 `ValueError`，这样既有的 `except ValueError` 调用方仍能兜住；
     API 层把本异常优先映射成 409（与「名字不合法」的 422 区分开）。
     """
+
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,13 @@ class ProjectService:
         name = f"Plane · {plane_workspace_name}".strip()[:120] or "Plane Workspace"
         async with self._lock_for(user_id):
             existing = await self._repo.get(project_id)
+            if existing is not None and (
+                existing.get("user_id") != user_id
+                or existing.get("plane_workspace_id") != plane_workspace_id
+            ):
+                raise ValueError(
+                    "Plane workspace project id conflicts with another owner"
+                )
             if (
                 existing is not None
                 and existing.get("user_id") == user_id
@@ -97,17 +106,32 @@ class ProjectService:
             dir_name = workspace.free_dir_name(
                 self._user_workspaces_dir(user_id), base, taken
             )
-            project = await self._repo.create(
-                user_id=user_id,
-                name=name,
-                dir_name=dir_name,
-                metadata={
-                    "_id": project_id,
-                    "origin": "PLANE",
-                    "plane_workspace_id": plane_workspace_id,
-                },
-            )
-            workspace.project_root(self._data_root, user_id, dir_name)
+            try:
+                project = await self._repo.create(
+                    user_id=user_id,
+                    name=name,
+                    dir_name=dir_name,
+                    metadata={
+                        "_id": project_id,
+                        "origin": "PLANE",
+                        "plane_workspace_id": plane_workspace_id,
+                    },
+                )
+            except ValueError as exc:
+                # Multiple application processes can pass the in-memory lock. The
+                # deterministic id makes the loser refetch the authoritative row.
+                if "已存在" not in str(exc) and "duplicate" not in str(exc).lower():
+                    raise
+                project = await self._repo.get(project_id)
+                if (
+                    project is None
+                    or project.get("user_id") != user_id
+                    or project.get("plane_workspace_id") != plane_workspace_id
+                ):
+                    raise ValueError(
+                        "Plane workspace project ownership conflict"
+                    ) from exc
+            workspace.project_root(self._data_root, user_id, project["dir_name"])
             return project
 
     async def _list_locked(self, user_id: str) -> list[dict]:
@@ -166,7 +190,8 @@ class ProjectService:
         self._reserve_default_dir(base, taken)
         dir_name = workspace.free_dir_name(user_dir, base, taken)
         project = await self._repo.create(
-            user_id=user_id, name=name.strip(), dir_name=dir_name)
+            user_id=user_id, name=name.strip(), dir_name=dir_name
+        )
         workspace.project_root(self._data_root, user_id, dir_name)
         return project
 
@@ -188,8 +213,10 @@ class ProjectService:
             if doc["dir_name"] == workspace.DEFAULT_PROJECT_DIR:
                 return doc
         project = await self._repo.create(
-            user_id=user_id, name=DEFAULT_PROJECT_NAME,
-            dir_name=workspace.DEFAULT_PROJECT_DIR)
+            user_id=user_id,
+            name=DEFAULT_PROJECT_NAME,
+            dir_name=workspace.DEFAULT_PROJECT_DIR,
+        )
         workspace.project_root(self._data_root, user_id, workspace.DEFAULT_PROJECT_DIR)
         return project
 
@@ -262,7 +289,9 @@ class ProjectService:
             if doc["_id"] != exclude_id and doc.get("name") == target:
                 raise ProjectNameTaken(f"已存在同名工作区「{target}」")
 
-    async def resolve_active_project(self, user_id: str, project_id: str | None) -> dict:
+    async def resolve_active_project(
+        self, user_id: str, project_id: str | None
+    ) -> dict:
         """解析会话当前应用的项目（并发安全）。
 
         命中绑定项目则直接用它；否则用该用户的第一个项目；一个都没有则建默认工作区
@@ -360,7 +389,8 @@ class ProjectService:
                 if src.is_dir():
                     src.rename(user_dir / new_dir)
             return await self._repo.rename(
-                project_id, name=name.strip(), dir_name=new_dir)
+                project_id, name=name.strip(), dir_name=new_dir
+            )
 
     async def get(self, user_id: str, project_id: str) -> dict | None:
         """取项目（校验归属）。
@@ -387,9 +417,12 @@ class ProjectService:
             ValueError: dir_name 为空、为 . / .. 或含路径分隔符（workspace.project_root 抛出）。
         """
         return workspace.project_root(
-            self._data_root, project["user_id"], project["dir_name"])
+            self._data_root, project["user_id"], project["dir_name"]
+        )
 
-    async def list_dir(self, user_id: str, project_id: str, rel: str = "") -> list[dict]:
+    async def list_dir(
+        self, user_id: str, project_id: str, rel: str = ""
+    ) -> list[dict]:
         """列出项目内某目录的一级条目（懒加载用）。
 
         Args:
@@ -431,11 +464,13 @@ class ProjectService:
         out = []
         for entry in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name)):
             stat = entry.stat()
-            out.append({
-                "name": entry.name,
-                "path": str(entry.relative_to(root)).replace("\\", "/"),
-                "is_dir": entry.is_dir(),
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-            })
+            out.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry.relative_to(root)).replace("\\", "/"),
+                    "is_dir": entry.is_dir(),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                }
+            )
         return out

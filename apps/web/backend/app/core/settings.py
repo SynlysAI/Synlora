@@ -1,4 +1,5 @@
 """应用配置（pydantic-settings，env 与 .env 加载）。"""
+
 from pathlib import Path
 import hashlib
 import math
@@ -56,7 +57,9 @@ class Settings(BaseSettings):
             输入的唤醒轮有上限防自激）。
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     storage_backend: str = "sqlite"
     mongodb_uri: str = ""
@@ -77,6 +80,7 @@ class Settings(BaseSettings):
     plane_allowed_issuers: str = ""
     plane_api_token: str = ""
     plane_service_token: str = ""
+    synlora_deployment_id: str = ""
     plane_request_timeout_seconds: float = 3.0
     assistant_web_search_endpoint: str = ""
     assistant_web_search_api_key: str = ""
@@ -98,8 +102,12 @@ class Settings(BaseSettings):
         """校验后台任务默认与最大超时。"""
         default = self.sandbox_job_default_timeout_s
         maximum = self.sandbox_job_max_timeout_s
-        if (not math.isfinite(default) or default <= 0
-                or not math.isfinite(maximum) or maximum <= 0):
+        if (
+            not math.isfinite(default)
+            or default <= 0
+            or not math.isfinite(maximum)
+            or maximum <= 0
+        ):
             raise ValueError("后台沙箱任务超时必须是有限正数")
         if default > maximum:
             raise ValueError("SANDBOX_JOB_DEFAULT_TIMEOUT_S 不得大于最大值")
@@ -120,6 +128,8 @@ class Settings(BaseSettings):
     @property
     def deployment_id(self) -> str:
         """返回显式部署标识或按绝对数据根稳定派生的标识。"""
+        if self.synlora_deployment_id.strip():
+            return self.synlora_deployment_id.strip()
         if self.sandbox_deployment_id.strip():
             return self.sandbox_deployment_id.strip()
         normalized = str(self.data_root.resolve()).replace("\\", "/").lower()

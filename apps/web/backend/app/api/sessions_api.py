@@ -4,6 +4,7 @@ SSE 端点行为：event=事件类型（turn/start 等）、data=事件 JSON、i
 断连不 cancel（run 由 AgentService._drive 后台执行完落盘，客户端经
 events?after_seq=N 补齐）；cancel 仅 POST /runs/{run_id}/cancel。
 """
+
 from __future__ import annotations
 
 import shutil
@@ -23,8 +24,9 @@ from app.services.session_runtime import NoUsableProvider, resolve_session_runti
 router = APIRouter(prefix="/api/v1", tags=["sessions"])
 
 
-async def _ensure_assistant_selectable(request: Request, user: dict,
-                                       assistant_id: str, repos: Repos) -> None:
+async def _ensure_assistant_selectable(
+    request: Request, user: dict, assistant_id: str, repos: Repos
+) -> None:
     """校验会话可绑定的助手：本人自建专家（文件）或集合里的管理员资产。
 
     他人自建专家不进集合、文件也只存在作者目录，天然查不到 → 统一 404
@@ -73,7 +75,9 @@ async def _own_session(sid: str, user: dict, repos: Repos) -> dict:
     doc = await repos.session.get(sid)
     if doc is not None and doc.get("user_id") != user["sub"]:
         link_repo = getattr(repos, "plane_account_link", None)
-        links = await link_repo.list_for_user(user["sub"]) if link_repo is not None else []
+        links = (
+            await link_repo.list_for_user(user["sub"]) if link_repo is not None else []
+        )
         subjects = {str(item.get("delegated_subject")) for item in links}
         if str(doc.get("user_id")) not in subjects:
             raise HTTPException(404, "会话不存在")
@@ -104,7 +108,9 @@ async def _can_operate_alias_session(doc: dict, user: dict, repos: Repos) -> boo
     )
 
 
-def _validate_plane_mcp_scope(metadata: PlaneMcpRuntime, context: ResearchContextMetadata) -> None:
+def _validate_plane_mcp_scope(
+    metadata: PlaneMcpRuntime, context: ResearchContextMetadata
+) -> None:
     """确保 Plane MCP 描述不超出签发 context 的 issuer 与工具上界。"""
     issuer = str(context.issuer or "").rstrip("/")
     if not metadata.url.startswith(f"{issuer}/") or not metadata.connection_id:
@@ -117,18 +123,39 @@ def _validate_plane_mcp_scope(metadata: PlaneMcpRuntime, context: ResearchContex
 def _validate_plane_metadata_scope(
     metadata: PlaneMetadata, context: ResearchContextMetadata
 ) -> None:
-    """确保 Plane 展示元数据属于签名科研上下文的同一 Plane 工作区。"""
+    """确保 Plane 展示元数据与签名科研上下文的同一 target 一致。"""
 
     target = context.target
     workspace_id = str(target.workspace_id if target else context.workspace_id)
     workspace_slug = str(target.workspace_slug if target else context.workspace_slug)
-    if metadata.workspace.id != workspace_id or metadata.workspace.slug != workspace_slug:
+    if (
+        metadata.workspace.id != workspace_id
+        or metadata.workspace.slug != workspace_slug
+    ):
         raise HTTPException(403, "Plane 元数据与科研上下文工作区不一致")
+    if target is not None:
+        expected_type = str(target.type)
+        expected_id = str(
+            target.chain_node_id
+            or target.research_chain_id
+            or target.project_id
+            or target.workspace_id
+        )
+    else:
+        expected_type = "RESEARCH_CHAIN_NODE"
+        expected_id = str(context.chain_node_id or "")
+    if metadata.target.type != expected_type or metadata.target.id != expected_id:
+        raise HTTPException(403, "Plane 元数据与科研上下文目标不一致")
 
 
-async def _normalize_attachments(request: Request, user: dict, repos: Repos,
-                                 file_ids: list[str], root,
-                                 ownership: dict) -> list[dict]:
+async def _normalize_attachments(
+    request: Request,
+    user: dict,
+    repos: Repos,
+    file_ids: list[str],
+    root,
+    ownership: dict,
+) -> list[dict]:
     """把附件 file_id 归一化为「文件在本会话工作根内」的元数据列表。
 
     附件在草稿态上传时落的是**当时选中的目标项目**，而 agent 只在会话的工作根里跑
@@ -160,14 +187,25 @@ async def _normalize_attachments(request: Request, user: dict, repos: Repos,
         filename = str(doc.get("filename") or "")
         # 已在本会话根内（归属字段一致）：直接引用
         if all(str(doc.get(k) or "") == str(v) for k, v in ownership.items()):
-            out.append({"file_id": fid, "filename": filename, "path": stored_path,
-                        "size": int(doc.get("size") or 0)})
+            out.append(
+                {
+                    "file_id": fid,
+                    "filename": filename,
+                    "path": stored_path,
+                    "size": int(doc.get("size") or 0),
+                }
+            )
             continue
         # 跨根：定位原文件（按记录归属解析）并复制进本会话根 files/
         if doc.get("session_id"):
-            src = workspace.session_root(
-                request.app.state.settings.data_root, user["sub"],
-                str(doc["session_id"])) / stored_path
+            src = (
+                workspace.session_root(
+                    request.app.state.settings.data_root,
+                    user["sub"],
+                    str(doc["session_id"]),
+                )
+                / stored_path
+            )
         else:
             owner = None
             if doc.get("project_id"):
@@ -177,16 +215,24 @@ async def _normalize_attachments(request: Request, user: dict, repos: Repos,
             raise HTTPException(422, f"附件文件已丢失: {filename or fid}")
         target = workspace.unique_target(root / "files", src.name)
         target.write_bytes(src.read_bytes())
-        clone = await repos.file.create({
-            "user_id": user["sub"],
-            **ownership,
-            "filename": filename or src.name,
-            "stored_path": target.relative_to(root).as_posix(),
-            "size": int(doc.get("size") or target.stat().st_size),
-            "mime": doc.get("mime") or "application/octet-stream",
-        })
-        out.append({"file_id": clone["_id"], "filename": clone["filename"],
-                    "path": clone["stored_path"], "size": int(clone.get("size") or 0)})
+        clone = await repos.file.create(
+            {
+                "user_id": user["sub"],
+                **ownership,
+                "filename": filename or src.name,
+                "stored_path": target.relative_to(root).as_posix(),
+                "size": int(doc.get("size") or target.stat().st_size),
+                "mime": doc.get("mime") or "application/octet-stream",
+            }
+        )
+        out.append(
+            {
+                "file_id": clone["_id"],
+                "filename": clone["filename"],
+                "path": clone["stored_path"],
+                "size": int(clone.get("size") or 0),
+            }
+        )
     return out
 
 
@@ -299,7 +345,9 @@ async def _validate_plugin_ids(request: Request, plugin_ids: list[str]) -> None:
             raise HTTPException(404, f"插件不存在: {pid}")
 
 
-def _validate_research_plugin_scope(plugin_ids: list[str], metadata: ResearchContextMetadata) -> None:
+def _validate_research_plugin_scope(
+    plugin_ids: list[str], metadata: ResearchContextMetadata
+) -> None:
     """确保科研会话插件不超出 Plane Context 授权范围。
 
     Args:
@@ -314,7 +362,9 @@ def _validate_research_plugin_scope(plugin_ids: list[str], metadata: ResearchCon
         raise HTTPException(403, f"科研上下文未授权插件: {', '.join(invalid)}")
 
 
-def _validate_research_mcp_scope(mcp_ids: list[str], metadata: ResearchContextMetadata) -> None:
+def _validate_research_mcp_scope(
+    mcp_ids: list[str], metadata: ResearchContextMetadata
+) -> None:
     """确保科研会话 MCP 不超出 Plane Context 授权范围。
 
     Args:
@@ -348,7 +398,9 @@ async def _validate_mcp_ids(request: Request, user_id: str, mcp_ids: list[str]) 
     for mcp_id in mcp_ids:
         if mcp_service is not None and await mcp_service.get(user_id, mcp_id):
             continue
-        if capability is not None and await capability.is_visible(user_id, "mcp", mcp_id):
+        if capability is not None and await capability.is_visible(
+            user_id, "mcp", mcp_id
+        ):
             continue
         raise HTTPException(404, f"MCP 不存在或不可用: {mcp_id}")
 
@@ -385,8 +437,9 @@ class MessageIn(BaseModel):
 
 
 @router.get("/sessions")
-async def list_sessions(user=Depends(get_current_user),
-                        repos=Depends(get_repos)) -> list[dict]:
+async def list_sessions(
+    user=Depends(get_current_user), repos=Depends(get_repos)
+) -> list[dict]:
     """当前用户会话列表（按 updated_at 倒序；时间戳浮点存 TEXT，Python 端排序）。"""
     docs = await repos.session.list(filters={"user_id": user["sub"]})
     link_repo = getattr(repos, "plane_account_link", None)
@@ -401,9 +454,12 @@ async def list_sessions(user=Depends(get_current_user),
 
 
 @router.post("/sessions", status_code=201)
-async def create_session(body: SessionCreateBody, request: Request,
-                         user=Depends(get_current_user),
-                         repos=Depends(get_repos)) -> dict:
+async def create_session(
+    body: SessionCreateBody,
+    request: Request,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> dict:
     """新建会话（助手可选；不传 assistant_id 表示不选专家）。
 
     Args:
@@ -425,8 +481,11 @@ async def create_session(body: SessionCreateBody, request: Request,
         raise HTTPException(403, "Plane 元数据需要有效的科研上下文")
     # 绑定项目须属本人且存在：否则会话带着他人的 project_id 落库（运行时虽会回落
     # 到本人项目、不会串目录，但脏数据会让前端按它渲染出不属于该用户的项目）
-    if body.project_id and await request.app.state.project_service.get(
-            user["sub"], body.project_id) is None:
+    if (
+        body.project_id
+        and await request.app.state.project_service.get(user["sub"], body.project_id)
+        is None
+    ):
         raise HTTPException(404, "项目不存在")
     if body.model_provider_id:
         await _validate_provider(body.model_provider_id, repos)
@@ -436,7 +495,8 @@ async def create_session(body: SessionCreateBody, request: Request,
             raise HTTPException(401, "缺少科研上下文令牌")
         try:
             await request.app.state.research_context_adapter.validate(
-                token=context_token, expected=body.research_context)
+                token=context_token, expected=body.research_context
+            )
         except ResearchContextError as exc:
             raise HTTPException(exc.status_code, exc.message) from exc
         if body.plane_mcp is not None:
@@ -456,35 +516,49 @@ async def create_session(body: SessionCreateBody, request: Request,
         project = await request.app.state.project_service.ensure_plane_project(
             user["sub"],
             plane_workspace_id=body.plane_meta.workspace.id,
-            plane_workspace_name=body.plane_meta.workspace.name or body.plane_meta.workspace.slug,
+            plane_workspace_name=body.plane_meta.workspace.name
+            or body.plane_meta.workspace.slug,
         )
         project_id = str(project["_id"])
-    return await repos.session.create({
-        "user_id": user["sub"],
-        "assistant_id": body.assistant_id,
-        "title": body.title.strip(),
-        "archived": False,
-        "message_count": 0,
-        "model_provider_id": body.model_provider_id,
-        "project_id": project_id,
-        "enabled_plugins": body.enabled_plugins,
-        "enabled_mcp": body.enabled_mcp,
-        "research_context": (
-            body.research_context.model_dump(mode="json")
-            if body.research_context is not None else None
-        ),
-        **({"origin": "PLANE"} if body.research_context is not None else {}),
-        **({"plane_meta": body.plane_meta.model_dump(mode="json")} if body.plane_meta is not None else {}),
-        **({
-            "plane_mcp": body.plane_mcp.model_dump(mode="json")
-        } if body.plane_mcp is not None else {}),
-    })
+    return await repos.session.create(
+        {
+            "user_id": user["sub"],
+            "assistant_id": body.assistant_id,
+            "title": body.title.strip(),
+            "archived": False,
+            "message_count": 0,
+            "model_provider_id": body.model_provider_id,
+            "project_id": project_id,
+            "enabled_plugins": body.enabled_plugins,
+            "enabled_mcp": body.enabled_mcp,
+            "research_context": (
+                body.research_context.model_dump(mode="json")
+                if body.research_context is not None
+                else None
+            ),
+            **({"origin": "PLANE"} if body.research_context is not None else {}),
+            **(
+                {"plane_meta": body.plane_meta.model_dump(mode="json")}
+                if body.plane_meta is not None
+                else {}
+            ),
+            **(
+                {"plane_mcp": body.plane_mcp.model_dump(mode="json")}
+                if body.plane_mcp is not None
+                else {}
+            ),
+        }
+    )
 
 
 @router.patch("/sessions/{sid}")
-async def update_session(sid: str, body: SessionUpdateBody, request: Request,
-                         user=Depends(get_current_user),
-                         repos=Depends(get_repos)) -> dict:
+async def update_session(
+    sid: str,
+    body: SessionUpdateBody,
+    request: Request,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> dict:
     """改名/归档/切换模型/切换专家/插件开关（归属校验 404）。
 
     Args:
@@ -556,9 +630,9 @@ async def update_session(sid: str, body: SessionUpdateBody, request: Request,
 
 
 @router.delete("/sessions/{sid}")
-async def delete_session(sid: str, request: Request,
-                         user=Depends(get_current_user),
-                         repos=Depends(get_repos)) -> dict:
+async def delete_session(
+    sid: str, request: Request, user=Depends(get_current_user), repos=Depends(get_repos)
+) -> dict:
     """删除会话：session doc + 全部事件副本 + 会话目录整树 + 会话文件记录。
 
     会话目录（sessions/{sid}）对无工作区会话而言装着工作区（workspace/ 下的
@@ -568,6 +642,7 @@ async def delete_session(sid: str, request: Request,
     doc = await _own_session(sid, user, repos)
     if not await _can_operate_alias_session(doc, user, repos):
         raise HTTPException(409, "历史 Plane 会话为只读记录")
+
     async def remove_session_data() -> None:
         """删除当前会话的事件、文件记录、目录和主记录。"""
         for ev in await repos.event.list(filters={"session_id": sid}):
@@ -575,8 +650,12 @@ async def delete_session(sid: str, request: Request,
         for file_doc in await repos.file.list(filters={"user_id": user["sub"]}):
             if str(file_doc.get("session_id") or "") == sid:
                 await repos.file.delete(file_doc["_id"])
-        jsonl_dir = (workspace.user_sessions_root(
-            request.app.state.settings.data_root, str(doc["user_id"])) / sid)
+        jsonl_dir = (
+            workspace.user_sessions_root(
+                request.app.state.settings.data_root, str(doc["user_id"])
+            )
+            / sid
+        )
         shutil.rmtree(jsonl_dir, ignore_errors=True)
         await repos.session.delete(doc["_id"])
 
@@ -588,10 +667,13 @@ async def delete_session(sid: str, request: Request,
             project = await request.app.state.project_service.get(
                 user["sub"], str(doc["project_id"])
             )
-            root = request.app.state.project_service.root_for(project) if project else \
-                workspace.session_root(
+            root = (
+                request.app.state.project_service.root_for(project)
+                if project
+                else workspace.session_root(
                     request.app.state.settings.data_root, user["sub"], sid
                 )
+            )
             ownership = {
                 "session_id": sid,
                 "project_id": str(doc["project_id"]),
@@ -611,23 +693,32 @@ async def delete_session(sid: str, request: Request,
 
 
 @router.get("/sessions/{sid}/events")
-async def list_events(sid: str, request: Request, after_seq: int = -1,
-                      user=Depends(get_current_user),
-                      repos=Depends(get_repos)) -> list[dict]:
+async def list_events(
+    sid: str,
+    request: Request,
+    after_seq: int = -1,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> list[dict]:
     """事件回放（SSE 断连后经 after_seq 增量补齐；数据源为 DB 副本）。
 
     after_seq 语义为"客户端已收到的最大 seq"，默认 -1 返回全部（seq 从 0 起）。
     """
     await _own_session(sid, user, repos)
     events = await _agent_service(request).events_after(sid, after_seq)
-    return [{"seq": e.seq, "type": e.type.value, "payload": e.payload, "ts": e.ts}
-            for e in events]
+    return [
+        {"seq": e.seq, "type": e.type.value, "payload": e.payload, "ts": e.ts}
+        for e in events
+    ]
 
 
 @router.get("/sessions/{sid}/runs")
-async def list_session_runs(sid: str, status: str | None = None,
-                            user=Depends(get_current_user),
-                            repos=Depends(get_repos)) -> list[dict]:
+async def list_session_runs(
+    sid: str,
+    status: str | None = None,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> list[dict]:
     """按时间倒序返回一个会话的 run 元数据与事件计数。
 
     Args:
@@ -644,7 +735,9 @@ async def list_session_runs(sid: str, status: str | None = None,
     if status:
         filters["status"] = status
     docs = await repos.run.list(filters=filters)
-    docs = sorted(docs, key=lambda item: float(item.get("started_at") or 0), reverse=True)
+    docs = sorted(
+        docs, key=lambda item: float(item.get("started_at") or 0), reverse=True
+    )
     events = await repos.event.list_events(sid)
     counts: dict[str, int] = {}
     for event in events:
@@ -654,13 +747,16 @@ async def list_session_runs(sid: str, status: str | None = None,
     for doc in docs:
         started = float(doc.get("started_at") or 0)
         ended = float(doc.get("ended_at") or 0)
-        doc["duration_ms"] = int((ended - started) * 1000) if ended and ended >= started else None
+        doc["duration_ms"] = (
+            int((ended - started) * 1000) if ended and ended >= started else None
+        )
         doc["event_count"] = counts.get(str(doc.get("_id")), 0)
     return docs
 
 
-async def _start_message(sid: str, body: MessageIn, request: Request,
-                          user: dict, repos: Repos) -> str:
+async def _start_message(
+    sid: str, body: MessageIn, request: Request, user: dict, repos: Repos
+) -> str:
     """执行消息提交前置步骤并启动后台 run（不依赖 SSE 消费者）。
 
     Args:
@@ -683,24 +779,30 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
     if body.plane_meta is not None and not doc.get("research_context"):
         raise HTTPException(403, "Plane 元数据需要有效的科研上下文")
     if doc.get("research_context"):
-        metadata = body.research_context or ResearchContextMetadata.model_validate(doc["research_context"])
+        metadata = body.research_context or ResearchContextMetadata.model_validate(
+            doc["research_context"]
+        )
         context_token = request.headers.get("X-Research-Context-Token", "")
         if not context_token:
             raise HTTPException(401, "缺少科研上下文令牌")
         try:
             await request.app.state.research_context_adapter.validate(
-                token=context_token, expected=metadata)
+                token=context_token, expected=metadata
+            )
         except ResearchContextError as exc:
             raise HTTPException(exc.status_code, exc.message) from exc
         doc["research_context"] = metadata.model_dump(mode="json")
         if body.research_context is not None:
-            await repos.session.update(sid, {"research_context": doc["research_context"]})
+            await repos.session.update(
+                sid, {"research_context": doc["research_context"]}
+            )
         if body.plane_meta is not None:
             _validate_plane_metadata_scope(body.plane_meta, metadata)
             project = await request.app.state.project_service.ensure_plane_project(
                 user["sub"],
                 plane_workspace_id=body.plane_meta.workspace.id,
-                plane_workspace_name=body.plane_meta.workspace.name or body.plane_meta.workspace.slug,
+                plane_workspace_name=body.plane_meta.workspace.name
+                or body.plane_meta.workspace.slug,
             )
             doc["project_id"] = str(project["_id"])
             doc["plane_meta"] = body.plane_meta.model_dump(mode="json")
@@ -723,21 +825,35 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
         raise HTTPException(401, "缺少 Plane MCP 令牌")
     try:
         runtime = await resolve_session_runtime(
-            request.app.state.settings, request.app.state.project_service,
-            repos, doc, user, expert_service=request.app.state.expert_service)
+            request.app.state.settings,
+            request.app.state.project_service,
+            repos,
+            doc,
+            user,
+            expert_service=request.app.state.expert_service,
+        )
     except NoUsableProvider as exc:
         raise HTTPException(422, str(exc)) from exc
 
     attachments_meta = None
     if body.attachments:
         attachments_meta = await _normalize_attachments(
-            request, user, repos, [a.file_id for a in body.attachments],
-            runtime.workspace_root, runtime.ownership)
+            request,
+            user,
+            repos,
+            [a.file_id for a in body.attachments],
+            runtime.workspace_root,
+            runtime.ownership,
+        )
 
     service = _agent_service(request)
     try:
         run_id = await service.chat(
-            sid, user, runtime.assistant, runtime.provider_cfg, body.text,
+            sid,
+            user,
+            runtime.assistant,
+            runtime.provider_cfg,
+            body.text,
             workspace_root=runtime.workspace_root,
             requested_skills=body.skills,
             attachments=attachments_meta,
@@ -746,7 +862,9 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
             enabled_mcp=doc.get("enabled_mcp"),
             research_context=doc.get("research_context"),
             page_context=body.page_context,
-            plane_mcp=plane_mcp.model_dump(mode="json") if plane_mcp is not None else None,
+            plane_mcp=plane_mcp.model_dump(mode="json")
+            if plane_mcp is not None
+            else None,
             plane_mcp_token=mcp_token,
             external_run_id=body.external_run_id,
         )
@@ -762,9 +880,13 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
 
 
 @router.post("/sessions/{sid}/messages")
-async def send_message(sid: str, body: MessageIn, request: Request,
-                       user=Depends(get_current_user),
-                       repos=Depends(get_repos)) -> EventSourceResponse:
+async def send_message(
+    sid: str,
+    body: MessageIn,
+    request: Request,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> EventSourceResponse:
     """发消息并以 SSE 流式返回本轮事件。
 
     Args:
@@ -792,15 +914,23 @@ async def send_message(sid: str, body: MessageIn, request: Request,
             ev = await active.queue.get()
             if ev is None:
                 break
-            yield {"event": ev.type.value, "data": ev.model_dump_json(), "id": str(ev.seq)}
+            yield {
+                "event": ev.type.value,
+                "data": ev.model_dump_json(),
+                "id": str(ev.seq),
+            }
 
     return EventSourceResponse(sse_gen())
 
 
 @router.post("/sessions/{sid}/runs", status_code=202)
-async def start_run(sid: str, body: MessageIn, request: Request,
-                    user=Depends(get_current_user),
-                    repos=Depends(get_repos)) -> dict:
+async def start_run(
+    sid: str,
+    body: MessageIn,
+    request: Request,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> dict:
     """提交后台 run 并立即返回 run id（Plane BFF 使用的事件稳定接口）。
 
     Args:
@@ -819,10 +949,15 @@ async def start_run(sid: str, body: MessageIn, request: Request,
     run_id = await _start_message(sid, body, request, user, repos)
     return {"session_id": sid, "run_id": run_id}
 
+
 @router.get("/sessions/{sid}/events/stream")
-async def subscribe_session(sid: str, request: Request, after_seq: int = -1,
-                            user=Depends(get_current_user),
-                            repos=Depends(get_repos)) -> EventSourceResponse:
+async def subscribe_session(
+    sid: str,
+    request: Request,
+    after_seq: int = -1,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> EventSourceResponse:
     """订阅会话的全部后续事件（会话页常驻，含任务唤醒轮与瞬态流）。
 
     与 POST /messages 的 per-run 流互补：run 结束后 SSE 已收尾，任务完成
@@ -866,7 +1001,11 @@ async def subscribe_session(sid: str, request: Request, after_seq: int = -1,
                 if ev.seq <= last_sent_seq:
                     continue
                 last_sent_seq = ev.seq
-                yield {"event": ev.type.value, "data": ev.model_dump_json(), "id": str(ev.seq)}
+                yield {
+                    "event": ev.type.value,
+                    "data": ev.model_dump_json(),
+                    "id": str(ev.seq),
+                }
             while True:
                 ev = await queue.get()
                 if ev is None:
@@ -874,8 +1013,11 @@ async def subscribe_session(sid: str, request: Request, after_seq: int = -1,
                 if ev.seq <= last_sent_seq:
                     continue
                 last_sent_seq = ev.seq
-                yield {"event": ev.type.value, "data": ev.model_dump_json(),
-                       "id": str(ev.seq)}
+                yield {
+                    "event": ev.type.value,
+                    "data": ev.model_dump_json(),
+                    "id": str(ev.seq),
+                }
         finally:
             service.unsubscribe_session_events(sid, queue)
 
@@ -883,9 +1025,12 @@ async def subscribe_session(sid: str, request: Request, after_seq: int = -1,
 
 
 @router.post("/runs/{run_id}/cancel")
-async def cancel_run(run_id: str, request: Request,
-                     user=Depends(get_current_user),
-                     repos=Depends(get_repos)) -> dict:
+async def cancel_run(
+    run_id: str,
+    request: Request,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> dict:
     """取消运行（用户显式停止；run 不存在或非本人 404）。"""
     run = await repos.run.get(run_id)
     if run is None or run.get("user_id") != user["sub"]:
@@ -909,9 +1054,13 @@ class SteerIn(BaseModel):
 
 
 @router.post("/runs/{run_id}/steer")
-async def steer_run(run_id: str, body: SteerIn, request: Request,
-                    user=Depends(get_current_user),
-                    repos=Depends(get_repos)) -> dict:
+async def steer_run(
+    run_id: str,
+    body: SteerIn,
+    request: Request,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> dict:
     """运行中插话（下一个 step 边界注入为 user 消息并经事件流可见）。
 
     Raises:
@@ -927,9 +1076,13 @@ async def steer_run(run_id: str, body: SteerIn, request: Request,
 
 
 @router.post("/runs/{run_id}/answer")
-async def answer_run(run_id: str, body: SteerIn, request: Request,
-                     user=Depends(get_current_user),
-                     repos=Depends(get_repos)) -> dict:
+async def answer_run(
+    run_id: str,
+    body: SteerIn,
+    request: Request,
+    user=Depends(get_current_user),
+    repos=Depends(get_repos),
+) -> dict:
     """回答运行中 ask_user 提出的问题（resolve 等待中的 future，工具随即返回）。
 
     Raises:

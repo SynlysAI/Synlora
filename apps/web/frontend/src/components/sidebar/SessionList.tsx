@@ -153,7 +153,11 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
         <button
           type="button"
           onClick={onSelect}
-          title={session.title}
+          title={
+            session.plane_meta?.page?.route
+              ? `${session.title || '新对话'} · ${session.plane_meta.page.route}`
+              : session.title
+          }
           className={`relative flex h-8 w-full items-center rounded-[var(--sa-radius-sm)] text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
             indent ? 'pl-8 pr-2.5' : 'px-2.5'
           } ${
@@ -173,25 +177,20 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
           )}
           <span className="flex min-w-0 flex-1 flex-col gap-0.5 pr-2">
             <span className="flex min-w-0 items-center gap-1.5">
-              {session.origin === 'PLANE' && (
-                <span className="shrink-0 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-subtle)] px-1 py-px text-[10px] leading-[14px] text-[var(--sa-alias-label-tertiary)]">
-                  Plane
-                </span>
-              )}
               <span className="min-w-0 truncate text-sm text-[var(--sa-alias-label-primary)]">
                 {session.title || '新对话'}
               </span>
             </span>
-            {session.plane_meta?.page && (
+            {session.plane_meta && (
               <span
-                title={`${session.plane_meta.page.focus_title || session.plane_meta.target.title || ''} ${session.plane_meta.page.route || ''}`}
+                title={session.plane_meta.page?.route || session.plane_meta.target?.title || ''}
                 className="min-w-0 truncate text-[11px] leading-4 text-[var(--sa-alias-label-caption)]"
               >
-                {session.plane_meta.page.focus_title ||
-                  session.plane_meta.target.title ||
-                  session.plane_meta.page.page_kind ||
-                  'Plane 页面'}
-                {session.plane_meta.page.route ? ` · ${session.plane_meta.page.route}` : ''}
+                {session.plane_meta.page?.focus_title ||
+                  session.plane_meta.target?.title ||
+                  session.plane_meta.page?.page_kind ||
+                  '历史导入'}
+                {session.plane_meta.page?.route ? ` · ${session.plane_meta.page.route}` : ''}
               </span>
             )}
           </span>

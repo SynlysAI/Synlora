@@ -1,4 +1,5 @@
 """Synlora Web 后端入口。"""
+
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -76,10 +77,12 @@ FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 async def lifespan(app: FastAPI):
     """启动建 store/repos/种子助手，关闭断开。"""
     settings = app.state.settings
-    store = create_store(settings.storage_backend,
-                         sqlite_path=settings.sqlite_path,
-                         mongodb_uri=settings.mongodb_uri,
-                         mongodb_db=settings.mongodb_db)
+    store = create_store(
+        settings.storage_backend,
+        sqlite_path=settings.sqlite_path,
+        mongodb_uri=settings.mongodb_uri,
+        mongodb_db=settings.mongodb_db,
+    )
     await store.init()
     app.state.store = store
     app.state.provider_repo = ProviderRepo(store, fernet_key=settings.fernet_key)
@@ -112,7 +115,9 @@ async def lifespan(app: FastAPI):
     if not (index.experts or index.skills or index.plugins):
         logger.warning(
             "未发现任何内置内容（catalog/ 缺失或为空）：内置专家/技能/插件均不可用。"
-            "检查部署是否遗漏 %s", catalog_roots(settings)[0])
+            "检查部署是否遗漏 %s",
+            catalog_roots(settings)[0],
+        )
     plugin_config_store = PluginConfigStore(store, settings.fernet_key)
     # 内置技能：catalog/skills 作为只读根直接提供（与插件技能根同一模式），
     # {data_dir}/public/skills 是公共层（管理员自建/导入，始终可见）
@@ -123,11 +128,14 @@ async def lifespan(app: FastAPI):
     if removed:
         logger.info("已清理迁移前的内置技能旧副本: %s", removed)
     app.state.weknora_service = WeKnoraService(
-        settings.weknora_base_url, settings.weknora_api_key)
+        settings.weknora_base_url, settings.weknora_api_key
+    )
     # 任务连接器注册表：必须先于 PluginService（插件在其挂载时注册连接器）
     app.state.job_connectors = JobConnectorRegistry()
     app.state.plugin_service = PluginService(
-        registry=REGISTRY, config_store=plugin_config_store, packages=index.plugins,
+        registry=REGISTRY,
+        config_store=plugin_config_store,
+        packages=index.plugins,
         skill_service=app.state.skill_service,
         assistant_repo=app.state.assistant_repo,
         job_connectors=app.state.job_connectors,
@@ -135,7 +143,8 @@ async def lifespan(app: FastAPI):
     # 挂载范围除公共安装外，还含"有用户个人安装记录"的插件：注册是能力可用性
     # （进程级，谁装都该挂），可见性过滤由 CapabilityService 另行按用户计算
     await app.state.plugin_service.startup(
-        extra_plugin_ids=await UserCapabilityRepo(store).installed_plugin_ids())
+        extra_plugin_ids=await UserCapabilityRepo(store).installed_plugin_ids()
+    )
     # 能力目录可见性服务：须在 plugin_service.startup() 之后构造。工具映射传
     # PluginService 的方法本身（活引用）——插件可在运行期安装，快照会漏掉启动后
     # 新挂载的工具（可见性算不出 → 被误当不可见而过滤）。
@@ -147,7 +156,8 @@ async def lifespan(app: FastAPI):
     )
     # 公共 MCP 目录：经能力服务的 catalog 实时取（管理端写入后的热重载也走它）
     app.state.mcp_service.set_catalog_provider(
-        lambda: app.state.capability_service.catalog.mcps)
+        lambda: app.state.capability_service.catalog.mcps
+    )
     # 暴露给目录 API 与运行期（插件配置校验取 schema、用户维度解析配置）
     app.state.plugin_config_store = plugin_config_store
     app.state.plugin_packages = index.plugins
@@ -155,32 +165,42 @@ async def lifespan(app: FastAPI):
     # 解析不到身份（sqlite 本地用户/匿名）时插件回落自身配置的服务 token
     app.state.ai4ms_identity = Ai4msIdentityService(settings)
     app.state.agent_service = AgentService(
-        store, settings, app.state.event_repo, app.state.skill_service,
-        file_repo=app.state.file_repo, plugin_service=app.state.plugin_service,
+        store,
+        settings,
+        app.state.event_repo,
+        app.state.skill_service,
+        file_repo=app.state.file_repo,
+        plugin_service=app.state.plugin_service,
         capability_service=app.state.capability_service,
         plugin_config_store=plugin_config_store,
         ai4ms_identity=app.state.ai4ms_identity,
-        mcp_service=app.state.mcp_service)
+        mcp_service=app.state.mcp_service,
+    )
     # 后台任务：任务服务 → 轮询器。连接器注册表在 PluginService 之前已建
     # （插件在其挂载时注册连接器）。任务终态写 Job 文档供运行信息面板与
     # job.status/job.list 读取；job_wakeup_enabled 时终态（成功/失败）额外
     # 唤醒所属会话续跑（见 agent_service.notify_job_finished）。
     # repo 聚合：唯一构造点，deps.get_repos 复用本对象。
     app.state.repos = Repos(
-        provider=app.state.provider_repo, assistant=app.state.assistant_repo,
-        session=app.state.session_repo, run=app.state.run_repo,
+        provider=app.state.provider_repo,
+        assistant=app.state.assistant_repo,
+        session=app.state.session_repo,
+        run=app.state.run_repo,
         file=app.state.file_repo,
         event=app.state.event_repo,
         api_key=app.state.api_key_repo,
-        plane_account_link=PlaneAccountLinkRepo(store))
+        plane_account_link=PlaneAccountLinkRepo(store),
+    )
     job_repo = JobRepo(store)
     app.state.workspace_job_guard = WorkspaceJobGuard(job_repo)
     app.state.job_service = JobService(
-        repo=job_repo, connectors=app.state.job_connectors,
+        repo=job_repo,
+        connectors=app.state.job_connectors,
         plugin_config_store=plugin_config_store,
         ai4ms_identity=app.state.ai4ms_identity,
         settings=settings,
-        workspace_guard=app.state.workspace_job_guard)
+        workspace_guard=app.state.workspace_job_guard,
+    )
     executor = await app.state.agent_service._code_executor()  # noqa: SLF001
     if executor.sandbox == "docker":
         await app.state.job_service.recover_sandbox_jobs(executor)
@@ -196,10 +216,16 @@ async def lifespan(app: FastAPI):
     # 任务完成唤醒：终态（成功/失败）回调 + 运行装配解析（settings 可整体关闭）
     if settings.job_wakeup_enabled:
         app.state.job_service.set_wakeup_hook(
-            app.state.agent_service.notify_job_finished)
-        app.state.agent_service.set_run_context_resolver(make_run_context_resolver(
-            settings, app.state.project_service, app.state.repos,
-            expert_service=app.state.expert_service))
+            app.state.agent_service.notify_job_finished
+        )
+        app.state.agent_service.set_run_context_resolver(
+            make_run_context_resolver(
+                settings,
+                app.state.project_service,
+                app.state.repos,
+                expert_service=app.state.expert_service,
+            )
+        )
     app.state.job_poller = JobPoller(app.state.job_service)
     await app.state.job_poller.start()
     await seed_experts(store, index.experts)
@@ -254,6 +280,7 @@ def create_app() -> FastAPI:
         """健康检查（公开端点，同时返回版本信息供前端展示）。"""
         return {
             "status": "ok",
+            "deployment_id": app.state.settings.deployment_id,
             "version": APP_VERSION,
             "version_label": APP_VERSION_LABEL,
         }
@@ -280,13 +307,18 @@ def create_app() -> FastAPI:
             if full_path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="Not Found")
             candidate = (FRONTEND_DIST / full_path).resolve() if full_path else None
-            if (candidate is not None
-                    and candidate.is_file()
-                    and candidate.is_relative_to(FRONTEND_DIST.resolve())):
+            if (
+                candidate is not None
+                and candidate.is_file()
+                and candidate.is_relative_to(FRONTEND_DIST.resolve())
+            ):
                 return FileResponse(candidate)
             return FileResponse(FRONTEND_DIST / "index.html")
     else:
-        logger.warning("未找到前端构建产物 %s（先在 apps/web/frontend 执行 npm run build），当前仅 API 模式", FRONTEND_DIST)
+        logger.warning(
+            "未找到前端构建产物 %s（先在 apps/web/frontend 执行 npm run build），当前仅 API 模式",
+            FRONTEND_DIST,
+        )
 
     return app
 
