@@ -76,8 +76,13 @@ class ProjectService:
                 and existing.get("user_id") == user_id
                 and existing.get("plane_workspace_id") == plane_workspace_id
             ):
-                if existing.get("name") != name and not existing.get("archived"):
-                    return await self._repo.update(project_id, {"name": name})
+                updates = {}
+                if existing.get("name") != name:
+                    updates["name"] = name
+                if existing.get("archived"):
+                    updates["archived"] = False
+                if updates:
+                    return await self._repo.update(project_id, updates)
                 return existing
 
             for doc in await self._repo.list(filters={"user_id": user_id}):

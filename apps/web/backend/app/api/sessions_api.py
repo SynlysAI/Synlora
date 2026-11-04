@@ -213,10 +213,17 @@ class PlanePageMetadata(BaseModel):
 class PlaneTargetMetadata(BaseModel):
     """有界 Plane 目标投影，不包含资源正文。"""
 
+    class HierarchyItem(BaseModel):
+        """有界 Plane 层级条目。"""
+
+        type: str = Field(max_length=32)
+        id: str = Field(default="", max_length=128)
+        title: str = Field(default="", max_length=300)
+
     type: str = Field(max_length=32)
     id: str = Field(default="", max_length=128)
     title: str = Field(default="", max_length=300)
-    hierarchy: list[dict] = Field(default_factory=list, max_length=12)
+    hierarchy: list[HierarchyItem] = Field(default_factory=list, max_length=12)
 
 
 class PlaneWorkspaceMetadata(BaseModel):

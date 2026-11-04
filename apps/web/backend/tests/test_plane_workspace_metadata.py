@@ -59,6 +59,21 @@ async def test_plane_session_gets_dedicated_workspace_and_bounded_metadata(
     assert second.status_code == 201, second.text
     assert first.json()["origin"] == "PLANE"
     assert first.json()["project_id"] == second.json()["project_id"]
+    await app.state.store.update(
+        "projects",
+        str(first.json()["project_id"]),
+        {"archived": True, "updated_at": 999.0},
+    )
+    restored = await client.post(
+        "/api/v1/sessions",
+        headers={**user_headers, "X-Research-Context-Token": "opaque"},
+        json=body,
+    )
+    assert restored.status_code == 201, restored.text
+    restored_project = await app.state.store.get(
+        "projects", str(restored.json()["project_id"])
+    )
+    assert restored_project["archived"] is False
 
     projects = [
         item
