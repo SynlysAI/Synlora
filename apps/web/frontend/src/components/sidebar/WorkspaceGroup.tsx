@@ -132,7 +132,14 @@ function WorkspaceRow({
           ) : (
             <FolderIcon className="h-3.5 w-3.5 shrink-0" />
           )}
-          <span className="min-w-0 truncate">{project.name}</span>
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="min-w-0 truncate">{project.name}</span>
+            {project.origin === 'PLANE' && (
+              <span className="shrink-0 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-subtle)] px-1 py-px text-[10px] leading-[14px] text-[var(--sa-alias-label-tertiary)]">
+                Plane
+              </span>
+            )}
+          </span>
           <span className="shrink-0">
             {expanded ? (
               <CollapseIcon className="h-3.5 w-3.5 text-[var(--sa-alias-label-tertiary)]" />
@@ -242,6 +249,7 @@ function WorkspaceRow({
         <SessionList
           sessions={sessions}
           indent
+          groupDates={project.origin === 'PLANE'}
           emptyText="暂无会话"
           onNavigate={onNavigate}
         />

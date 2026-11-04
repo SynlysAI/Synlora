@@ -7,10 +7,9 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
-from app.api.deps import get_current_user, get_settings
 from app.api.auth_api import find_user
+from app.api.deps import get_current_user, get_settings
 from app.core.auth import issue_token
-from app.core.settings import Settings
 from app.services.tool_registry import REGISTRY
 
 router = APIRouter(prefix="/api/v1/research", tags=["research"])
@@ -33,6 +32,37 @@ class DelegatedTokenBody(BaseModel):
         if value != "plane-delegated-auth.v1":
             raise ValueError("unsupported delegated auth schema")
         return value
+
+
+class AccountLinkRepairBody(BaseModel):
+    """plane-account-link-repair.v1 request."""
+
+    schema_version: str = "plane-account-link-repair.v1"
+    account_link_id: str
+    workspace_id: str
+    plane_user_id: str
+    external_subject: str
+    synlora_user_id: str
+    synlora_username: str
+
+    @field_validator("schema_version")
+    @classmethod
+    def validate_schema(cls, value: str) -> str:
+        """Only accept the frozen repair contract."""
+
+        if value != "plane-account-link-repair.v1":
+            raise ValueError("unsupported account-link repair schema")
+        return value
+
+
+def _service_token_authorized(supplied: str, expected: str) -> bool:
+    """Compare Plane service credentials without leaking configuration state."""
+
+    return bool(
+        expected
+        and supplied.startswith("Bearer ")
+        and hmac.compare_digest(supplied[7:], expected)
+    )
 
 
 @router.post("/delegated-token")
@@ -130,6 +160,84 @@ async def delegated_token(
         "account_link_id": body.account_link_id,
         "expires_in": 3600,
     }
+
+
+@router.post("/account-links", status_code=201)
+async def repair_account_link(
+    body: AccountLinkRepairBody,
+    request: Request,
+    settings=Depends(get_settings),
+) -> dict:
+    """Idempotently alias a historical Plane delegated subject to a Synlora account.
+
+    The endpoint is restricted to the Plane service credential. It never changes event
+    ownership; it only creates the immutable alias used by session list/read access.
+    """
+    if not _service_token_authorized(
+        request.headers.get("Authorization", ""), settings.plane_service_token
+    ):
+        raise HTTPException(403, "Plane account-link repair is not configured or invalid")
+
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        raise HTTPException(503, "存储未就绪")
+    matched_user = await find_user(request, body.synlora_username)
+    if (
+        matched_user is None
+        or str(matched_user.get("status", "active")) != "active"
+        or str(matched_user.get("_id", "")) != body.synlora_user_id
+    ):
+        raise HTTPException(403, "Synlora 用户校验失败")
+
+    existing_by_link = await store.get("plane_account_links", body.account_link_id)
+    existing_by_plane = await store.list(
+        "plane_account_links",
+        filters={
+            "plane_workspace_id": body.workspace_id,
+            "plane_user_id": body.plane_user_id,
+        },
+    )
+    existing_by_synlora = await store.list(
+        "plane_account_links",
+        filters={"synlora_user_id": body.synlora_user_id},
+    )
+    if any(
+        str(item.get("plane_user_id")) != body.plane_user_id
+        for item in existing_by_synlora
+    ):
+        raise HTTPException(409, "一个 Synlora 用户只能绑定一个 Plane 用户")
+    existing = existing_by_link or (existing_by_plane[0] if existing_by_plane else None)
+    identities = {
+        str(item.get("account_link_id"))
+        for item in (existing_by_link, *(existing_by_plane or []))
+        if isinstance(item, dict)
+    }
+    if len(identities) > 1 or (
+        existing is not None
+        and (
+            str(existing.get("plane_workspace_id")) != body.workspace_id
+            or str(existing.get("plane_user_id")) != body.plane_user_id
+            or str(existing.get("synlora_user_id")) != body.synlora_user_id
+            or str(existing.get("delegated_subject")) != body.external_subject
+        )
+    ):
+        raise HTTPException(409, "Plane 账号绑定冲突")
+    if existing is not None:
+        return {"schema_version": body.schema_version, "account_link_id": body.account_link_id}
+
+    await store.insert(
+        "plane_account_links",
+        {
+            "_id": body.account_link_id,
+            "account_link_id": body.account_link_id,
+            "plane_workspace_id": body.workspace_id,
+            "plane_user_id": body.plane_user_id,
+            "synlora_user_id": body.synlora_user_id,
+            "delegated_subject": body.external_subject,
+            "created_at": int(time.time()),
+        },
+    )
+    return {"schema_version": body.schema_version, "account_link_id": body.account_link_id}
 
 
 @router.get("/capabilities")

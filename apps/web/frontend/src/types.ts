@@ -288,6 +288,19 @@ export interface Session {
   origin?: 'PLANE' | 'SYNLORA' | string
   /** Plane Agent Dock 的 token-free unified MCP 描述。 */
   plane_mcp?: Record<string, unknown> | null
+  /** Plane Agent Dock 的有界来源元数据。 */
+  plane_meta?: {
+    workspace: { id: string; slug: string; name: string }
+    target: { type: string; id?: string; title?: string; hierarchy?: Array<{ title?: string }> }
+    page?: {
+      route?: string
+      page_kind?: string
+      focus_id?: string
+      focus_title?: string
+      hash?: string
+      generated_at?: string
+    }
+  } | null
   created_at: number
   updated_at: number
 }
@@ -385,6 +398,10 @@ export interface Project {
   /** 磁盘目录名（重名时后端自动加后缀，与 name 可能不同）。 */
   dir_name: string
   archived: boolean
+  /** 来源标记：PLANE 表示由 Plane workspace 自动创建。 */
+  origin?: string
+  /** Plane workspace id；仅 Plane 自动工作区存在。 */
+  plane_workspace_id?: string
   created_at: number
   updated_at: number
 }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
 
@@ -49,6 +50,60 @@ class ProjectService:
             该用户专属的 asyncio.Lock。
         """
         return self._user_locks.setdefault(user_id, asyncio.Lock())
+
+    async def ensure_plane_project(
+        self, user_id: str, *, plane_workspace_id: str, plane_workspace_name: str
+    ) -> dict:
+        """Idempotently create the user's dedicated project for one Plane workspace.
+
+        Args:
+            user_id: Synlora user id.
+            plane_workspace_id: Plane workspace id.
+            plane_workspace_name: Plane workspace display name.
+
+        Returns:
+            The existing or newly created Plane project document.
+        """
+        fingerprint = hashlib.sha256(
+            f"{user_id}:{plane_workspace_id}".encode("utf-8")
+        ).hexdigest()[:20]
+        project_id = f"plane-{fingerprint}"
+        name = f"Plane · {plane_workspace_name}".strip()[:120] or "Plane Workspace"
+        async with self._lock_for(user_id):
+            existing = await self._repo.get(project_id)
+            if (
+                existing is not None
+                and existing.get("user_id") == user_id
+                and existing.get("plane_workspace_id") == plane_workspace_id
+            ):
+                if existing.get("name") != name and not existing.get("archived"):
+                    return await self._repo.update(project_id, {"name": name})
+                return existing
+
+            for doc in await self._repo.list(filters={"user_id": user_id}):
+                if doc.get("plane_workspace_id") == plane_workspace_id:
+                    return doc
+
+            base = workspace.sanitize_dir_name(name)
+            if not base:
+                base = project_id
+            taken = await self._repo.used_dir_names(user_id)
+            self._reserve_default_dir(base, taken)
+            dir_name = workspace.free_dir_name(
+                self._user_workspaces_dir(user_id), base, taken
+            )
+            project = await self._repo.create(
+                user_id=user_id,
+                name=name,
+                dir_name=dir_name,
+                metadata={
+                    "_id": project_id,
+                    "origin": "PLANE",
+                    "plane_workspace_id": plane_workspace_id,
+                },
+            )
+            workspace.project_root(self._data_root, user_id, dir_name)
+            return project
 
     async def _list_locked(self, user_id: str) -> list[dict]:
         """锁内列出项目。

@@ -250,7 +250,14 @@ class ProjectRepo(BaseRepo):
             key=lambda d: d.get("updated_at", 0), reverse=True,
         )
 
-    async def create(self, *, user_id: str, name: str, dir_name: str) -> dict:
+    async def create(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        dir_name: str,
+        metadata: dict | None = None,
+    ) -> dict:
         """新建项目（_id/created_at/updated_at 由 BaseRepo 补齐）。
 
         Args:
@@ -263,6 +270,7 @@ class ProjectRepo(BaseRepo):
         """
         return await super().create({
             "user_id": user_id, "name": name, "dir_name": dir_name, "archived": False,
+            **(metadata or {}),
         })
 
     async def used_dir_names(self, user_id: str) -> set[str]:

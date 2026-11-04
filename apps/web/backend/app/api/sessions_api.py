@@ -114,6 +114,18 @@ def _validate_plane_mcp_scope(metadata: PlaneMcpRuntime, context: ResearchContex
         raise HTTPException(403, f"科研上下文未授权 MCP 工具: {', '.join(invalid)}")
 
 
+def _validate_plane_metadata_scope(
+    metadata: PlaneMetadata, context: ResearchContextMetadata
+) -> None:
+    """确保 Plane 展示元数据属于签名科研上下文的同一 Plane 工作区。"""
+
+    target = context.target
+    workspace_id = str(target.workspace_id if target else context.workspace_id)
+    workspace_slug = str(target.workspace_slug if target else context.workspace_slug)
+    if metadata.workspace.id != workspace_id or metadata.workspace.slug != workspace_slug:
+        raise HTTPException(403, "Plane 元数据与科研上下文工作区不一致")
+
+
 async def _normalize_attachments(request: Request, user: dict, repos: Repos,
                                  file_ids: list[str], root,
                                  ownership: dict) -> list[dict]:
@@ -187,6 +199,42 @@ class PlaneMcpRuntime(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
 
 
+class PlanePageMetadata(BaseModel):
+    """有界 Plane 页面投影，只用于展示与分组。"""
+
+    route: str = Field(default="", max_length=500)
+    page_kind: str = Field(default="", max_length=64)
+    focus_id: str = Field(default="", max_length=128)
+    focus_title: str = Field(default="", max_length=300)
+    hash: str = Field(default="", max_length=128)
+    generated_at: str = Field(default="", max_length=64)
+
+
+class PlaneTargetMetadata(BaseModel):
+    """有界 Plane 目标投影，不包含资源正文。"""
+
+    type: str = Field(max_length=32)
+    id: str = Field(default="", max_length=128)
+    title: str = Field(default="", max_length=300)
+    hierarchy: list[dict] = Field(default_factory=list, max_length=12)
+
+
+class PlaneWorkspaceMetadata(BaseModel):
+    """用于幂等创建独立 Synlora 工作区的 Plane 工作区标识。"""
+
+    id: str = Field(max_length=128)
+    slug: str = Field(max_length=128)
+    name: str = Field(default="", max_length=300)
+
+
+class PlaneMetadata(BaseModel):
+    """独立于签名科研上下文的可选 Plane Agent Dock 元数据。"""
+
+    workspace: PlaneWorkspaceMetadata
+    target: PlaneTargetMetadata
+    page: PlanePageMetadata | None = None
+
+
 class SessionCreateBody(BaseModel):
     """新建会话请求体。
 
@@ -207,6 +255,7 @@ class SessionCreateBody(BaseModel):
     enabled_mcp: list[str] | None = None
     research_context: ResearchContextMetadata | None = None
     plane_mcp: PlaneMcpRuntime | None = None
+    plane_meta: PlaneMetadata | None = None
 
 
 class SessionUpdateBody(BaseModel):
@@ -315,6 +364,7 @@ class MessageIn(BaseModel):
     attachments: list[AttachmentIn] | None = None
     research_context: ResearchContextMetadata | None = None
     plane_mcp: PlaneMcpRuntime | None = None
+    plane_meta: PlaneMetadata | None = None
     page_context: dict | None = None
     external_run_id: str = ""
 
@@ -364,6 +414,8 @@ async def create_session(body: SessionCreateBody, request: Request,
     """
     if body.assistant_id:
         await _ensure_assistant_selectable(request, user, body.assistant_id, repos)
+    if body.plane_meta is not None and body.research_context is None:
+        raise HTTPException(403, "Plane 元数据需要有效的科研上下文")
     # 绑定项目须属本人且存在：否则会话带着他人的 project_id 落库（运行时虽会回落
     # 到本人项目、不会串目录，但脏数据会让前端按它渲染出不属于该用户的项目）
     if body.project_id and await request.app.state.project_service.get(
@@ -382,6 +434,8 @@ async def create_session(body: SessionCreateBody, request: Request,
             raise HTTPException(exc.status_code, exc.message) from exc
         if body.plane_mcp is not None:
             _validate_plane_mcp_scope(body.plane_mcp, body.research_context)
+        if body.plane_meta is not None:
+            _validate_plane_metadata_scope(body.plane_meta, body.research_context)
     if body.enabled_plugins is not None:
         await _validate_plugin_ids(request, body.enabled_plugins)
         if body.research_context is not None:
@@ -390,6 +444,14 @@ async def create_session(body: SessionCreateBody, request: Request,
         await _validate_mcp_ids(request, user["sub"], body.enabled_mcp)
         if body.research_context is not None:
             _validate_research_mcp_scope(body.enabled_mcp, body.research_context)
+    project_id = body.project_id
+    if body.plane_meta is not None:
+        project = await request.app.state.project_service.ensure_plane_project(
+            user["sub"],
+            plane_workspace_id=body.plane_meta.workspace.id,
+            plane_workspace_name=body.plane_meta.workspace.name or body.plane_meta.workspace.slug,
+        )
+        project_id = str(project["_id"])
     return await repos.session.create({
         "user_id": user["sub"],
         "assistant_id": body.assistant_id,
@@ -397,7 +459,7 @@ async def create_session(body: SessionCreateBody, request: Request,
         "archived": False,
         "message_count": 0,
         "model_provider_id": body.model_provider_id,
-        "project_id": body.project_id,
+        "project_id": project_id,
         "enabled_plugins": body.enabled_plugins,
         "enabled_mcp": body.enabled_mcp,
         "research_context": (
@@ -405,6 +467,7 @@ async def create_session(body: SessionCreateBody, request: Request,
             if body.research_context is not None else None
         ),
         **({"origin": "PLANE"} if body.research_context is not None else {}),
+        **({"plane_meta": body.plane_meta.model_dump(mode="json")} if body.plane_meta is not None else {}),
         **({
             "plane_mcp": body.plane_mcp.model_dump(mode="json")
         } if body.plane_mcp is not None else {}),
@@ -610,6 +673,8 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
     doc = await _own_session(sid, user, repos)
     if not await _can_operate_alias_session(doc, user, repos):
         raise HTTPException(409, "历史 Plane 会话为只读记录，请发起新会话")
+    if body.plane_meta is not None and not doc.get("research_context"):
+        raise HTTPException(403, "Plane 元数据需要有效的科研上下文")
     if doc.get("research_context"):
         metadata = body.research_context or ResearchContextMetadata.model_validate(doc["research_context"])
         context_token = request.headers.get("X-Research-Context-Token", "")
@@ -623,6 +688,18 @@ async def _start_message(sid: str, body: MessageIn, request: Request,
         doc["research_context"] = metadata.model_dump(mode="json")
         if body.research_context is not None:
             await repos.session.update(sid, {"research_context": doc["research_context"]})
+        if body.plane_meta is not None:
+            _validate_plane_metadata_scope(body.plane_meta, metadata)
+            project = await request.app.state.project_service.ensure_plane_project(
+                user["sub"],
+                plane_workspace_id=body.plane_meta.workspace.id,
+                plane_workspace_name=body.plane_meta.workspace.name or body.plane_meta.workspace.slug,
+            )
+            doc["project_id"] = str(project["_id"])
+            doc["plane_meta"] = body.plane_meta.model_dump(mode="json")
+            await repos.session.update(
+                sid, {"project_id": doc["project_id"], "plane_meta": doc["plane_meta"]}
+            )
         plane_mcp = body.plane_mcp or (
             PlaneMcpRuntime.model_validate(doc["plane_mcp"])
             if doc.get("plane_mcp") is not None

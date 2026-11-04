@@ -20,6 +20,38 @@ import { ArchiveIcon, DeleteIcon, EditIcon, MoreIcon } from './icons'
 /** 默认显示的最近会话数（超出折叠为"展开其余 N 个会话"，DSH 式）。 */
 const COLLAPSE_AFTER = 8
 
+/** 构造会话搜索文本，覆盖标题与 Plane 页面元数据。 */
+function sessionSearchText(session: Session): string {
+  const page = session.plane_meta?.page
+  return [
+    session.title,
+    session.plane_meta?.workspace.name,
+    session.plane_meta?.workspace.slug,
+    session.plane_meta?.target.title,
+    page?.focus_title,
+    page?.route,
+    page?.page_kind,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+}
+
+/** 以克制的时间标题分组，不引入额外卡片或颜色。 */
+function sessionDateLabel(timestamp: number): string {
+  const date = new Date(timestamp * 1000)
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (date.toDateString() === today.toDateString()) return '今天'
+  if (date.toDateString() === yesterday.toDateString()) return '昨天'
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
+}
+
 interface SessionItemProps {
   /** 会话文档。 */
   session: Session
@@ -139,15 +171,29 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
               className="absolute left-0 top-1/2 h-[14px] w-[2.5px] -translate-y-1/2 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
             />
           )}
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
-            {session.origin === 'PLANE' && (
-              <span className="shrink-0 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-subtle)] px-1 py-px text-[10px] leading-[14px] text-[var(--sa-alias-label-tertiary)]">
-                Plane
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5 pr-2">
+            <span className="flex min-w-0 items-center gap-1.5">
+              {session.origin === 'PLANE' && (
+                <span className="shrink-0 rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-border-subtle)] px-1 py-px text-[10px] leading-[14px] text-[var(--sa-alias-label-tertiary)]">
+                  Plane
+                </span>
+              )}
+              <span className="min-w-0 truncate text-sm text-[var(--sa-alias-label-primary)]">
+                {session.title || '新对话'}
+              </span>
+            </span>
+            {session.plane_meta?.page && (
+              <span
+                title={`${session.plane_meta.page.focus_title || session.plane_meta.target.title || ''} ${session.plane_meta.page.route || ''}`}
+                className="min-w-0 truncate text-[11px] leading-4 text-[var(--sa-alias-label-caption)]"
+              >
+                {session.plane_meta.page.focus_title ||
+                  session.plane_meta.target.title ||
+                  session.plane_meta.page.page_kind ||
+                  'Plane 页面'}
+                {session.plane_meta.page.route ? ` · ${session.plane_meta.page.route}` : ''}
               </span>
             )}
-            <span className="min-w-0 truncate text-sm text-[var(--sa-alias-label-primary)]">
-              {session.title || '新对话'}
-            </span>
           </span>
           {/* 时间：悬停 / 键盘聚焦时淡出，把位置让给右侧「⋯」（两者交叉淡入淡出） */}
           <span className="shrink-0 text-xs text-[var(--sa-alias-label-caption)] transition-opacity duration-[var(--sa-duration-fast)] group-hover:opacity-0 group-focus-within:opacity-0">
@@ -242,6 +288,8 @@ interface SessionListProps {
   sessions?: Session[]
   /** 嵌套模式：作为工作区展开后的子列表（缩进 + 不折叠超出项）。 */
   indent?: boolean
+  /** 按 updated_at 日期插入轻量分组标题（Plane 工作区使用）。 */
+  groupDates?: boolean
   /** 空态文案（缺省「暂无会话」）。 */
   emptyText?: string
   /** 抽屉模式下选中会话后关闭抽屉。 */
@@ -253,6 +301,7 @@ export default function SessionList({
   query = '',
   sessions,
   indent = false,
+  groupDates = false,
   emptyText = '暂无会话',
   onNavigate,
 }: SessionListProps) {
@@ -266,9 +315,7 @@ export default function SessionList({
   // 标题过滤 + updated_at 倒序（后端有序，patch 后本地重排兜底）
   const { active, archived } = useMemo(() => {
     const q = query.trim().toLowerCase()
-    const filtered = q
-      ? source.filter((s) => s.title.toLowerCase().includes(q))
-      : source
+    const filtered = q ? source.filter((s) => sessionSearchText(s).includes(q)) : source
     const sorted = [...filtered].sort((a, b) => b.updated_at - a.updated_at)
     return {
       active: sorted.filter((s) => !s.archived),
@@ -297,19 +344,34 @@ export default function SessionList({
   return (
     <div className="flex min-h-0 flex-col gap-0.5">
       {active.length === 0 && archived.length === 0 && <div className={emptyClass}>无匹配会话</div>}
-      {visible.map((s) => (
-        <SessionItem
-          key={s._id}
-          session={s}
-          active={s._id === currentId}
-          indent={indent}
-          onSelect={() => {
-            // 选中会话 = 导航到 /chat/<id>（URL 是唯一事实源，AppShell 同步 store）
-            useRouterStore.getState().navigate({ kind: 'chat-session', sessionId: s._id })
-            onNavigate?.()
-          }}
-        />
-      ))}
+      {visible.map((s, index) => {
+        const dateLabel = sessionDateLabel(s.updated_at)
+        const previous = index > 0 ? visible[index - 1] : null
+        const showDate = groupDates && (!previous || sessionDateLabel(previous.updated_at) !== dateLabel)
+        return (
+          <div key={s._id} className="contents">
+            {showDate && (
+              <div
+                className={`pt-2 pb-1 text-[11px] font-medium text-[var(--sa-alias-label-caption)] ${
+                  indent ? 'pl-8 pr-2.5' : 'px-2.5'
+                }`}
+              >
+                {dateLabel}
+              </div>
+            )}
+            <SessionItem
+              session={s}
+              active={s._id === currentId}
+              indent={indent}
+              onSelect={() => {
+                // 选中会话 = 导航到 /chat/<id>（URL 是唯一事实源，AppShell 同步 store）
+                useRouterStore.getState().navigate({ kind: 'chat-session', sessionId: s._id })
+                onNavigate?.()
+              }}
+            />
+          </div>
+        )
+      })}
 
       {/* 展开其余会话 / 收起（DSH 式文字链接，二态互斥） */}
       {collapsible && restOpen ? (
