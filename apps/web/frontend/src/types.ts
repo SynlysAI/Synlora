@@ -291,7 +291,12 @@ export interface Session {
   /** Plane Agent Dock 的有界来源元数据。 */
   plane_meta?: {
     workspace: { id: string; slug: string; name: string }
-    target: { type: string; id?: string; title?: string; hierarchy?: Array<{ title?: string }> }
+    target: {
+      type: string
+      id?: string
+      title?: string
+      hierarchy?: Array<{ type?: string; title?: string }>
+    }
     page?: {
       route?: string
       page_kind?: string
