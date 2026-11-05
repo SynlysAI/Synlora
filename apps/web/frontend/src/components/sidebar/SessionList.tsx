@@ -20,11 +20,82 @@ import { ArchiveIcon, DeleteIcon, EditIcon, MoreIcon } from './icons'
 /** 默认显示的最近会话数（超出折叠为"展开其余 N 个会话"，DSH 式）。 */
 const COLLAPSE_AFTER = 8
 
+/** Plane page_kind 到中文来源标签的稳定映射。 */
+const PAGE_KIND_LABELS: Record<string, string> = {
+  workspace: '首页',
+  administrative_project: '行政项目',
+  administrative_task: '行政任务',
+  research_chain: '研究链',
+  research_node: '研究节点',
+  research_task: '研究任务',
+}
+
+/** 缺少 page 快照的旧会话按签名 target 做粗粒度回退。 */
+const TARGET_TYPE_LABELS: Record<string, string> = {
+  PROJECT: '行政项目',
+  ISSUE: '行政任务',
+  RESEARCH_CHAIN: '研究链',
+  RESEARCH_CHAIN_NODE: '研究节点',
+}
+
+/** 识别 Plane 侧曾用于展示的 UUID 形式标题。 */
+const UUID_LIKE_TITLE =
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|research chain\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|plane\s*·\s+.+)$/i
+
+/** 过滤空字符串并返回安全的展示值。 */
+function displayValue(value: string | undefined | null): string {
+  return String(value || '').trim()
+}
+
+/** 判断标题是否只是对象 UUID，不能直接当作研究链名称展示。 */
+function isUuidTitle(value: string): boolean {
+  return UUID_LIKE_TITLE.test(value)
+}
+
+/** 从 hierarchy 中优先取项目名，用于研究链旧记录的可读回退。 */
+function hierarchyProjectTitle(session: Session): string {
+  const hierarchy = session.plane_meta?.target?.hierarchy || []
+  const project = hierarchy.find((item) => item.type === 'PROJECT')
+  const title = displayValue(project?.title)
+  return title && !isUuidTitle(title) ? title : ''
+}
+
+/** 按页面类型和当前焦点生成“标签 · 名称”的来源行。 */
+function planeSourceLabel(session: Session): string {
+  const meta = session.plane_meta
+  if (!meta) return session.origin === 'PLANE' ? '历史导入' : ''
+
+  const page = meta.page
+  const pageKind = displayValue(page?.page_kind)
+  const pageLabel = PAGE_KIND_LABELS[pageKind]
+  if (pageKind === 'workspace') return '首页'
+
+  const focusTitle = displayValue(page?.focus_title)
+  const targetTitle = displayValue(meta.target?.title)
+  const projectName = hierarchyProjectTitle(session)
+  const readableFocus = focusTitle && !isUuidTitle(focusTitle) ? focusTitle : ''
+
+  if (pageLabel) {
+    const pageFallbackTitle =
+      targetTitle && !isUuidTitle(targetTitle) ? targetTitle : projectName
+    return readableFocus || pageFallbackTitle
+      ? `${pageLabel} · ${readableFocus || pageFallbackTitle}`
+      : pageLabel
+  }
+
+  const targetLabel = TARGET_TYPE_LABELS[displayValue(meta.target?.type).toUpperCase()]
+  if (!targetLabel) return '历史导入'
+  const fallbackTitle =
+    targetTitle && !isUuidTitle(targetTitle) ? targetTitle : projectName
+  return fallbackTitle ? `${targetLabel} · ${fallbackTitle}` : targetLabel
+}
+
 /** 构造会话搜索文本，覆盖标题与 Plane 页面元数据。 */
 function sessionSearchText(session: Session): string {
   const page = session.plane_meta?.page
   return [
     session.title,
+    planeSourceLabel(session),
     session.plane_meta?.workspace.name,
     session.plane_meta?.workspace.slug,
     session.plane_meta?.target.title,
@@ -76,6 +147,14 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(session.title)
   const menuRef = useRef<HTMLDivElement>(null)
+  const sourceLabel = planeSourceLabel(session)
+  const tooltip = [
+    session.title || '新对话',
+    sourceLabel === '历史导入' ? '' : sourceLabel,
+    session.plane_meta?.page?.route || '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
 
   // 菜单外点击关闭
   useEffect(() => {
@@ -145,20 +224,16 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
             if (e.key === 'Escape') setEditing(false)
           }}
           onBlur={() => void commitRename()}
-          className={`h-8 w-full rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-button-ghost-active-border)] bg-[var(--sa-specific-input-major)] text-sm text-[var(--sa-alias-label-primary)] outline-none ${
-            indent ? 'pl-8 pr-2.5' : 'px-2.5'
+          className={`h-11 w-full rounded-[var(--sa-radius-sm)] border border-[var(--sa-alias-button-ghost-active-border)] bg-[var(--sa-specific-input-major)] text-[13px] leading-[18px] text-[var(--sa-alias-label-primary)] outline-none ${
+            indent ? 'pl-8 pr-3' : 'px-3'
           }`}
         />
       ) : (
         <button
           type="button"
           onClick={onSelect}
-          title={
-            session.plane_meta?.page?.route
-              ? `${session.title || '新对话'} · ${session.plane_meta.page.route}`
-              : session.title
-          }
-          className={`relative flex h-8 w-full items-center rounded-[var(--sa-radius-sm)] text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
+          title={tooltip}
+          className={`relative flex h-11 w-full items-center rounded-[var(--sa-radius-sm)] text-left transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
             indent ? 'pl-8 pr-2.5' : 'px-2.5'
           } ${
             active
@@ -172,30 +247,24 @@ function SessionItem({ session, active, indent = false, onSelect }: SessionItemP
           {active && (
             <span
               aria-hidden="true"
-              className="absolute left-0 top-1/2 h-[14px] w-[2.5px] -translate-y-1/2 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
+              className="absolute left-0 top-1/2 h-[18px] w-[2.5px] -translate-y-1/2 rounded-[var(--sa-radius-full)] bg-[var(--sa-alias-link)]"
             />
           )}
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5 pr-2">
-            <span className="flex min-w-0 items-center gap-1.5">
-              <span className="min-w-0 truncate text-sm text-[var(--sa-alias-label-primary)]">
-                {session.title || '新对话'}
-              </span>
+          <span className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="min-w-0 truncate text-[13px] leading-[18px] text-[var(--sa-alias-label-primary)]">
+              {session.title || '新对话'}
             </span>
-            {session.plane_meta && (
+            {sourceLabel && (
               <span
-                title={session.plane_meta.page?.route || session.plane_meta.target?.title || ''}
-                className="min-w-0 truncate text-[11px] leading-4 text-[var(--sa-alias-label-caption)]"
+                title={session.plane_meta?.page?.route || sourceLabel}
+                className="min-w-0 truncate text-xs leading-4 text-[var(--sa-alias-label-caption)]"
               >
-                {session.plane_meta.page?.focus_title ||
-                  session.plane_meta.target?.title ||
-                  session.plane_meta.page?.page_kind ||
-                  '历史导入'}
-                {session.plane_meta.page?.route ? ` · ${session.plane_meta.page.route}` : ''}
+                {sourceLabel}
               </span>
             )}
           </span>
-          {/* 时间：悬停 / 键盘聚焦时淡出，把位置让给右侧「⋯」（两者交叉淡入淡出） */}
-          <span className="shrink-0 text-xs text-[var(--sa-alias-label-caption)] transition-opacity duration-[var(--sa-duration-fast)] group-hover:opacity-0 group-focus-within:opacity-0">
+          {/* 时间固定占位，悬停 / 键盘聚焦时只与「⋯」交叉淡入淡出。 */}
+          <span className="w-14 shrink-0 truncate text-right text-[11px] leading-4 text-[var(--sa-alias-label-caption)] transition-opacity duration-[var(--sa-duration-fast)] group-hover:opacity-0 group-focus-within:opacity-0">
             {formatRelativeTime(session.updated_at)}
           </span>
         </button>
@@ -341,7 +410,7 @@ export default function SessionList({
   }
 
   return (
-    <div className="flex min-h-0 flex-col gap-0.5">
+    <div className="flex min-h-0 flex-col gap-1">
       {active.length === 0 && archived.length === 0 && <div className={emptyClass}>无匹配会话</div>}
       {visible.map((s, index) => {
         const dateLabel = sessionDateLabel(s.updated_at)
@@ -351,7 +420,7 @@ export default function SessionList({
           <div key={s._id} className="contents">
             {showDate && (
               <div
-                className={`pt-2 pb-1 text-[11px] font-medium text-[var(--sa-alias-label-caption)] ${
+                className={`pt-3 pb-1.5 text-[11px] font-medium leading-4 text-[var(--sa-alias-label-caption)] ${
                   indent ? 'pl-8 pr-2.5' : 'px-2.5'
                 }`}
               >
@@ -378,7 +447,7 @@ export default function SessionList({
           type="button"
           aria-expanded
           onClick={() => setRestOpen(false)}
-          className="h-7 px-2.5 text-left text-xs text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
+          className="h-8 px-2.5 text-left text-xs leading-4 text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
         >
           收起
         </button>
@@ -387,7 +456,7 @@ export default function SessionList({
           type="button"
           aria-expanded={false}
           onClick={() => setRestOpen(true)}
-          className="h-7 px-2.5 text-left text-xs text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
+          className="h-8 px-2.5 text-left text-xs leading-4 text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:text-[var(--sa-alias-label-secondary)]"
         >
           展开其余 {restCount} 个会话
         </button>
@@ -395,12 +464,12 @@ export default function SessionList({
 
       {/* 归档折叠组 */}
       {archived.length > 0 && (
-        <div className="pt-1">
+        <div className="pt-1.5">
           <button
             type="button"
             onClick={() => setArchivedOpen((v) => !v)}
             aria-expanded={showArchived}
-            className={`flex w-full items-center gap-1 rounded-[var(--sa-radius-sm)] py-1 text-xs text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
+            className={`flex w-full items-center gap-1 rounded-[var(--sa-radius-sm)] py-1.5 text-xs leading-4 text-[var(--sa-alias-label-caption)] transition-colors duration-[var(--sa-duration-fast)] hover:bg-[var(--sa-specific-sidebar-nav-item-hover)] ${
               indent ? 'pl-8 pr-2' : 'px-2'
             }`}
           >
