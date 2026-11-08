@@ -60,6 +60,7 @@ from app.services.sandbox_job_runner import SandboxJobRunner
 from app.services.job_service import JobService
 from app.services.wakeup import make_run_context_resolver
 from app.services.mcp_service import McpService
+from app.services.plane_rws_runtime import PlaneRWSRuntime
 from app.services.project_service import ProjectService
 from app.services.research_context import PlaneResearchClient, ResearchContextAdapter
 from app.services.skill_service import SkillService
@@ -202,6 +203,11 @@ async def lifespan(app: FastAPI):
         workspace_guard=app.state.workspace_job_guard,
     )
     executor = await app.state.agent_service._code_executor()  # noqa: SLF001
+    app.state.plane_rws_runtime = PlaneRWSRuntime(
+        settings,
+        store,
+        app.state.agent_service._code_executor,  # noqa: SLF001
+    )
     if executor.sandbox == "docker":
         await app.state.job_service.recover_sandbox_jobs(executor)
         app.state.sandbox_job_runner = SandboxJobRunner(
