@@ -1,6 +1,7 @@
 """Plane Research Workspace 短期运行绑定适配层。"""
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
@@ -8,6 +9,8 @@ from typing import Any
 
 import httpx
 from synlys_harness import ExecutionRequest, ReadOnlyResource
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PlaneRWSRuntimeError(RuntimeError):
@@ -90,6 +93,12 @@ class PlaneRWSRuntime:
                 resources=(ReadOnlyResource(Path(assets_path), PurePosixPath("/assets")),),
                 timeout_s=float(timeout_s),
                 execution_id=f"rws-{run_id}",
+            )
+            _LOGGER.info(
+                "Plane RWS 共享执行路径 run_id=%s workspace=%s assets=%s",
+                run_id,
+                request.workspace_root,
+                request.resources[0].source,
             )
             result = await executor.execute(request)
             finalize = await self._finalize_plane_run(
