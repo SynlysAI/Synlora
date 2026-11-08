@@ -95,6 +95,7 @@ async def test_rws_run_uses_verified_shared_workspace_and_assets(store, tmp_path
     assets.mkdir()
     http = FakeHTTPClient(workspace, assets)
     executor = FakeExecutor()
+    factory_kwargs = {}
     settings = SimpleNamespace(
         plane_request_timeout_seconds=3.0,
         plane_rws_api_url="http://plane",
@@ -105,7 +106,7 @@ async def test_rws_run_uses_verified_shared_workspace_and_assets(store, tmp_path
         settings,
         store,
         lambda: _async_value(executor),
-        http_client_factory=lambda **kwargs: http,
+        http_client_factory=lambda **kwargs: (factory_kwargs.update(kwargs), http)[1],
     )
     result = await runtime.execute(
         run_id="run-1",
@@ -122,6 +123,7 @@ async def test_rws_run_uses_verified_shared_workspace_and_assets(store, tmp_path
     assert result["plane_receipt"]["run"]["status"] == "SUCCEEDED"
     request = executor.requests[0]
     assert request.workspace_root == workspace.resolve()
+    assert factory_kwargs["timeout"] == 1800.0 + 600.0
     assert request.resources[0].target == PurePosixPath("/assets")
     assert http.calls[1]["headers"]["Authorization"] == "Bearer runner-service-token"
     assert http.calls[-1]["json"]["changed_paths"] == ["output/result.txt"]

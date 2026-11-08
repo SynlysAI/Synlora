@@ -70,7 +70,11 @@ class PlaneRWSRuntime:
         changed_paths = list(changed_paths or [])
         outputs = dict(outputs or {})
         request_id = request_id or f"synlora-{run_id}-{int(time.time())}"
-        async with self._http_client_factory(timeout=self._settings.plane_request_timeout_seconds) as client:
+        control_timeout = max(
+            float(self._settings.plane_request_timeout_seconds),
+            float(timeout_s) + 600.0,
+        )
+        async with self._http_client_factory(timeout=control_timeout) as client:
             binding = await self._verify_plane_binding(client, run_id, token)
             runner_binding = await self._resolve_runner_binding(client, binding, token)
             assets_path = await self._materialize_assets(
