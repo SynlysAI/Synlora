@@ -120,6 +120,8 @@ async def test_rws_run_uses_verified_shared_workspace_and_assets(store, tmp_path
 
     assert result["ok"] is True
     assert result["branch"] == "agent/run-1"
+    assert result["execution_workspace"] == str(workspace.resolve())
+    assert result["execution_assets"] == str(assets)
     assert result["plane_receipt"]["run"]["status"] == "SUCCEEDED"
     request = executor.requests[0]
     assert request.workspace_root == workspace.resolve()

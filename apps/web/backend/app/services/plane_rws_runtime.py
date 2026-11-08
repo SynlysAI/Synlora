@@ -110,6 +110,8 @@ class PlaneRWSRuntime:
             "working_copy_id": binding.get("working_copy_id", ""),
             "grant_id": binding.get("grant_id", ""),
             "branch": binding.get("branch", ""),
+            "execution_workspace": str(runner_binding["workspace_path"]),
+            "execution_assets": assets_path,
             "ok": bool(result.ok),
             "content": result.content,
             "changed_paths": changed_paths,
