@@ -59,6 +59,35 @@ class AccountLinkRepairBody(BaseModel):
         return value
 
 
+class RWSRunExecuteBody(BaseModel):
+    """Plane RWS agent run 执行请求。"""
+
+    run_id: str
+    token: str
+    argv: list[str]
+    cwd: str = "."
+    timeout_s: float = 1800.0
+    changed_paths: list[str] = []
+    outputs: dict = {}
+    request_id: str = ""
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str) -> str:
+        """限制为 Plane 契约允许的 run 标识。"""
+        if not value or len(value) > 128 or any(char.isspace() for char in value):
+            raise ValueError("run_id 非法")
+        return value
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: str) -> str:
+        """避免空 token 进入控制面调用。"""
+        if len(value) < 16:
+            raise ValueError("token 非法")
+        return value
+
+
 def _service_token_authorized(supplied: str, expected: str) -> bool:
     """Compare Plane service credentials without leaking configuration state."""
 
@@ -250,6 +279,35 @@ async def delegated_token(
         "account_link_id": body.account_link_id,
         "expires_in": 3600,
     }
+
+
+@router.post("/rws-runs")
+async def execute_plane_rws_run(
+    body: RWSRunExecuteBody,
+    request: Request,
+    settings=Depends(get_settings),
+) -> dict:
+    """以 Plane 服务凭证触发一次短期 Workspace 共享执行。"""
+    if not _service_token_authorized(
+        request.headers.get("Authorization", ""), settings.plane_service_token
+    ):
+        raise HTTPException(403, "Plane service token required")
+    runtime = getattr(request.app.state, "plane_rws_runtime", None)
+    if runtime is None:
+        raise HTTPException(503, "Plane RWS runtime unavailable")
+    try:
+        return await runtime.execute(
+            run_id=body.run_id,
+            token=body.token,
+            argv=body.argv,
+            cwd=body.cwd,
+            timeout_s=body.timeout_s,
+            changed_paths=body.changed_paths,
+            outputs=body.outputs,
+            request_id=body.request_id,
+        )
+    except Exception as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @router.post("/account-links", status_code=201)

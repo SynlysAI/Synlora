@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     plane_allowed_issuers: str = ""
     plane_api_token: str = ""
     plane_service_token: str = ""
+    plane_rws_api_url: str = ""
+    plane_rws_runner_url: str = ""
+    plane_rws_runner_token: str = ""
     synlora_deployment_id: str = ""
     plane_request_timeout_seconds: float = 3.0
     assistant_web_search_endpoint: str = ""
