@@ -1,6 +1,7 @@
 """Plane Research Workspace 共享运行适配层契约。"""
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
@@ -64,6 +65,8 @@ class FakeHTTPClient:
                     "data": {"grant_id": "grant-1", "workspace_path": str(self.workspace_root)},
                 }
             )
+        if url.endswith("/binding.execution-start") or url.endswith("/binding.execution-finish"):
+            return FakeResponse(payload={"ok": True, "data": {"stopped": True}})
         if url.endswith("/assets.materialize"):
             assert json["items"][0]["path"] == "data/a.csv"
             return FakeResponse(payload={"ok": True, "data": {"assets_path": str(self.assets_root)}})
@@ -84,6 +87,10 @@ class FakeExecutor:
         """返回成功结果并保留挂载请求。"""
         self.requests.append(request)
         return ToolResult(ok=True, content="shared output")
+
+    async def cleanup_execution(self, execution_id):
+        """测试执行器确认没有遗留可写容器。"""
+        return True
 
 
 @pytest.mark.asyncio
@@ -157,6 +164,90 @@ async def test_invalid_plane_binding_never_reaches_personal_workspace(store):
         await runtime.execute(run_id="run-1", token="short-term-token-value", argv=["/bin/true"])
     assert executor.requests == []
     assert len(http.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_waits_for_container_cleanup_before_releasing_pin(store, tmp_path):
+    """取消执行时必须等创建线程和容器清理结束，才向 Runner 确认停止。"""
+    http = FakeHTTPClient(tmp_path, tmp_path)
+    started = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    class BlockingExecutor(FakeExecutor):
+        """模拟在取消时仍需收尾的 Docker 执行器。"""
+
+        async def execute(self, request):
+            """等待取消后完成清理。"""
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                await asyncio.sleep(0)
+                cleaned.set()
+
+        async def cleanup_execution(self, execution_id):
+            """仅在执行器收尾后确认停止。"""
+            assert cleaned.is_set()
+            assert not any(call["url"].endswith("/binding.execution-finish") for call in http.calls)
+            return True
+
+    settings = SimpleNamespace(
+        plane_request_timeout_seconds=3.0,
+        plane_rws_api_url="http://plane",
+        plane_rws_runner_url="http://runner",
+        plane_rws_runner_token="runner-service-token",
+    )
+    runtime = PlaneRWSRuntime(settings, store, lambda: _async_value(BlockingExecutor()), http_client_factory=lambda **kw: http)
+    task = asyncio.create_task(runtime.execute(run_id="run-1", token="short-term-token-value", argv=["/bin/true"]))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned.is_set()
+    assert http.calls[-1]["url"].endswith("/binding.execution-finish")
+    assert not any(call["url"].endswith("/finalize/") for call in http.calls)
+
+
+@pytest.mark.asyncio
+async def test_revoked_binding_stops_execution_and_confirms_cleanup(store, tmp_path):
+    """控制面撤销授权后，监测循环取消沙箱并回报停止。"""
+    http = FakeHTTPClient(tmp_path, tmp_path)
+    original_post = http.post
+    resolves = 0
+    cancelled = asyncio.Event()
+
+    async def revoke_after_start(url, **kwargs):
+        """首次解析成功，后续轮询模拟授权撤销。"""
+        nonlocal resolves
+        if url.endswith("/binding.resolve"):
+            resolves += 1
+            if resolves > 1:
+                return FakeResponse(403, {"ok": False, "message": "revoked"})
+        return await original_post(url, **kwargs)
+
+    http.post = revoke_after_start
+
+    class RevocableExecutor(FakeExecutor):
+        """模拟等待控制面取消的长任务。"""
+
+        async def execute(self, request):
+            """保持执行直至监测循环取消。"""
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+    settings = SimpleNamespace(
+        plane_request_timeout_seconds=3.0,
+        plane_rws_api_url="http://plane",
+        plane_rws_runner_url="http://runner",
+        plane_rws_runner_token="runner-service-token",
+    )
+    runtime = PlaneRWSRuntime(settings, store, lambda: _async_value(RevocableExecutor()), http_client_factory=lambda **kw: http)
+    with pytest.raises(PlaneRWSRuntimeError, match="revoked"):
+        await runtime.execute(run_id="run-1", token="short-term-token-value", argv=["/bin/true"])
+    assert cancelled.is_set()
+    assert http.calls[-1]["url"].endswith("/binding.execution-finish")
 
 
 @pytest.mark.asyncio

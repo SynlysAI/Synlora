@@ -1,7 +1,7 @@
 """Plane Research Workspace 短期运行绑定适配层。"""
 from __future__ import annotations
 
-import logging
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
@@ -9,9 +9,6 @@ from typing import Any
 
 import httpx
 from synlys_harness import ExecutionRequest, ReadOnlyResource
-
-_LOGGER = logging.getLogger(__name__)
-
 
 class PlaneRWSRuntimeError(RuntimeError):
     """Plane/Runner 绑定失效或执行失败；调用方不得回落个人工作区。"""
@@ -79,28 +76,40 @@ class PlaneRWSRuntime:
         )
         async with self._http_client_factory(timeout=control_timeout) as client:
             binding = await self._verify_plane_binding(client, run_id, token)
-            runner_binding = await self._resolve_runner_binding(client, binding, token)
-            assets_path = await self._materialize_assets(
-                client, runner_binding, binding.get("asset_items") or [], token
-            )
             executor = await self._executor_resolver()
             if str(getattr(executor, "sandbox", "")) != "docker":
                 raise PlaneRWSRuntimeError("Plane RWS 运行必须使用 Docker 沙箱")
-            request = ExecutionRequest(
-                argv=tuple(argv),
-                workspace_root=Path(str(runner_binding["workspace_path"])),
-                cwd=cwd,
-                resources=(ReadOnlyResource(Path(assets_path), PurePosixPath("/assets")),),
-                timeout_s=float(timeout_s),
-                execution_id=f"rws-{run_id}",
-            )
-            _LOGGER.info(
-                "Plane RWS 共享执行路径 run_id=%s workspace=%s assets=%s",
-                run_id,
-                request.workspace_root,
-                request.resources[0].source,
-            )
-            result = await executor.execute(request)
+            identity = {"grant_id": binding["grant_id"], "token": token}
+            await self._runner_request(client, "binding.execution-start", identity)
+            try:
+                runner_binding = await self._resolve_runner_binding(client, binding, token)
+                assets_path = await self._materialize_assets(
+                    client, runner_binding, binding.get("asset_items") or [], token
+                )
+                request = ExecutionRequest(
+                    argv=tuple(argv),
+                    workspace_root=Path(str(runner_binding["workspace_path"])),
+                    cwd=cwd,
+                    resources=(ReadOnlyResource(Path(assets_path), PurePosixPath("/assets")),),
+                    timeout_s=float(timeout_s),
+                    execution_id=f"rws-{run_id}",
+                )
+                result = await self._execute_monitored(client, executor, request, binding, token)
+            finally:
+                # 先等待执行器完成取消及创建线程收尾，再确认容器已删除。
+                # Runner 的占用登记持久化保存；清理失败时禁止转交目录。
+                async def confirm_stopped():
+                    """确认容器停止后才撤销不可转交的执行占用。"""
+                    if not await executor.cleanup_execution(f"rws-{run_id}"):
+                        raise PlaneRWSRuntimeError("沙箱尚未停止，目录继续保留任务占用")
+                    await self._runner_request(client, "binding.execution-finish", identity)
+
+                cleanup = asyncio.create_task(confirm_stopped())
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+                    raise
             finalize = await self._finalize_plane_run(
                 client, run_id, token, request_id, 0 if result.ok else 1, changed_paths, outputs
             )
@@ -125,6 +134,36 @@ class PlaneRWSRuntime:
         except ValueError:
             await self._store.update("plane_rws_runs", run_id, projection)
         return projection
+
+    async def _execute_monitored(self, client, executor, request, binding, token):
+        """监测撤销或到期，并等待执行器停止后才结束当前任务。
+
+        Args:
+            client: 本次运行的控制面客户端。
+            executor: 提供取消清理语义的 Docker 执行器。
+            request: 服务端组装的沙箱请求。
+            binding: Plane 验证过的任务授权。
+            token: 仅在内存中使用的短期令牌。
+
+        Returns:
+            已停止沙箱的执行结果。
+        """
+        task = asyncio.create_task(executor.execute(request))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=2.0)
+                if done:
+                    return await task
+                await self._resolve_runner_binding(client, binding, token)
+        finally:
+            if not task.done():
+                task.cancel()
+            stopped = asyncio.gather(task, return_exceptions=True)
+            try:
+                await asyncio.shield(stopped)
+            except asyncio.CancelledError:
+                await stopped
+                raise
 
     async def _verify_plane_binding(self, client: httpx.AsyncClient, run_id: str, token: str) -> dict:
         """向 Plane 复验 binding，绝不信任请求方传入的绑定对象。"""
