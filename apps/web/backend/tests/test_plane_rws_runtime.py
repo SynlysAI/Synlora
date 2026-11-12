@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
@@ -131,6 +132,7 @@ async def test_rws_run_uses_verified_shared_workspace_and_assets(store, tmp_path
     assert result["execution_assets"] == str(assets)
     assert result["plane_receipt"]["run"]["status"] == "SUCCEEDED"
     request = executor.requests[0]
+    assert request.execution_id == f"rws-{hashlib.sha256(b'run-1').hexdigest()}"
     assert request.workspace_root == workspace.resolve()
     assert factory_kwargs["timeout"] == 1800.0 + 600.0
     assert request.resources[0].target == PurePosixPath("/assets")
