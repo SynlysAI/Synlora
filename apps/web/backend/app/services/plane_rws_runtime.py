@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
@@ -70,6 +71,7 @@ class PlaneRWSRuntime:
         changed_paths = list(changed_paths or [])
         outputs = dict(outputs or {})
         request_id = request_id or f"synlora-{run_id}-{int(time.time())}"
+        execution_id = f"rws-{hashlib.sha256(run_id.encode()).hexdigest()}"
         control_timeout = max(
             float(self._settings.plane_request_timeout_seconds),
             float(timeout_s) + 600.0,
@@ -92,7 +94,7 @@ class PlaneRWSRuntime:
                     cwd=cwd,
                     resources=(ReadOnlyResource(Path(assets_path), PurePosixPath("/assets")),),
                     timeout_s=float(timeout_s),
-                    execution_id=f"rws-{run_id}",
+                    execution_id=execution_id,
                 )
                 result = await self._execute_monitored(client, executor, request, binding, token)
             finally:
@@ -100,7 +102,7 @@ class PlaneRWSRuntime:
                 # Runner 的占用登记持久化保存；清理失败时禁止转交目录。
                 async def confirm_stopped():
                     """确认容器停止后才撤销不可转交的执行占用。"""
-                    if not await executor.cleanup_execution(f"rws-{run_id}"):
+                    if not await executor.cleanup_execution(execution_id):
                         raise PlaneRWSRuntimeError("沙箱尚未停止，目录继续保留任务占用")
                     await self._runner_request(client, "binding.execution-finish", identity)
 
