@@ -23,7 +23,7 @@ def _settings(**kw) -> Settings:
     return Settings(**base)
 
 
-def _plane_headers(app, plane_user_id: str = "uuid-1") -> dict:
+def _plane_headers(app, plane_user_id: str = "uuid-1", email: str = "alice@plane.test") -> dict:
     """构造 OpenEVA 登录 token 头。"""
     token = issue_token(
         {
@@ -32,6 +32,7 @@ def _plane_headers(app, plane_user_id: str = "uuid-1") -> dict:
             "role": "user",
             "auth": "plane",
             "plane_user_id": plane_user_id,
+            "email": email,
         },
         app.state.settings,
     )
@@ -125,6 +126,41 @@ async def test_status_plane_bound_shows_linked_account(link_app, client):
     assert body["linked_display_name"] == "xiaoxu-显示名"
 
 
+async def test_status_falls_back_to_stored_username(link_app, client):
+    """绑定账户已查不到（如已删除）：回退记录里落库的用户名，不显示空。"""
+    app, store = link_app
+    await store.insert("plane_account_links", {
+        "_id": "plane-self-uuid-1", "account_link_id": "plane-self-uuid-1",
+        "plane_workspace_id": "", "plane_user_id": "uuid-1",
+        "synlora_user_id": "ghost", "synlora_username": "ghost",
+        "delegated_subject": "plane:uuid-1", "core": "plane", "created_at": 1,
+    })
+    r = await client.get("/api/v1/me/account-link", headers=_plane_headers(app))
+    assert r.status_code == 200
+    assert r.json()["linked_username"] == "ghost"
+
+
+async def test_status_backfills_plane_email_from_token(link_app, client):
+    """存量记录缺 plane_email：OpenEVA 身份访问时自愈补写并随响应返回。"""
+    app, store = link_app
+    await _seed_account(store)
+    await store.insert("plane_account_links", {
+        "_id": "plane-self-uuid-1", "account_link_id": "plane-self-uuid-1",
+        "plane_workspace_id": "", "plane_user_id": "uuid-1",
+        "synlora_user_id": "xiaoxu", "synlora_username": "xiaoxu",
+        "delegated_subject": "plane:uuid-1", "core": "plane",
+        "plane_email": "", "created_at": 1,
+    })
+    r = await client.get(
+        "/api/v1/me/account-link",
+        headers=_plane_headers(app, email="alice@plane.test"),
+    )
+    assert r.status_code == 200
+    assert r.json()["plane_email"] == "alice@plane.test"
+    link = await store.get("plane_account_links", "plane-self-uuid-1")
+    assert link["plane_email"] == "alice@plane.test"
+
+
 # ---------- 绑定：OpenEVA 登录 → 绑本方账户（core=plane） ----------
 
 
@@ -146,6 +182,7 @@ async def test_bind_ai4ms_from_plane_identity(link_app, client):
     assert link["delegated_subject"] == "plane:uuid-1"
     assert link["plane_user_id"] == "uuid-1"
     assert link["source"] == "self"
+    assert link["plane_email"] == "alice@plane.test"  # 从当前 OpenEVA token 补写
 
 
 async def test_bind_ai4ms_wrong_password_401(link_app, client):
@@ -317,3 +354,88 @@ async def test_sessions_merge_bidirectionally_after_bind(link_app, client):
     r3 = await client.get("/api/v1/sessions", headers=_ai4ms_headers(app, sub="stranger"))
     assert r3.status_code == 200
     assert r3.json() == []
+
+
+# ---------- mongodb 下 find_user_by_id 的 _id 形态兼容 ----------
+
+
+class _FakeCollection:
+    """记录查询序列的 users 集合替身。"""
+
+    def __init__(self, docs: dict) -> None:
+        self.docs = docs
+        self.queries: list = []
+
+    async def find_one(self, q: dict) -> dict | None:
+        self.queries.append(q["_id"])
+        return self.docs.get(q["_id"])
+
+
+class _FakeClient:
+    """motor 客户端替身（ai4ms.users → 同一集合）。"""
+
+    def __init__(self, coll: _FakeCollection) -> None:
+        self.coll = coll
+
+    def __getitem__(self, name: str):
+        if name == "ai4ms":
+            return self
+        return self.coll
+
+
+def _mongo_request(coll: _FakeCollection):
+    """构造 storage_backend=mongodb 的伪 request（客户端走缓存注入）。"""
+    import types
+
+    req = types.SimpleNamespace()
+    req.app = types.SimpleNamespace()
+    req.app.state = types.SimpleNamespace(
+        settings=_settings(storage_backend="mongodb"),
+        _mongo_users_client=_FakeClient(coll),
+    )
+    return req
+
+
+async def test_mongo_find_user_by_id_objectid():
+    """绑定记录存字符串而 ai4ms.users._id 是 ObjectId：候选重试命中。"""
+    from bson import ObjectId
+
+    from app.api.auth_api import find_user_by_id
+
+    oid = ObjectId("6a39ff914dec95d85f993e00")
+    coll = _FakeCollection({oid: {"_id": oid, "username": "xiaoxu"}})
+    account = await find_user_by_id(_mongo_request(coll), str(oid))
+    assert account is not None
+    assert account["username"] == "xiaoxu"
+    # 先按原字符串查、miss 后用 ObjectId 重试
+    assert coll.queries == [str(oid), oid]
+
+
+async def test_mongo_find_user_by_id_plain_string():
+    """_id 本就是字符串（如 sqlite 风格迁移）：首轮即命中。"""
+    from app.api.auth_api import find_user_by_id
+
+    coll = _FakeCollection({"xiaoxu": {"_id": "xiaoxu", "username": "xiaoxu"}})
+    account = await find_user_by_id(_mongo_request(coll), "xiaoxu")
+    assert account is not None
+    assert coll.queries == ["xiaoxu"]
+
+
+async def test_mongo_find_user_by_id_int():
+    """_id 是 int（门户旧库形态）：数字串回退 int 候选命中。"""
+    from app.api.auth_api import find_user_by_id
+
+    coll = _FakeCollection({42: {"_id": 42, "username": "xiaoxu"}})
+    account = await find_user_by_id(_mongo_request(coll), "42")
+    assert account is not None
+    assert coll.queries == ["42", 42]
+
+
+async def test_mongo_find_user_by_id_missing():
+    """查无此人：候选全部 miss 返回 None。"""
+    from app.api.auth_api import find_user_by_id
+
+    coll = _FakeCollection({})
+    account = await find_user_by_id(_mongo_request(coll), "6a39ff914dec95d85f993e00")
+    assert account is None
+    assert len(coll.queries) == 2  # 字符串 + ObjectId，不含 int（非纯数字）

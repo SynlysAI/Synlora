@@ -98,14 +98,41 @@ async def find_user(request: Request, username: str) -> dict | None:
     return await _find_user_sqlite(request, username)
 
 
+def _mongo_id_candidates(user_id: str) -> list:
+    """按 _id 可能的存储形态生成候选查询值（原字符串 / ObjectId / int）。
+
+    绑定记录里 ``synlora_user_id`` 与 token ``sub`` 一致存**字符串**，而
+    ai4ms.users 的 ``_id`` 由 AI4MS 门户原生写入时是 **ObjectId**（也可能是
+    int）——直接按字符串查会 miss，需逐候选尝试。
+
+    Args:
+        user_id: 字符串形态的用户 _id。
+
+    Returns:
+        候选值列表（首个即原值）。
+    """
+    candidates = [user_id]
+    if len(user_id) == 24 and all(c in "0123456789abcdefABCDEF" for c in user_id):
+        from bson import ObjectId  # 延迟导入：非 prod 无需装 bson
+
+        try:
+            candidates.append(ObjectId(user_id))
+        except Exception:  # 无效 ObjectId（如全 0）直接跳过
+            pass
+    if user_id.isdigit():
+        candidates.append(int(user_id))
+    return candidates
+
+
 async def find_user_by_id(request: Request, user_id: str) -> dict | None:
     """按主键 _id 查用户（mongodb 查 ai4ms.users；sqlite 查 local_users）。
 
-    供账户绑定等已知 _id（而非用户名）的场景使用。
+    供账户绑定等已知 _id（而非用户名）的场景使用。mongodb 下 ``_id`` 形态
+    可能与传入字符串不同（ObjectId/int），按候选依次尝试。
 
     Args:
         request: 请求对象。
-        user_id: 用户文档 _id。
+        user_id: 用户文档 _id（字符串形态）。
 
     Returns:
         用户文档；未找到返回 None。
@@ -118,7 +145,11 @@ async def find_user_by_id(request: Request, user_id: str) -> dict | None:
         if client is None:
             client = AsyncIOMotorClient(settings.mongodb_uri)
             request.app.state._mongo_users_client = client
-        return await client["ai4ms"]["users"].find_one({"_id": user_id})
+        for candidate in _mongo_id_candidates(user_id):
+            account = await client["ai4ms"]["users"].find_one({"_id": candidate})
+            if account is not None:
+                return account
+        return None
     store = getattr(request.app.state, "store", None)
     if store is None:
         return None

@@ -86,8 +86,21 @@ async def get_account_link(
         account = await find_user_by_id(
             request, str(link.get("synlora_user_id") or "")
         )
-        linked_username = str(account.get("username") or "") if account else ""
-        linked_display = str(account.get("display_name") or "") if account else ""
+        if account is not None:
+            linked_username = str(account.get("username") or "")
+            linked_display = str(account.get("display_name") or "")
+        if not linked_username:
+            # 账户暂查不到（已删除等）时回退绑定记录落库的用户名
+            linked_username = str(link.get("synlora_username") or "")
+        # 存量自愈：早期从 OpenEVA 侧发起的绑定不落 plane_email，借本次
+        # OpenEVA 身份访问补写（AI4MS 侧设置页展示邮箱而非 plane_user_id）
+        token_email = str(user.get("email") or "")
+        if plane_user_id and token_email and not str(link.get("plane_email") or ""):
+            link = await store.update(
+                "plane_account_links",
+                str(link.get("_id") or link.get("account_link_id") or ""),
+                {"plane_email": token_email},
+            ) or link
     return {
         # 当前登录身份类型：plane = 网页 OpenEVA 登录；ai4ms = 本方账户登录
         "identity_kind": "plane" if plane_user_id else "ai4ms",
@@ -128,6 +141,8 @@ async def bind_account_link(
     if body.kind == "ai4ms":
         if not plane_user_id:
             raise HTTPException(422, "当前已是本方账户登录，无需绑定本方账户")
+        # 当前是 OpenEVA 登录：token 自带登录邮箱，落库供 AI4MS 侧展示
+        plane_email = str(user.get("email") or "")
         username = body.username.strip()
         if not username or not body.password:
             raise HTTPException(401, "用户名或密码错误")
