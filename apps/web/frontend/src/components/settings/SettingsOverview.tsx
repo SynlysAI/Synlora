@@ -1,4 +1,5 @@
 import { PageTopBar, ToastHost } from '@/components/layout'
+import AccountLinkSection from '@/components/settings/AccountLinkSection'
 import { appRoutePath, type AdminTab, type AppRoute } from '@/routing/route'
 import { useRouterStore } from '@/routing/router'
 import { useAuthStore } from '@/stores/auth'
@@ -70,6 +71,8 @@ export default function SettingsOverview() {
             </dl>
             {renderLinks(personalLinks)}
           </section>
+
+          <AccountLinkSection />
 
           <section className="mb-8">
             <h2 className="text-[14px] font-semibold">能力中心</h2>

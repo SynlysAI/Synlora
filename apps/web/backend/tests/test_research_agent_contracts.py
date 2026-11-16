@@ -13,7 +13,11 @@ def _delegated_body() -> dict:
 
 
 async def test_delegated_token_requires_plane_service_token(app, client, monkeypatch):
-    """服务凭证正确时代签短效用户 token，错误时 fail closed。"""
+    """服务凭证正确时代签短效用户 token，错误时 fail closed。
+
+    未匹配本方账户时回退 sub 归一为 plane:<plane_user_id>（与 plane-login
+    网页登录同一身份）；响应 subject 仍回显 external_subject。
+    """
     monkeypatch.setattr(app.state.settings, "plane_service_token", "service-token", raising=False)
     response = await client.post(
         "/api/v1/research/delegated-token",
@@ -25,7 +29,8 @@ async def test_delegated_token_requires_plane_service_token(app, client, monkeyp
     assert payload["schema_version"] == "plane-delegated-auth.v1"
     assert payload["subject"] == "u_synlora"
     parsed = parse_token(payload["token"], app.state.settings)
-    assert parsed is not None and parsed["sub"] == "u_synlora"
+    assert parsed is not None and parsed["sub"] == "plane:user-1"
+    assert parsed["auth"] == "plane"
 
     rejected = await client.post(
         "/api/v1/research/delegated-token",
