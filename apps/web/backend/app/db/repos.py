@@ -111,6 +111,40 @@ class PlaneAccountLinkRepo(BaseRepo):
         """
         return await self.list(filters={"synlora_user_id": user_id}, sort=[("created_at", -1)])
 
+    async def list_for_plane_user(self, plane_user_id: str) -> list[dict]:
+        """列出一名 Plane 用户（OpenEVA 身份）的账户绑定。
+
+        Args:
+            plane_user_id: Plane 用户 uuid。
+
+        Returns:
+            按创建时间倒序的绑定文档列表。
+        """
+        return await self.list(filters={"plane_user_id": plane_user_id}, sort=[("created_at", -1)])
+
+    @staticmethod
+    def alias_subjects(link: dict) -> set[str]:
+        """计算一条绑定所连通的全部身份 subject（会话可见性合并的依据）。
+
+        一条绑定把三个 subject 连成一组：绑定的本方账户 ``synlora_user_id``、
+        OpenEVA 身份 ``plane:<plane_user_id>``、历史委托身份 ``delegated_subject``
+        （repair 时期格式，可能为空）。组内任一身份登录都能看到全组会话。
+
+        Args:
+            link: 绑定文档。
+
+        Returns:
+            非空 subject 集合。
+        """
+        subjects = {
+            str(link.get("synlora_user_id") or ""),
+            str(link.get("delegated_subject") or ""),
+        }
+        pid = str(link.get("plane_user_id") or "")
+        if pid:
+            subjects.add(f"plane:{pid}")
+        return {s for s in subjects if s}
+
 
 class ProviderRepo(BaseRepo):
     """模型 provider 配置（api_key 写前 Fernet 加密）。"""

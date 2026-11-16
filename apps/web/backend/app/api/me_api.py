@@ -1,15 +1,224 @@
 """「我的」端点：用户自建技能与用户自建专家，以及已安装插件的个人视图。"""
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from app.api.deps import get_current_user, validate_tool_whitelist
+from app.api.auth_api import find_user, find_user_by_id
+from app.api.deps import get_current_user, get_settings, validate_tool_whitelist
 from app.catalog.api import get_capability_service
+from app.core.auth import verify_password
+from app.services.plane_auth import PlaneAuthError, authenticate as plane_authenticate
 from app.services.skill_service import SkillNameTaken, SkillNotFound
 
 router = APIRouter(prefix="/api/v1/me", tags=["me"])
+
+
+class AccountLinkBindBody(BaseModel):
+    """自服务账户绑定请求体（绑定对方账户，需对方密码证明所有权）。
+
+    Attributes:
+        kind: 对方账户类型："ai4ms"（当前 OpenEVA 登录，绑本方账户）或
+            "plane"（当前本方登录，绑 OpenEVA 账号）。
+        username: 对方 AI4MS 用户名（kind=ai4ms 时必填）。
+        email: 对方 OpenEVA 登录邮箱（kind=plane 时必填）。
+        password: 对方账户明文密码。
+    """
+
+    kind: str
+    username: str = ""
+    email: str = ""
+    password: str
+
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        """只接受两种绑定方向。"""
+        if value not in ("ai4ms", "plane"):
+            raise ValueError("kind 必须是 ai4ms 或 plane")
+        return value
+
+
+def _plane_identity(user: dict) -> str:
+    """从 token payload 提取 plane_user_id（网页 OpenEVA 登录自带；否则空）。"""
+    pid = str(user.get("plane_user_id") or "")
+    if not pid and str(user.get("sub", "")).startswith("plane:"):
+        pid = str(user.get("sub"))[len("plane:"):]
+    return pid
+
+
+def _store_or_503(request: Request):
+    """取 store（未就绪 503）。"""
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        raise HTTPException(503, "存储未就绪")
+    return store
+
+
+async def _link_for_plane_user(store, plane_user_id: str) -> dict | None:
+    """按 plane_user_id 取该 Plane 用户的绑定（一人一绑，取第一条）。"""
+    links = await store.list(
+        "plane_account_links", filters={"plane_user_id": plane_user_id}
+    )
+    return links[0] if links else None
+
+
+@router.get("/account-link")
+async def get_account_link(
+    request: Request, user=Depends(get_current_user)
+) -> dict:
+    """当前账户的绑定状态（供设置页展示）。"""
+    store = _store_or_503(request)
+    plane_user_id = _plane_identity(user)
+    if plane_user_id:
+        link = await _link_for_plane_user(store, plane_user_id)
+    else:
+        links = await store.list(
+            "plane_account_links", filters={"synlora_user_id": user["sub"]}
+        )
+        link = links[0] if links else None
+    linked_username = ""
+    linked_display = ""
+    if link is not None:
+        account = await find_user_by_id(
+            request, str(link.get("synlora_user_id") or "")
+        )
+        linked_username = str(account.get("username") or "") if account else ""
+        linked_display = str(account.get("display_name") or "") if account else ""
+    return {
+        # 当前登录身份类型：plane = 网页 OpenEVA 登录；ai4ms = 本方账户登录
+        "identity_kind": "plane" if plane_user_id else "ai4ms",
+        "bound": link is not None,
+        # 核心方：绑定后数据以谁为准（缺省 ai4ms = repair 时期存量语义）
+        "core": str(link.get("core") or "ai4ms") if link else "",
+        "plane_user_id": plane_user_id or None,
+        "plane_email": str(link.get("plane_email") or "") if link else "",
+        "linked_username": linked_username,
+        "linked_display_name": linked_display,
+        "linked_plane_user_id": str(link.get("plane_user_id") or "") if link else "",
+    }
+
+
+@router.post("/account-link")
+async def bind_account_link(
+    body: AccountLinkBindBody,
+    request: Request,
+    user=Depends(get_current_user),
+    settings=Depends(get_settings),
+) -> dict:
+    """自服务绑定另一侧账户：以**当前登录身份为核心**（core 由登录方决定）。
+
+    - 当前 OpenEVA 登录 + kind=ai4ms：验证本方账户密码 → core=plane（OpenEVA
+      身份不变，仅合并两边会话可见性）
+    - 当前本方登录 + kind=plane：代理验证 OpenEVA 邮箱密码 → core=ai4ms
+      （OpenEVA 登录与云端智能体落到当前账户身份）
+
+    一对一约束：任一侧已绑定不同账户 → 409。重复绑定同一对 → 幂等更新。
+
+    Raises:
+        HTTPException: 对方凭证错误（401）、已绑定其他账户（409）、
+            OpenEVA 不可用（502/503）、存储未就绪（503）。
+    """
+    store = _store_or_503(request)
+    plane_user_id = _plane_identity(user)
+    plane_email = ""
+    if body.kind == "ai4ms":
+        if not plane_user_id:
+            raise HTTPException(422, "当前已是本方账户登录，无需绑定本方账户")
+        username = body.username.strip()
+        if not username or not body.password:
+            raise HTTPException(401, "用户名或密码错误")
+        matched = await find_user(request, username)
+        if matched is None or not verify_password(
+            body.password, str(matched.get("password_hash", ""))
+        ):
+            raise HTTPException(401, "用户名或密码错误")
+        if str(matched.get("status", "active")) != "active":
+            raise HTTPException(401, "账户已禁用")
+        target_user_id = str(matched.get("_id", ""))
+        target_username = str(matched.get("username") or username)
+        core = "plane"
+    else:
+        if plane_user_id:
+            raise HTTPException(422, "当前已是 OpenEVA 登录，无需绑定 OpenEVA 账号")
+        email = body.email.strip().lower()
+        if not email or "@" not in email or not body.password:
+            raise HTTPException(401, "邮箱或密码错误")
+        try:
+            profile = await plane_authenticate(email, body.password, settings)
+        except PlaneAuthError as exc:
+            raise HTTPException(exc.status_code, exc.message)
+        plane_user_id = profile.plane_user_id
+        plane_email = profile.email  # 存验证通过的实际邮箱（展示用）
+        target_user_id = str(user["sub"])
+        target_username = str(user.get("username") or "")
+        core = "ai4ms"
+
+    # 一对一冲突校验（两侧都查；同一对幂等放行）
+    by_plane = await _link_for_plane_user(store, plane_user_id)
+    if by_plane is not None and str(by_plane.get("synlora_user_id")) != target_user_id:
+        raise HTTPException(409, "该 OpenEVA 账号已绑定其他账户，请先解绑")
+    by_account = (
+        await store.list(
+            "plane_account_links", filters={"synlora_user_id": target_user_id}
+        )
+    )
+    for link in by_account:
+        if str(link.get("plane_user_id")) != plane_user_id:
+            raise HTTPException(409, "该账户已绑定其他 OpenEVA 账号，请先解绑")
+
+    record_id = f"plane-self-{plane_user_id}"
+    fields = {
+        "account_link_id": record_id,
+        "plane_workspace_id": "",
+        "plane_user_id": plane_user_id,
+        "synlora_user_id": target_user_id,
+        # delegated_subject 指向该 Plane 用户的 OpenEVA 身份 sub：
+        # 会话别名机制以此合并两边会话可见性
+        "delegated_subject": f"plane:{plane_user_id}",
+        "core": core,
+        "plane_email": plane_email,
+        "synlora_username": target_username,
+        "source": "self",
+        "updated_at": int(time.time()),
+    }
+    existing = await store.get("plane_account_links", record_id)
+    if existing is not None:
+        await store.update("plane_account_links", record_id, fields)
+    else:
+        await store.insert(
+            "plane_account_links", {"_id": record_id, "created_at": int(time.time()), **fields}
+        )
+    return {"bound": True, "core": core, "account_link_id": record_id}
+
+
+@router.delete("/account-link")
+async def unbind_account_link(
+    request: Request, user=Depends(get_current_user)
+) -> dict:
+    """解绑当前身份关联的绑定（解绑后不再合并会话，数据不受影响）。"""
+    store = _store_or_503(request)
+    plane_user_id = _plane_identity(user)
+    removed = 0
+    if plane_user_id:
+        link = await _link_for_plane_user(store, plane_user_id)
+        if link is not None:
+            await store.delete(
+                "plane_account_links", str(link.get("_id") or link.get("account_link_id"))
+            )
+            removed += 1
+    links = await store.list(
+        "plane_account_links", filters={"synlora_user_id": user["sub"]}
+    )
+    for link in links:
+        await store.delete(
+            "plane_account_links", str(link.get("_id") or link.get("account_link_id"))
+        )
+        removed += 1
+    return {"bound": False, "removed": removed}
 
 
 class MySkillBody(BaseModel):

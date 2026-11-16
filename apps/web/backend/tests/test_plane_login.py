@@ -200,15 +200,71 @@ async def test_plane_login_issues_token_with_plane_sub(plane_app, client, monkey
     assert payload["exp"] - payload["iat"] == PLANE_LOGIN_TTL_HOURS * 3600
 
 
-async def test_plane_login_uses_account_link_when_bound(plane_app, client, monkeypatch):
-    """已有 plane_account_links 绑定时收敛到绑定的 Synlora 账户。"""
-    _, store = plane_app
+async def test_plane_login_converges_on_ai4ms_core_link(plane_app, client, monkeypatch):
+    """core=ai4ms（含缺省的存量 repair 记录）且账户有效时收敛到绑定账户。"""
+    app, store = plane_app
+    await store.insert("local_users", {
+        "_id": "xiaoxu", "username": "xiaoxu",
+        "password_hash": "x", "display_name": "小绪",
+    })
     await store.insert("plane_account_links", {
         "_id": "link-1",
         "account_link_id": "link-1",
         "plane_workspace_id": "ws-1",
         "plane_user_id": "uuid-1",
         "synlora_user_id": "xiaoxu",
+        "delegated_subject": "plane-delegated-ws-1-user-uuid-1",
+        "created_at": 1,  # 无 core 字段 = 存量记录，按 ai4ms 核心对待
+    })
+    _patch_transport(monkeypatch, _mock_plane_transport)
+    r = await client.post(
+        "/api/v1/auth/plane-login",
+        json={"email": "alice@plane.test", "password": "pw"},
+    )
+    assert r.status_code == 200
+    payload = parse_token(r.json()["token"], app.state.settings)
+    assert payload["sub"] == "xiaoxu"
+    assert payload["username"] == "xiaoxu"  # 收敛时用户名取账户名
+    assert payload["plane_user_id"] == "uuid-1"  # 保留来源标记
+
+
+async def test_plane_login_keeps_plane_identity_for_plane_core_link(
+    plane_app, client, monkeypatch
+):
+    """core=plane 的绑定不改登录身份（仅合并会话可见性）。"""
+    app, store = plane_app
+    await store.insert("local_users", {
+        "_id": "xiaoxu", "username": "xiaoxu", "password_hash": "x",
+    })
+    await store.insert("plane_account_links", {
+        "_id": "link-2",
+        "account_link_id": "link-2",
+        "plane_workspace_id": "",
+        "plane_user_id": "uuid-1",
+        "synlora_user_id": "xiaoxu",
+        "delegated_subject": "plane:uuid-1",
+        "core": "plane",
+        "created_at": 1,
+    })
+    _patch_transport(monkeypatch, _mock_plane_transport)
+    r = await client.post(
+        "/api/v1/auth/plane-login",
+        json={"email": "alice@plane.test", "password": "pw"},
+    )
+    assert r.status_code == 200
+    payload = parse_token(r.json()["token"], app.state.settings)
+    assert payload["sub"] == "plane:uuid-1"
+
+
+async def test_plane_login_stale_link_falls_back(plane_app, client, monkeypatch):
+    """core=ai4ms 绑定但账户已不存在 → 回落 OpenEVA 身份。"""
+    app, store = plane_app
+    await store.insert("plane_account_links", {
+        "_id": "link-3",
+        "account_link_id": "link-3",
+        "plane_workspace_id": "ws-1",
+        "plane_user_id": "uuid-1",
+        "synlora_user_id": "ghost",
         "delegated_subject": "plane-delegated-ws-1-user-uuid-1",
         "created_at": 1,
     })
@@ -218,9 +274,8 @@ async def test_plane_login_uses_account_link_when_bound(plane_app, client, monke
         json={"email": "alice@plane.test", "password": "pw"},
     )
     assert r.status_code == 200
-    app, _ = plane_app
     payload = parse_token(r.json()["token"], app.state.settings)
-    assert payload["sub"] == "xiaoxu"
+    assert payload["sub"] == "plane:uuid-1"
 
 
 async def test_plane_login_bad_credentials_401(plane_app, client, monkeypatch):
@@ -337,15 +392,22 @@ async def test_delegated_token_fallback_sub_normalized(plane_app, monkeypatch):
     assert payload["plane_delegated"] is True
 
 
-async def test_delegated_token_linked_still_uses_linked_user(plane_app):
-    """匹配到本方账户（subject_username 命中 sqlite local_users）时仍发绑定身份。"""
+async def test_delegated_token_ai4ms_core_link_converges(plane_app):
+    """core=ai4ms 绑定且账户有效：委托登录落到绑定账户身份（与 plane-login 同口径）。"""
     app, _ = plane_app
     app.state.settings = _settings(plane_service_token="svc-tok")
     settings = app.state.settings
-    from app.core.auth import hash_password
     await app.state.store.insert("local_users", {
-        "_id": "u-1", "username": "57f58623223a4725",
-        "password_hash": hash_password("x"),  # delegated 不验密码，占位即可
+        "_id": "u-1", "username": "57f58623223a4725", "password_hash": "x",
+    })
+    await app.state.store.insert("plane_account_links", {
+        "_id": "plane-ws-1-uuid-1",
+        "account_link_id": "plane-ws-1-uuid-1",
+        "plane_workspace_id": "ws-1",
+        "plane_user_id": "uuid-1",
+        "synlora_user_id": "u-1",
+        "delegated_subject": "plane-delegated-ws-1-user-uuid-1",
+        "created_at": 1,
     })
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post(
@@ -360,3 +422,30 @@ async def test_delegated_token_linked_still_uses_linked_user(plane_app):
     assert payload["sub"] == "u-1"
     assert body["linked_user_id"] == "u-1"
     assert payload["plane_delegated"] is True
+
+
+async def test_delegated_token_plane_core_keeps_plane_identity(plane_app):
+    """core=plane 绑定：委托登录保持 OpenEVA 身份（不收敛）。"""
+    app, _ = plane_app
+    app.state.settings = _settings(plane_service_token="svc-tok")
+    settings = app.state.settings
+    await app.state.store.insert("plane_account_links", {
+        "_id": "plane-self-uuid-1",
+        "account_link_id": "plane-self-uuid-1",
+        "plane_workspace_id": "",
+        "plane_user_id": "uuid-1",
+        "synlora_user_id": "u-9",
+        "delegated_subject": "plane:uuid-1",
+        "core": "plane",
+        "created_at": 1,
+    })
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post(
+            "/api/v1/research/delegated-token",
+            json=_delegated_body(),
+            headers={"Authorization": "Bearer svc-tok"},
+        )
+    assert r.status_code == 200
+    payload = parse_token(r.json()["token"], settings)
+    assert payload is not None
+    assert payload["sub"] == "plane:uuid-1"

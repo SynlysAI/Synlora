@@ -27,8 +27,12 @@ async def _seed_local_user(app, username: str = "fangyikai") -> None:
 
 
 @pytest.mark.asyncio
-async def test_delegated_username_creates_immutable_real_account_link(app, client, monkeypatch):
-    """精确用户名首次绑定后，后续 token 归属真实 Synlora 用户。"""
+async def test_delegated_username_no_longer_drives_identity(app, client, monkeypatch):
+    """subject_username 不再参与身份解析（Plane username 是随机 hex 从未命中）。
+
+    身份恒为 plane:<plane_user_id>，也不自动创建绑定；收敛只能经
+    plane_account_links（core=ai4ms）发生，见 test_plane_login.py。
+    """
     await _seed_local_user(app)
     monkeypatch.setattr(app.state.settings, "plane_service_token", "service-token", raising=False)
     body = {
@@ -37,7 +41,7 @@ async def test_delegated_username_creates_immutable_real_account_link(app, clien
         "workspace_id": "ws-1",
         "plane_user_id": "plane-user-1",
         "external_subject": "plane-ws-1-user-1",
-        "subject_username": "fangyikai",
+        "subject_username": "fangyikai",  # 恰好与本地用户同名：也不改身份
     }
 
     response = await client.post(
@@ -47,23 +51,14 @@ async def test_delegated_username_creates_immutable_real_account_link(app, clien
     )
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert payload["linked_user_id"] == "fangyikai"
+    assert payload["linked_user_id"] == ""
     parsed = parse_token(payload["token"], app.state.settings)
     assert parsed is not None
-    assert parsed["sub"] == "fangyikai"
+    assert parsed["sub"] == "plane:plane-user-1"
     assert parsed["plane_delegated"] is True
     assert parsed["exp"] - parsed["iat"] <= 3600
-    link = await app.state.store.get("plane_account_links", "plane-link-1")
-    assert link["synlora_user_id"] == "fangyikai"
-
-    body["subject_username"] = "other-user"
-    conflict = await client.post(
-        "/api/v1/research/delegated-token",
-        headers={"Authorization": "Bearer service-token"},
-        json=body,
-    )
-    assert conflict.status_code == 200
-    assert conflict.json()["linked_user_id"] == ""
+    # 不再自动创建绑定
+    assert await app.state.store.get("plane_account_links", "plane-link-1") is None
 
 
 @pytest.mark.asyncio

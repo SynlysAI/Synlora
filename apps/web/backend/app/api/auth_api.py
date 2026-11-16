@@ -98,6 +98,33 @@ async def find_user(request: Request, username: str) -> dict | None:
     return await _find_user_sqlite(request, username)
 
 
+async def find_user_by_id(request: Request, user_id: str) -> dict | None:
+    """按主键 _id 查用户（mongodb 查 ai4ms.users；sqlite 查 local_users）。
+
+    供账户绑定等已知 _id（而非用户名）的场景使用。
+
+    Args:
+        request: 请求对象。
+        user_id: 用户文档 _id。
+
+    Returns:
+        用户文档；未找到返回 None。
+    """
+    settings: Settings = request.app.state.settings
+    if settings.storage_backend == "mongodb":
+        from motor.motor_asyncio import AsyncIOMotorClient  # 延迟导入：非 prod 无需装 motor
+
+        client = getattr(request.app.state, "_mongo_users_client", None)
+        if client is None:
+            client = AsyncIOMotorClient(settings.mongodb_uri)
+            request.app.state._mongo_users_client = client
+        return await client["ai4ms"]["users"].find_one({"_id": user_id})
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        return None
+    return await store.get("local_users", user_id)
+
+
 @router.post("/login")
 async def login(
     body: LoginBody, request: Request, settings=Depends(get_settings)
@@ -138,9 +165,10 @@ async def plane_login(
 ) -> dict:
     """Plane 账号登录：代理验证 Plane 邮箱密码后签发本方 token（不落库）。
 
-    身份归一：优先取 ``plane_account_links`` 里该 Plane 用户绑定的 Synlora 账户
-    （与委托登录/修复端点共享同一绑定表），未绑定时 ``sub = plane:<plane_user_id>``
-    ——与委托登录的回退身份一致，网页登录与 Plane 云端智能体落到同一身份。
+    身份按绑定的核心方分流：``plane_account_links`` 中该 Plane 用户存在
+    ``core=ai4ms`` 绑定（存量 repair 记录缺省即 ai4ms）且账户有效 → 落到绑定的
+    本方账户身份（与委托登录一致）；否则恒为 ``plane:<plane_user_id>``——
+    OpenEVA 为核心（core=plane）的绑定只合并会话可见性，不改登录身份。
 
     Raises:
         HTTPException: 邮箱密码错误/账号禁用（401/403/429）、Plane 不可用（502）、
@@ -154,7 +182,15 @@ async def plane_login(
     except PlaneAuthError as exc:
         raise HTTPException(exc.status_code, exc.message)
 
-    sub = f"plane:{profile.plane_user_id}"
+    payload = {
+        "sub": f"plane:{profile.plane_user_id}",
+        "username": profile.display_name or profile.email,
+        "role": "user",
+        "auth": "plane",
+        "plane_user_id": profile.plane_user_id,
+        "email": profile.email,
+    }
+    # core=ai4ms 的绑定：收敛到绑定账户（用户名取账户名，代签子平台凭证走快路径）
     store = getattr(request.app.state, "store", None)
     if store is not None:
         links = await store.list(
@@ -162,20 +198,20 @@ async def plane_login(
             filters={"plane_user_id": profile.plane_user_id},
         )
         for link in links:
-            linked = str(link.get("synlora_user_id") or "")
-            if linked:
-                # 绑定由修复端点/委托流程显式建立（一个 Plane 用户的所有绑定
-                # 指向同一 Synlora 账户），取第一条即定身份
-                sub = linked
-                break
-    payload = {
-        "sub": sub,
-        "username": profile.display_name or profile.email,
-        "role": "user",
-        "auth": "plane",
-        "plane_user_id": profile.plane_user_id,
-        "email": profile.email,
-    }
+            if str(link.get("core") or "ai4ms") != "ai4ms":
+                continue
+            account = await find_user_by_id(
+                request, str(link.get("synlora_user_id") or "")
+            )
+            if account is None or str(account.get("status", "active")) != "active":
+                continue  # 绑定账户已失效：回落 OpenEVA 身份
+            payload.update({
+                "sub": str(account.get("_id", "")),
+                "username": str(account.get("username") or payload["username"]),
+            })
+            if account.get("user_id"):
+                payload["ai4ms_user_id"] = str(account["user_id"])
+            break
     return {
         "token": issue_token(payload, settings, ttl_hours=PLANE_LOGIN_TTL_HOURS),
         "username": payload["username"],
@@ -189,16 +225,15 @@ async def me(
 ) -> dict:
     """当前用户信息（sqlite 模式直接回显；mongodb 模式回查 users 确认 status=active）。
 
-    Plane 来源身份（plane-login / 委托登录）不落 ``ai4ms.users``，跳过回查——
-    其存活性由签发时的 Plane 验证与 24h 短时效保证。
+    ``plane:``/``plane-delegated-`` 前缀身份（OpenEVA/委托登录，不在 users 表）
+    跳过回查，存活性由签发时验证与短时效保证；core=ai4ms 绑定落到的真实账户
+    身份仍走回查（禁用即失效）。
 
     Raises:
         HTTPException: mongodb 模式下用户不存在或已禁用（401）。
     """
     sub = str(user.get("sub", ""))
-    plane_identity = (
-        user.get("auth") == "plane" or sub.startswith(("plane:", "plane-delegated-"))
-    )
+    plane_identity = sub.startswith(("plane:", "plane-delegated-"))
     if (
         settings.storage_backend == "mongodb"
         and not plane_identity

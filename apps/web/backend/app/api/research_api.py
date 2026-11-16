@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
-from app.api.auth_api import find_user
+from app.api.auth_api import find_user, find_user_by_id
 from app.api.deps import get_current_user, get_settings
 from app.core.auth import issue_token
 from app.services.tool_registry import REGISTRY
@@ -178,7 +178,13 @@ async def delegated_token(
     request: Request,
     settings=Depends(get_settings),
 ) -> dict:
-    """Exchange a Plane service credential for a short-lived Synlora user token."""
+    """Exchange a Plane service credential for a short-lived Synlora user token.
+
+    身份按绑定的核心方分流（与 plane-login 同口径）：存在 ``core=ai4ms`` 绑定
+    （存量 repair 记录缺省即 ai4ms）且账户有效 → 绑定账户身份；否则恒为
+    ``plane:<plane_user_id>``（OpenEVA 为核心，网页登录与云端智能体同一身份）。
+    不再按 subject_username 匹配（Plane username 是随机 hex，从未命中）。
+    """
     service_token = settings.plane_service_token
     supplied = request.headers.get("Authorization", "")
     if (
@@ -187,106 +193,50 @@ async def delegated_token(
         or not hmac.compare_digest(supplied[7:], service_token)
     ):
         raise HTTPException(403, "Plane delegated auth is not configured or invalid")
-    linked_subject = body.external_subject
     linked_user_id = ""
     linked_username = body.external_subject
     store = getattr(request.app.state, "store", None)
-    username = body.subject_username.strip()
-    matched_user = (
-        await find_user(request, username) if store is not None and username else None
-    )
-    if (
-        matched_user is not None
-        and str(matched_user.get("status", "active")) == "active"
-    ):
-        candidate_user_id = str(matched_user.get("_id", ""))
-        existing_by_link = await store.get("plane_account_links", body.account_link_id)
-        existing_by_plane = await store.list(
+    if store is not None and body.plane_user_id:
+        links = await store.list(
             "plane_account_links",
-            filters={
-                "plane_workspace_id": body.workspace_id,
-                "plane_user_id": body.plane_user_id,
-            },
+            filters={"plane_user_id": body.plane_user_id},
         )
-        existing = existing_by_link or (
-            existing_by_plane[0] if existing_by_plane else None
-        )
-        # 两个唯一入口指向不同记录时说明绑定身份冲突，必须 fail-closed，
-        # 不能凭 username 提示改写既有不可变绑定。
-        identities = {
-            str(item.get("account_link_id"))
-            for item in (existing_by_link, *(existing_by_plane or []))
-            if isinstance(item, dict)
-        }
-        binding_conflict = len(identities) > 1 or (
-            existing is not None
-            and (
-                str(existing.get("plane_workspace_id")) != body.workspace_id
-                or str(existing.get("plane_user_id")) != body.plane_user_id
-                or str(existing.get("synlora_user_id")) != candidate_user_id
+        for link in links:
+            if str(link.get("core") or "ai4ms") != "ai4ms":
+                continue
+            account = await find_user_by_id(
+                request, str(link.get("synlora_user_id") or "")
             )
-        )
-        if binding_conflict:
-            matched_user = None
-        elif existing is None:
-            await store.insert(
-                "plane_account_links",
-                {
-                    "_id": body.account_link_id,
-                    "account_link_id": body.account_link_id,
-                    "plane_workspace_id": body.workspace_id,
-                    "plane_user_id": body.plane_user_id,
-                    "synlora_user_id": candidate_user_id,
-                    "delegated_subject": body.external_subject,
-                    "created_at": int(time.time()),
-                },
-            )
-            existing = await store.get("plane_account_links", body.account_link_id)
-        if str(existing.get("synlora_user_id")) == candidate_user_id:
-            linked_subject = body.external_subject
-            linked_user_id = candidate_user_id
-            linked_username = str(matched_user.get("username") or username)
-    token = (
-        issue_token(
-            {
-                "sub": linked_user_id,
-                "username": linked_username,
-                "role": "user",
-                "plane_delegated": True,
-                "plane_workspace_id": body.workspace_id,
-                "plane_user_id": body.plane_user_id,
-                "account_link_id": body.account_link_id,
-            },
-            settings,
-            ttl_hours=1,
-        )
-        if linked_user_id
-        else issue_token(
-            {
-                # 回退身份归一为 plane:<plane_user_id>（旧格式 external_subject
-                # 含 workspace id，同一用户换工作区即换身份）：与 plane-login 的
-                # 网页登录身份一致，两路会话/文件归同一用户
-                "sub": (
+            if account is None or str(account.get("status", "active")) != "active":
+                continue
+            linked_user_id = str(account.get("_id", ""))
+            linked_username = str(account.get("username") or body.external_subject)
+            break
+    token = issue_token(
+        {
+            "sub": (
+                linked_user_id
+                or (
                     f"plane:{body.plane_user_id}"
                     if body.plane_user_id
                     else body.external_subject
-                ),
-                "username": body.external_subject,
-                "role": "user",
-                "auth": "plane",
-                "plane_delegated": True,
-                "plane_user_id": body.plane_user_id,
-                "plane_workspace_id": body.workspace_id,
-                "account_link_id": body.account_link_id,
-            },
-            settings,
-            ttl_hours=1,
-        )
+                )
+            ),
+            "username": linked_username,
+            "role": "user",
+            "auth": "plane",
+            "plane_delegated": True,
+            "plane_user_id": body.plane_user_id,
+            "plane_workspace_id": body.workspace_id,
+            "account_link_id": body.account_link_id,
+        },
+        settings,
+        ttl_hours=1,
     )
     return {
         "schema_version": "plane-delegated-auth.v1",
         "token": token,
-        "subject": linked_subject,
+        "subject": body.external_subject,
         "linked_user_id": linked_user_id,
         "account_link_id": body.account_link_id,
         "expires_in": 3600,

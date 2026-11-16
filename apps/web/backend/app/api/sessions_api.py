@@ -61,8 +61,33 @@ def _agent_service(request: Request) -> AgentService:
     return request.app.state.agent_service
 
 
+async def _alias_subjects(user: dict, repos: Repos) -> set[str]:
+    """当前身份经账户绑定连通的全部会话 subject（含自身）。
+
+    绑定是双向别名：无论 core 是哪方，绑定的三个 subject（本方账户、OpenEVA
+    身份、历史委托身份）互相可见对方会话。plane 登录按 plane_user_id 匹配
+    绑定，本方账户登录按 synlora_user_id 匹配。
+    """
+    subjects = {str(user.get("sub", ""))}
+    link_repo = getattr(repos, "plane_account_link", None)
+    if link_repo is None:
+        return {s for s in subjects if s}
+    sub = str(user.get("sub", ""))
+    pid = str(user.get("plane_user_id") or "")
+    if not pid and sub.startswith("plane:"):
+        pid = sub[len("plane:"):]
+    links = await link_repo.list_for_user(sub)
+    if pid:
+        links = links + await link_repo.list_for_plane_user(pid)
+    for link in links:
+        subjects |= link_repo.alias_subjects(link)
+    return {s for s in subjects if s}
+
+
 async def _own_session(sid: str, user: dict, repos: Repos) -> dict:
     """取当前用户自己的会话（不存在/非本人统一 404，不泄露存在性）。
+
+    别名身份（账户绑定连通的另一侧）的会话同样可读。
 
     Args:
         sid: 会话 id。
@@ -74,12 +99,7 @@ async def _own_session(sid: str, user: dict, repos: Repos) -> dict:
     """
     doc = await repos.session.get(sid)
     if doc is not None and doc.get("user_id") != user["sub"]:
-        link_repo = getattr(repos, "plane_account_link", None)
-        links = (
-            await link_repo.list_for_user(user["sub"]) if link_repo is not None else []
-        )
-        subjects = {str(item.get("delegated_subject")) for item in links}
-        if str(doc.get("user_id")) not in subjects:
+        if str(doc.get("user_id")) not in await _alias_subjects(user, repos):
             raise HTTPException(404, "会话不存在")
     elif doc is None:
         raise HTTPException(404, "会话不存在")
@@ -96,13 +116,15 @@ async def _can_operate_alias_session(doc: dict, user: dict, repos: Repos) -> boo
         return True
     if not user.get("plane_delegated"):
         return False
+    if str(doc.get("user_id")) not in await _alias_subjects(user, repos):
+        return False
     link_repo = getattr(repos, "plane_account_link", None)
     if link_repo is None:
         return False
-    links = await link_repo.list_for_user(str(user.get("sub")))
+    pid = str(user.get("plane_user_id") or "")
+    links = await link_repo.list_for_plane_user(pid) if pid else []
     return any(
-        str(item.get("delegated_subject")) == str(doc.get("user_id"))
-        and str(item.get("plane_user_id")) == str(user.get("plane_user_id"))
+        str(item.get("plane_user_id")) == pid
         and str(item.get("plane_workspace_id")) == str(user.get("plane_workspace_id"))
         for item in links
     )
@@ -440,16 +462,18 @@ class MessageIn(BaseModel):
 async def list_sessions(
     user=Depends(get_current_user), repos=Depends(get_repos)
 ) -> list[dict]:
-    """当前用户会话列表（按 updated_at 倒序；时间戳浮点存 TEXT，Python 端排序）。"""
+    """当前用户会话列表（按 updated_at 倒序；时间戳浮点存 TEXT，Python 端排序）。
+
+    账户绑定连通的别名身份（另一侧登录产生的）会话合并展示。
+    """
     docs = await repos.session.list(filters={"user_id": user["sub"]})
-    link_repo = getattr(repos, "plane_account_link", None)
-    if link_repo is not None:
-        links = await link_repo.list_for_user(user["sub"])
-        subjects = {str(item.get("delegated_subject")) for item in links}
-        for subject in subjects:
-            docs.extend(await repos.session.list(filters={"user_id": subject}))
-        seen: set[str] = set()
-        docs = [doc for doc in docs if not (doc["_id"] in seen or seen.add(doc["_id"]))]
+    subjects = await _alias_subjects(user, repos)
+    for subject in subjects:
+        if subject == str(user.get("sub", "")):
+            continue
+        docs.extend(await repos.session.list(filters={"user_id": subject}))
+    seen: set[str] = set()
+    docs = [doc for doc in docs if not (doc["_id"] in seen or seen.add(doc["_id"]))]
     return sorted(docs, key=lambda d: float(d.get("updated_at") or 0), reverse=True)
 
 
