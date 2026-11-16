@@ -4,6 +4,7 @@
  * token 生命周期：
  * - 门户跳转：URL hash `#token=xxx` 提取（AI4MS 免登录）
  * - 本地登录：POST /api/v1/auth/login
+ * - Plane 账号登录：POST /api/v1/auth/plane-login（后端代理 Plane 验证）
  * - 恢复校验：启动时 localStorage 有 token 则 GET /auth/me 校验
  * - 失效：任意请求 401 -> api/client 派发 sa:unauthorized -> 本 store 登出
  */
@@ -29,6 +30,8 @@ interface AuthState {
   init: () => Promise<void>
   /** 账号密码登录。 */
   login: (username: string, password: string) => Promise<void>
+  /** Plane 账号登录（邮箱 + 密码，后端代理验证）。 */
+  loginWithPlane: (email: string, password: string) => Promise<void>
   /** 用既有 token 登录并经 me 校验（dev 快捷入口等）。 */
   loginWithToken: (token: string) => Promise<void>
   /** 登出：清 token 与用户态。 */
@@ -49,6 +52,28 @@ async function fetchMe(token: string): Promise<AuthUser> {
 
 /** init 的去重 promise（StrictMode 双调用 / 多处触发只跑一次）。 */
 let initPromise: Promise<void> | null = null
+
+/**
+ * 登录响应落定会话：存 token -> 先用响应里的用户名占位 -> 补查 me 取全
+ * （login/plane-login 响应均不含 sub；me 失败则回滚为未登录）。
+ */
+async function establishSession(
+  resp: LoginResponse,
+  set: (partial: Partial<AuthState>) => void
+): Promise<void> {
+  setToken(resp.token)
+  set({
+    token: resp.token,
+    user: { sub: '', username: resp.username, role: resp.role },
+  })
+  try {
+    const me = await api<MeResponse>('/api/v1/auth/me')
+    set({ user: { sub: me.sub, username: me.username, role: me.role } })
+    resetWorkspaceStores()
+  } catch {
+    set({ token: null, user: null })
+  }
+}
 
 /** init 实际逻辑：hash token 提取 -> 本地 token 校验 -> 落定未登录态。 */
 async function initAuth(set: (partial: Partial<AuthState>) => void): Promise<void> {
@@ -94,19 +119,15 @@ export const useAuthStore = create<AuthState>((set) => ({
       method: 'POST',
       body: { username, password },
     })
-    setToken(resp.token)
-    set({
-      token: resp.token,
-      user: { sub: '', username: resp.username, role: resp.role },
+    await establishSession(resp, set)
+  },
+
+  loginWithPlane: async (email, password) => {
+    const resp = await api<LoginResponse>('/api/v1/auth/plane-login', {
+      method: 'POST',
+      body: { email, password },
     })
-    // login 响应不含 sub：补查 me 取全（失败则回滚为未登录）
-    try {
-      const me = await api<MeResponse>('/api/v1/auth/me')
-      set({ user: { sub: me.sub, username: me.username, role: me.role } })
-      resetWorkspaceStores()
-    } catch {
-      set({ token: null, user: null })
-    }
+    await establishSession(resp, set)
   },
 
   loginWithToken: async (token) => {

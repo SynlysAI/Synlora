@@ -32,6 +32,9 @@ class Settings(BaseSettings):
         user_quota_bytes: 每用户工作区配额。
         weknora_base_url: WeKnora 知识库服务地址（含 /api/v1，空 = 未接入）。
         weknora_api_key: WeKnora API Key（X-API-Key 头）。
+        plane_base_url: Plane 服务地址（Research Context 校验等后端调用）。
+        plane_auth_base_url: Plane 账号登录验证地址（空 = 回落 plane_base_url；
+            登录代理走浏览器 sign-in 流程，与 API 调用地址可不同）。
         assistant_web_search_endpoint: SearXNG 搜索服务地址（空 = 未启用联网搜索）。
         assistant_web_search_api_key: SearXNG API Key（实例配了才需要，默认空）。
         sandbox_mode: python.run 执行形态（local|docker，默认 local；docker 需
@@ -77,6 +80,7 @@ class Settings(BaseSettings):
     weknora_base_url: str = ""
     weknora_api_key: str = ""
     plane_base_url: str = ""
+    plane_auth_base_url: str = ""
     plane_allowed_issuers: str = ""
     plane_api_token: str = ""
     plane_service_token: str = ""
