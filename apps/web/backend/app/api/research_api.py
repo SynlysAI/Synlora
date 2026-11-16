@@ -263,9 +263,21 @@ async def delegated_token(
         if linked_user_id
         else issue_token(
             {
-                "sub": body.external_subject,
+                # 回退身份归一为 plane:<plane_user_id>（旧格式 external_subject
+                # 含 workspace id，同一用户换工作区即换身份）：与 plane-login 的
+                # 网页登录身份一致，两路会话/文件归同一用户
+                "sub": (
+                    f"plane:{body.plane_user_id}"
+                    if body.plane_user_id
+                    else body.external_subject
+                ),
                 "username": body.external_subject,
                 "role": "user",
+                "auth": "plane",
+                "plane_delegated": True,
+                "plane_user_id": body.plane_user_id,
+                "plane_workspace_id": body.workspace_id,
+                "account_link_id": body.account_link_id,
             },
             settings,
             ttl_hours=1,

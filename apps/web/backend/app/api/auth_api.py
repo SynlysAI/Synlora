@@ -8,10 +8,15 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user, get_settings
 from app.core.auth import issue_token, verify_password
 from app.core.settings import Settings
+from app.services.plane_auth import PlaneAuthError, authenticate as plane_authenticate
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 VALID_ROLES = ("admin", "user")
+
+# Plane 登录 token 有效期（小时）：无服务端会话可吊销，比本方登录（7 天）短，
+# 被禁用的 Plane 用户最多一天后失去访问。
+PLANE_LOGIN_TTL_HOURS = 24
 
 
 class LoginBody(BaseModel):
@@ -23,6 +28,18 @@ class LoginBody(BaseModel):
     """
 
     username: str
+    password: str
+
+
+class PlaneLoginBody(BaseModel):
+    """Plane 账号登录请求体。
+
+    Attributes:
+        email: Plane 登录邮箱（Plane 的登录键）。
+        password: 明文密码。
+    """
+
+    email: str
     password: str
 
 
@@ -115,16 +132,78 @@ async def login(
     }
 
 
+@router.post("/plane-login")
+async def plane_login(
+    body: PlaneLoginBody, request: Request, settings=Depends(get_settings)
+) -> dict:
+    """Plane 账号登录：代理验证 Plane 邮箱密码后签发本方 token（不落库）。
+
+    身份归一：优先取 ``plane_account_links`` 里该 Plane 用户绑定的 Synlora 账户
+    （与委托登录/修复端点共享同一绑定表），未绑定时 ``sub = plane:<plane_user_id>``
+    ——与委托登录的回退身份一致，网页登录与 Plane 云端智能体落到同一身份。
+
+    Raises:
+        HTTPException: 邮箱密码错误/账号禁用（401/403/429）、Plane 不可用（502）、
+            未配置（503）。
+    """
+    email = body.email.strip().lower()
+    if not email or "@" not in email or not body.password:
+        raise HTTPException(401, "邮箱或密码错误")
+    try:
+        profile = await plane_authenticate(email, body.password, settings)
+    except PlaneAuthError as exc:
+        raise HTTPException(exc.status_code, exc.message)
+
+    sub = f"plane:{profile.plane_user_id}"
+    store = getattr(request.app.state, "store", None)
+    if store is not None:
+        links = await store.list(
+            "plane_account_links",
+            filters={"plane_user_id": profile.plane_user_id},
+        )
+        for link in links:
+            linked = str(link.get("synlora_user_id") or "")
+            if linked:
+                # 绑定由修复端点/委托流程显式建立（一个 Plane 用户的所有绑定
+                # 指向同一 Synlora 账户），取第一条即定身份
+                sub = linked
+                break
+    payload = {
+        "sub": sub,
+        "username": profile.display_name or profile.email,
+        "role": "user",
+        "auth": "plane",
+        "plane_user_id": profile.plane_user_id,
+        "email": profile.email,
+    }
+    return {
+        "token": issue_token(payload, settings, ttl_hours=PLANE_LOGIN_TTL_HOURS),
+        "username": payload["username"],
+        "role": payload["role"],
+    }
+
+
 @router.get("/me")
 async def me(
     request: Request, user=Depends(get_current_user), settings=Depends(get_settings)
 ) -> dict:
     """当前用户信息（sqlite 模式直接回显；mongodb 模式回查 users 确认 status=active）。
 
+    Plane 来源身份（plane-login / 委托登录）不落 ``ai4ms.users``，跳过回查——
+    其存活性由签发时的 Plane 验证与 24h 短时效保证。
+
     Raises:
         HTTPException: mongodb 模式下用户不存在或已禁用（401）。
     """
-    if settings.storage_backend == "mongodb" and user.get("sub") not in ("anon", "dev"):
+    sub = str(user.get("sub", ""))
+    plane_identity = (
+        user.get("auth") == "plane" or sub.startswith(("plane:", "plane-delegated-"))
+    )
+    if (
+        settings.storage_backend == "mongodb"
+        and not plane_identity
+        and sub not in ("anon", "dev")
+    ):
         record = await find_user(request, str(user.get("username", "")))
         if record is None or str(record.get("status", "active")) != "active":
             raise HTTPException(401, "用户不存在或已禁用")
