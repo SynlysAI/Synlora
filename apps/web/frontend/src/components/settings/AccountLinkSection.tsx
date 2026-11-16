@@ -22,13 +22,13 @@ interface AccountLinkStatus {
 function bindDialogCopy(identityKind: 'plane' | 'ai4ms', label: string) {
   if (identityKind === 'plane') {
     return {
-      title: '关联 Synlora 账户',
+      title: '关联 AI4MS 账户',
       description: `绑定后将以当前 OpenEVA 身份为核心：两边历史会话将在会话列表合并展示；文件工作区、访问令牌、能力/技能安装保持各自独立，当前身份设置不受影响。将关联账户：${label}`,
     }
   }
   return {
     title: '关联 OpenEVA 账号',
-    description: `绑定后将以当前 Synlora 账户为核心：OpenEVA 登录与云端智能体将直接进入当前账户身份；两边会话合并展示；文件工作区、访问令牌、能力/技能沿用当前账户。将关联账号：${label}`,
+    description: `绑定后将以当前 AI4MS 账户为核心：OpenEVA 登录与云端智能体将直接进入当前账户身份；两边会话合并展示；文件工作区、访问令牌、能力/技能沿用当前账户。将关联账号：${label}`,
   }
 }
 
@@ -128,7 +128,7 @@ export default function AccountLinkSection() {
           <dl className="grid gap-x-8 gap-y-2 text-[13px] sm:grid-cols-2">
             <div>
               <dt className="text-[12px] text-[var(--sa-alias-label-caption)]">
-                {identityKind === 'plane' ? '已关联 Synlora 账户' : '已关联 OpenEVA 账号'}
+                {identityKind === 'plane' ? '已关联 AI4MS 账户' : '已关联 OpenEVA 账号'}
               </dt>
               <dd className="mt-0.5">
                 {identityKind === 'plane'
@@ -139,7 +139,7 @@ export default function AccountLinkSection() {
             <div>
               <dt className="text-[12px] text-[var(--sa-alias-label-caption)]">核心身份</dt>
               <dd className="mt-0.5">
-                {status.core === 'plane' ? 'OpenEVA 账号（当前登录方式不变）' : 'Synlora 账户'}
+                {status.core === 'plane' ? 'OpenEVA 账号（当前登录方式不变）' : 'AI4MS 账户'}
               </dd>
             </div>
           </dl>
@@ -155,7 +155,7 @@ export default function AccountLinkSection() {
         <div className="mt-3 border-t border-[var(--sa-alias-border-l1)] pt-4">
           <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
             <label className="flex flex-col gap-1.5 text-[13px] text-[var(--sa-alias-label-secondary)]">
-              {identityKind === 'plane' ? 'Synlora 用户名' : 'OpenEVA 邮箱'}
+              {identityKind === 'plane' ? 'AI4MS 用户名' : 'OpenEVA 邮箱'}
               <input
                 className={inputClass}
                 type={identityKind === 'plane' ? 'text' : 'email'}
@@ -165,7 +165,7 @@ export default function AccountLinkSection() {
                     ? setUsername(event.target.value)
                     : setEmail(event.target.value)
                 }
-                placeholder={identityKind === 'plane' ? '要关联的 Synlora 用户名' : '要关联的 OpenEVA 登录邮箱'}
+                placeholder={identityKind === 'plane' ? '要关联的 AI4MS 用户名' : '要关联的 OpenEVA 登录邮箱'}
                 autoComplete={identityKind === 'plane' ? 'username' : 'email'}
               />
             </label>
