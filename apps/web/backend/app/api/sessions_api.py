@@ -16,7 +16,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.api.assistants_api import _validate_provider
 from app.api.deps import Repos, get_current_user, get_repos
 from app.services import workspace
-from app.services.agent_service import AgentService, TooManyRuns
+from app.services.agent_service import APPROVAL_MODES, AgentService, TooManyRuns
 from app.services.plane_mcp import PlaneMcpUnavailable
 from app.services.research_context import ResearchContextError, ResearchContextMetadata
 from app.services.session_runtime import NoUsableProvider, resolve_session_runtime
@@ -326,11 +326,20 @@ class SessionCreateBody(BaseModel):
     title: str = ""
     model_provider_id: str | None = None
     project_id: str | None = None
+    approval_mode: str | None = Field(default=None)
     enabled_plugins: list[str] | None = None
     enabled_mcp: list[str] | None = None
     research_context: ResearchContextMetadata | None = None
     plane_mcp: PlaneMcpRuntime | None = None
     plane_meta: PlaneMetadata | None = None
+
+    @field_validator("approval_mode")
+    @classmethod
+    def _validate_approval_mode(cls, value: str | None) -> str | None:
+        """校验会话级审批模式枚举。"""
+        if value is not None and value not in APPROVAL_MODES:
+            raise ValueError("approval_mode 必须是 always_allow 或 ask_for_dangerous")
+        return value
 
 
 class SessionUpdateBody(BaseModel):
@@ -347,8 +356,17 @@ class SessionUpdateBody(BaseModel):
     archived: bool | None = None
     model_provider_id: str | None = None
     assistant_id: str | None = None
+    approval_mode: str | None = Field(default=None)
     enabled_plugins: list[str] | None = None
     enabled_mcp: list[str] | None = None
+
+    @field_validator("approval_mode")
+    @classmethod
+    def _validate_approval_mode(cls, value: str | None) -> str | None:
+        """校验会话级审批模式枚举。"""
+        if value is not None and value not in APPROVAL_MODES:
+            raise ValueError("approval_mode 必须是 always_allow 或 ask_for_dangerous")
+        return value
 
 
 async def _validate_plugin_ids(request: Request, plugin_ids: list[str]) -> None:
@@ -553,6 +571,7 @@ async def create_session(
             "message_count": 0,
             "model_provider_id": body.model_provider_id,
             "project_id": project_id,
+            "approval_mode": body.approval_mode or "ask_for_dangerous",
             "enabled_plugins": body.enabled_plugins,
             "enabled_mcp": body.enabled_mcp,
             "research_context": (
@@ -628,6 +647,12 @@ async def update_session(
             fields["model_provider_id"] = pid
         else:
             fields["model_provider_id"] = None
+    approval_mode_changed = (
+        "approval_mode" in body.model_fields_set
+        and body.approval_mode is not None
+    )
+    if approval_mode_changed:
+        fields["approval_mode"] = body.approval_mode
     if "enabled_plugins" in body.model_fields_set:
         if body.enabled_plugins is not None:
             await _validate_plugin_ids(request, body.enabled_plugins)
@@ -650,6 +675,11 @@ async def update_session(
                 )
         # 显式 null 与空列表同义：本会话不附加任何 MCP
         fields["enabled_mcp"] = body.enabled_mcp
+    if approval_mode_changed:
+        # 先落库再切换服务内存态并自动放行挂起审批（普通提问不受影响）
+        updated = await repos.session.update(doc["_id"], fields)
+        _agent_service(request).set_approval_mode(sid, body.approval_mode)
+        return updated
     return await repos.session.update(doc["_id"], fields)
 
 
@@ -891,6 +921,7 @@ async def _start_message(
             else None,
             plane_mcp_token=mcp_token,
             external_run_id=body.external_run_id,
+            approval_mode=doc.get("approval_mode"),
         )
     except TooManyRuns as exc:
         raise HTTPException(429, str(exc)) from exc

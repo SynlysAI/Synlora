@@ -250,3 +250,21 @@ async def test_notify_job_finished_without_resolver_is_silent(
     service, sid = agent_service, session_doc["_id"]
     await service.notify_job_finished(
         {"session_id": sid, "user_id": "u1", "status": "failed", "_id": "job-x"})
+
+
+async def test_set_approval_mode_releases_only_pending_approvals(
+        agent_service, session_doc):
+    """切换审批模式只放行挂起的审批卡，普通提问保持等待用户回答。"""
+    service, sid = agent_service, session_doc["_id"]
+    approval = _register_run(service, sid, "r-approval", ask_pending=True)
+    approval.ask_kind = "approval"
+    question = _register_run(service, sid, "r-question", ask_pending=True)
+    question.ask_kind = "question"
+
+    released = service.set_approval_mode(sid, "always_allow")
+
+    assert released == 1
+    assert approval.ask_future.done()
+    assert approval.ask_future.result() == "允许"
+    assert not question.ask_future.done()
+    assert service._approval_modes[sid] == "always_allow"  # noqa: SLF001

@@ -71,6 +71,8 @@ PREEMPT_TIMEOUT_S = 5.0
 # ask_user 等待回答的上限（秒）：没有上限时，一个停在 ask 上的 run 会永久
 # 占住会话（用户关掉页面就再也没人来回答它）
 ASK_TIMEOUT_S = 300.0
+APPROVAL_ALWAYS_ALLOW = "always_allow"  # 会话级审批模式：工具调用直接放行
+APPROVAL_MODES = (APPROVAL_ALWAYS_ALLOW, "ask_for_dangerous")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -205,6 +207,8 @@ class ActiveRun:
         self.session: RunSession | None = None
         # ask_user 等待中的回答 future（None = 当前无待回答问题）
         self.ask_future: asyncio.Future | None = None
+        # 等待中的问题类型（approval=审批卡，question=普通提问；自动放行只挑审批）
+        self.ask_kind: str | None = None
 
 
 class AgentService:
@@ -255,6 +259,8 @@ class AgentService:
         self._run_context_resolver: Any = None
         # 连续唤醒链计数（session_id → 无用户输入参与的连续唤醒轮数；用户发言清零）
         self._wake_chain: dict[str, int] = {}
+        # 会话级审批模式（session_id → always_allow/ask_for_dangerous；chat 装配时刷新）
+        self._approval_modes: dict[str, str] = {}
         # 会话级事件订阅（session_id → 订阅者队列集合，前端常驻订阅用）
         self._session_subs: dict[str, set[asyncio.Queue]] = {}
 
@@ -372,6 +378,7 @@ class AgentService:
                    plane_mcp: dict | None = None,
                    plane_mcp_token: str = "",
                    external_run_id: str = "",
+                  approval_mode: str | None = None,
                    notice: bool = False) -> str:
         """启动一轮对话运行，返回 run_id（事件经 ActiveRun.queue 流出）。
 
@@ -409,6 +416,8 @@ class AgentService:
             plane_mcp: token-free Plane unified MCP 描述。
             plane_mcp_token: 仅本轮内存持有的短期 MCP Bearer token。
             external_run_id: Plane Agent Dock 的 run UUID，用于跨系统对账。
+            approval_mode: 会话级审批模式（always_allow/ask_for_dangerous）；
+                None 按 ask_for_dangerous 处理。
             notice: 本轮为任务完成唤醒（非用户输入）：user/message payload 带
                 kind=job_completed（前端渲染为居中提示条），跳过唤醒链清零
                 （链计数由 notify_job_finished 维护），其余装配与用户消息一致。
@@ -423,6 +432,9 @@ class AgentService:
         # 绝不兜底成字面量目录名——那会让多个用户共用 users/anonymous/ 且与
         # DB 里记录的 user_id 不一致
         user_sub = str(user["sub"])
+        # 会话级审批模式快照：每次装配刷新（会话文档为准），PATCH 切换时
+        # 同步更新同一份内存态，保证运行中切换立即对后续工具调用生效
+        self._approval_modes[session_id] = approval_mode or "ask_for_dangerous"
         # 真实用户输入清零唤醒链（notice 轮保持：连续唤醒计数只在用户回来时复位）
         if not notice:
             self._wake_chain.pop(session_id, None)
@@ -618,16 +630,20 @@ class AgentService:
             async def ask_handler(payload: dict) -> str:
                 future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
                 active.ask_future = future
+                active.ask_kind = str(payload.get("kind") or "question")
                 try:
                     await log.append(EventType.ASK_USER, payload)
                     return await self._wait_for_answer(active, ASK_TIMEOUT_S)
                 finally:
                     active.ask_future = None
+                    active.ask_kind = None
 
             # 管线强制审批（Permission.ASK_USER）：复用 ask_user 的 future 回路，
             # payload 加 kind=approval 供前端渲染审批卡（允许/拒绝按钮）；用户
             # 答复仍走同一 answer API（固定文案"允许"/"拒绝"，管线按文本判定）
             async def ask_approval(payload: dict) -> str:
+                if self._approval_modes.get(session_id) == APPROVAL_ALWAYS_ALLOW:
+                    return "允许"
                 tool = str(payload.get("tool", ""))
                 preview = json.dumps(payload.get("args", {}), ensure_ascii=False)
                 if len(preview) > 600:
@@ -1061,6 +1077,34 @@ class AgentService:
             active.ask_future.set_result(text)
             return True
         return False
+
+    def set_approval_mode(self, session_id: str, mode: str) -> int:
+        """切换会话审批模式，并把挂起的审批卡全部自动放行。
+
+        模式写入与 chat 装配共用的同一份内存态，因此运行中切换立即对本轮
+        后续工具调用生效；自动放行只挑 kind=approval 的挂起 future（普通
+        ask_user 提问保持等待用户回答，不被误答"允许"）。
+
+        Args:
+            session_id: 会话 id。
+            mode: 目标审批模式（always_allow/ask_for_dangerous）。
+
+        Returns:
+            被自动放行的挂起审批数量。
+        """
+        self._approval_modes[session_id] = mode
+        released = 0
+        for run_id in list(self._active_by_session.get(session_id) or ()):
+            active = self._runs.get(run_id)
+            if (
+                active is not None
+                and active.ask_kind == "approval"
+                and active.ask_future is not None
+                and not active.ask_future.done()
+            ):
+                active.ask_future.set_result("允许")
+                released += 1
+        return released
 
     async def _wait_for_answer(self, active: "ActiveRun", timeout_s: float) -> str:
         """等待 ask_user 的回答，超时返回可继续的兜底文本。

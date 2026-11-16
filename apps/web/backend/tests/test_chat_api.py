@@ -2054,6 +2054,121 @@ async def test_approval_denied_e2e(app, client, admin_headers, monkeypatch):
     assert "拒绝执行" in payload["content"]
 
 
+async def test_session_approval_mode_create_default_and_patch(
+        client, admin_headers):
+    """审批模式：创建可指定、缺省 ask_for_dangerous、PATCH 切换落库。"""
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "asst-data",
+                                "approval_mode": "always_allow"})
+    assert r.status_code == 201, r.text
+    assert r.json()["approval_mode"] == "always_allow"
+
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "asst-data"})
+    assert r.status_code == 201, r.text
+    assert r.json()["approval_mode"] == "ask_for_dangerous"
+    sid = r.json()["_id"]
+
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"approval_mode": "always_allow"})
+    assert r.status_code == 200, r.text
+    assert r.json()["approval_mode"] == "always_allow"
+
+
+async def test_session_approval_mode_invalid_422(client, admin_headers):
+    """非法审批模式：创建与更新均 422。"""
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "asst-data",
+                                "approval_mode": "never_ask"})
+    assert r.status_code == 422
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "asst-data"})
+    assert r.status_code == 201, r.text
+    sid = r.json()["_id"]
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"approval_mode": "never_ask"})
+    assert r.status_code == 422
+
+
+async def test_approval_always_allow_session_skips_card(
+        app, client, admin_headers, monkeypatch):
+    """always_allow 会话：ASK_USER 工具不弹审批卡，直接执行成功。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    r = await client.patch("/api/v1/assistants/asst-data", headers=admin_headers,
+                           json={"tool_whitelist": [
+                               "python.run", "file.read", "file.write", "file.list",
+                               "demo.risky"]})
+    assert r.status_code == 200, r.text
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend",
+                        ApprovalFakeBackend)
+    FakeBackend.script = [[TextDelta(text="收尾"), Usage()]]
+    FakeBackend.received = []
+    ApprovalFakeBackend.calls = 0
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "asst-data",
+                                "approval_mode": "always_allow"})
+    assert r.status_code == 201, r.text
+    sid = r.json()["_id"]
+
+    resp = await client.post(f"/api/v1/sessions/{sid}/messages",
+                             headers=admin_headers,
+                             json={"text": "执行敏感操作"})
+    assert resp.status_code == 200, resp.text
+    sse_events = parse_sse(resp.text)
+    assert not any(t == "ask/user" for t, _ in sse_events)
+    result = [e for t, e in sse_events
+              if t == "tool/result" and e["payload"].get("name") == "demo.risky"][0]
+    assert result["payload"]["ok"] is True
+    assert result["payload"]["content"] == "已执行敏感操作"
+    assert sse_events[-1][0] == "turn/end"
+
+
+async def test_approval_patch_to_always_allow_releases_pending(
+        app, client, admin_headers, monkeypatch):
+    """挂起审批卡时 PATCH 切到 always_allow：自动放行，run 正常收尾。"""
+    await _bind_provider_to_asst_data(client, admin_headers)
+    r = await client.patch("/api/v1/assistants/asst-data", headers=admin_headers,
+                           json={"tool_whitelist": [
+                               "python.run", "file.read", "file.write", "file.list",
+                               "demo.risky"]})
+    assert r.status_code == 200, r.text
+    monkeypatch.setattr("app.services.agent_service.OpenAICompatibleBackend",
+                        ApprovalFakeBackend)
+    FakeBackend.script = [[TextDelta(text="收尾"), Usage()]]
+    FakeBackend.received = []
+    ApprovalFakeBackend.calls = 0
+    r = await client.post("/api/v1/sessions", headers=admin_headers,
+                          json={"assistant_id": "asst-data",
+                                "approval_mode": "ask_for_dangerous"})
+    assert r.status_code == 201, r.text
+    sid = r.json()["_id"]
+
+    task = asyncio.create_task(client.post(f"/api/v1/sessions/{sid}/messages",
+                                           headers=admin_headers,
+                                           json={"text": "执行敏感操作"}))
+    asked = None
+    for _ in range(80):
+        events = await app.state.event_repo.list_events(sid)
+        asked = next((e for e in events if e.type.value == "ask/user"), None)
+        if asked:
+            break
+        await asyncio.sleep(0.1)
+    assert asked is not None
+    assert asked.payload["kind"] == "approval"
+
+    r = await client.patch(f"/api/v1/sessions/{sid}", headers=admin_headers,
+                           json={"approval_mode": "always_allow"})
+    assert r.status_code == 200, r.text
+    assert r.json()["approval_mode"] == "always_allow"
+
+    resp = await asyncio.wait_for(task, timeout=15)
+    sse_events = parse_sse(resp.text)
+    result = [e for t, e in sse_events
+              if t == "tool/result" and e["payload"].get("name") == "demo.risky"][0]
+    assert result["payload"]["ok"] is True
+    assert sse_events[-1][0] == "turn/end"
+
+
 async def test_answer_no_pending_409(app, client, admin_headers, monkeypatch):
     """无待答问题时 answer → 409。"""
     await _bind_provider_to_asst_data(client, admin_headers)
