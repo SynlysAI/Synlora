@@ -42,6 +42,9 @@ async def test_storage_migration_reads_legacy_schema_before_cutover(monkeypatch)
         upgrade_agent_resource_selection=lambda: _record(
             calls, f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
         ),
+        upgrade_plane_compat_schema=lambda: _record(
+            calls, f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
+        ),
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
         create_business_tables=lambda: _record(calls, "create_business_tables"),
         create_knowledge_tables=lambda: _record(calls, "create_knowledge_tables"),
@@ -241,7 +244,7 @@ async def test_main_rejects_unsupported_business_schema_before_ddl(monkeypatch, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("business_version", [2, 7, 8])
+@pytest.mark.parametrize("business_version", [2, 7, 8, 9])
 async def test_supported_legacy_business_schema_is_converged_and_versioned_as_current(monkeypatch, business_version):
     calls: list[str] = []
     sessions = [_Session(), _Session(), _Session()]
@@ -258,6 +261,9 @@ async def test_supported_legacy_business_schema_is_converged_and_versioned_as_cu
             {"business": business_version, "knowledge": storage_migration.KNOWLEDGE_SCHEMA_VERSION}
         ),
         upgrade_agent_resource_selection=lambda: _record(
+            calls, f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
+        ),
+        upgrade_plane_compat_schema=lambda: _record(
             calls, f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
         ),
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),
@@ -357,6 +363,9 @@ async def test_current_schema_does_not_rewrite_workdir_data(monkeypatch):
         create_schema_version_table=lambda: _record(calls, "create_schema_version_table"),
         get_schema_versions=lambda: _async_value({}),
         upgrade_agent_resource_selection=lambda: _record(
+            calls, f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
+        ),
+        upgrade_plane_compat_schema=lambda: _record(
             calls, f"version:business:{storage_migration.BUSINESS_SCHEMA_VERSION}"
         ),
         record_schema_version=lambda domain, version: _record(calls, f"version:{domain}:{version}"),

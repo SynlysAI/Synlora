@@ -282,7 +282,9 @@ async def test_v072_business_converges_current_schema_idempotently() -> None:
             "ix_scheduled_agent_runs_job_created",
             "ix_scheduled_agent_runs_dispatching",
         }.issubset(scheduled_indexes)
-        assert BUSINESS_SCHEMA_VERSION == 9
+        assert BUSINESS_SCHEMA_VERSION == 10
+        async with scoped_engine.connect() as connection:
+            assert await connection.scalar(text("SELECT to_regclass('plane_account_links') IS NOT NULL"))
     finally:
         await _drop_isolated_schema(schema, admin_engine, scoped_engine)
 
@@ -595,3 +597,41 @@ async def test_resource_selection_migration_is_atomic_and_does_not_repeat(fail_v
         assert await manager.get_schema_versions() == {"business": 9}
     finally:
         await _drop_isolated_schema(schema, admin_engine, engine)
+
+
+@pytest.mark.parametrize("initial_version", [None, 9])
+async def test_plane_compat_schema_upgrade_is_idempotent(initial_version: int | None) -> None:
+    """Plane 兼容层建表在未版本化与 v9 存量库上幂等收敛到当前版本。"""
+    schema, admin_engine, scoped_engine, manager = await _create_isolated_manager("plane_compat")
+
+    try:
+        await manager.create_schema_version_table()
+        async with scoped_engine.begin() as connection:
+            await connection.execute(text("CREATE TABLE users (id SERIAL PRIMARY KEY)"))
+            await connection.execute(text("INSERT INTO users (id) VALUES (1)"))
+        if initial_version is not None:
+            await manager.record_schema_version("business", initial_version)
+
+        await manager.upgrade_plane_compat_schema()
+        async with scoped_engine.connect() as connection:
+            assert await connection.scalar(text("SELECT to_regclass('plane_account_links') IS NOT NULL"))
+            assert (
+                await connection.scalar(
+                    text("SELECT version FROM yuxi_schema_migrations WHERE domain = 'business'")
+                )
+                == BUSINESS_SCHEMA_VERSION
+            )
+        async with scoped_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO plane_account_links (account_link_id, plane_user_id, synlora_user_id)"
+                    " VALUES ('link-1', 'p1', 1)"
+                )
+            )
+
+        await manager.upgrade_plane_compat_schema()
+        async with scoped_engine.connect() as connection:
+            assert await connection.scalar(text("SELECT count(*) FROM plane_account_links")) == 1
+        assert await manager.get_schema_versions() == {"business": BUSINESS_SCHEMA_VERSION}
+    finally:
+        await _drop_isolated_schema(schema, admin_engine, scoped_engine)

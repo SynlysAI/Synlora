@@ -23,7 +23,7 @@ from yuxi.utils import logger
 from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
-BUSINESS_SCHEMA_VERSION = 9
+BUSINESS_SCHEMA_VERSION = 10
 KNOWLEDGE_SCHEMA_VERSION = 2
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
@@ -99,6 +99,33 @@ AGENT_RUN_TIMING_SCHEMA_STATEMENTS = (
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS prepared_at TIMESTAMP WITHOUT TIME ZONE",
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS first_output_at TIMESTAMP WITHOUT TIME ZONE",
     "ALTER TABLE IF EXISTS agent_runs ADD COLUMN IF NOT EXISTS first_model_request_at TIMESTAMP WITHOUT TIME ZONE",
+)
+PLANE_COMPAT_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS plane_account_links (
+        id SERIAL PRIMARY KEY,
+        account_link_id VARCHAR(128) NOT NULL UNIQUE,
+        plane_workspace_id VARCHAR(128) NOT NULL DEFAULT '',
+        plane_user_id VARCHAR(128) NOT NULL,
+        synlora_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        delegated_subject VARCHAR(255) NOT NULL DEFAULT '',
+        core VARCHAR(16) NOT NULL DEFAULT 'ai4ms',
+        plane_email VARCHAR(255),
+        synlora_username VARCHAR(255) NOT NULL DEFAULT '',
+        source VARCHAR(16) NOT NULL DEFAULT 'repair',
+        created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_plane_account_links_plane_user_id ON plane_account_links(plane_user_id)",
+    (
+        "CREATE INDEX IF NOT EXISTS ix_plane_account_links_synlora_user_id "
+        "ON plane_account_links(synlora_user_id)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS ix_plane_account_links_plane_workspace_id "
+        "ON plane_account_links(plane_workspace_id)"
+    ),
 )
 WORKDIR_PATH_SCHEMA_STATEMENTS = (
     f"""
@@ -510,6 +537,28 @@ class PostgresManager(metaclass=SingletonMeta):
                     INSERT INTO {SCHEMA_VERSION_TABLE} (domain, version, applied_at)
                     VALUES ('business', 9, CURRENT_TIMESTAMP)
                     ON CONFLICT (domain) DO UPDATE SET version = 9, applied_at = EXCLUDED.applied_at
+                """)
+            )
+
+    async def upgrade_plane_compat_schema(self) -> None:
+        """创建 Plane 兼容层账户绑定表并原子记录 business 版本 10。"""
+        self._check_initialized()
+        async with self.async_engine.begin() as conn:
+            version = await conn.scalar(
+                text(f"SELECT version FROM {SCHEMA_VERSION_TABLE} WHERE domain = 'business' FOR UPDATE")
+            )
+            if version == BUSINESS_SCHEMA_VERSION:
+                return
+            if version not in (None, 9):
+                raise RuntimeError(f"Unsupported business schema version: {version}")
+            for statement in PLANE_COMPAT_SCHEMA_STATEMENTS:
+                await conn.execute(text(statement))
+            await conn.execute(
+                text(f"""
+                    INSERT INTO {SCHEMA_VERSION_TABLE} (domain, version, applied_at)
+                    VALUES ('business', {BUSINESS_SCHEMA_VERSION}, CURRENT_TIMESTAMP)
+                    ON CONFLICT (domain) DO UPDATE
+                    SET version = {BUSINESS_SCHEMA_VERSION}, applied_at = EXCLUDED.applied_at
                 """)
             )
 

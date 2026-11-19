@@ -1080,6 +1080,49 @@ class APIKey(Base):
         return True
 
 
+class PlaneAccountLink(Base):
+    """Plane(OpenEVA) 账户与本方账户的绑定记录。"""
+
+    __tablename__ = "plane_account_links"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # Plane 侧生成的稳定绑定 ID（如 "plane-{workspace}-{user}" 或 "plane-self-{pid}"）
+    account_link_id = Column(String(128), nullable=False, unique=True, index=True)
+    plane_workspace_id = Column(String(128), nullable=False, default="", index=True)
+    plane_user_id = Column(String(128), nullable=False, index=True)
+    synlora_user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 历史委托身份（如 "plane-ws-{ws}-user-{user}"），用于别名会话可见性
+    delegated_subject = Column(String(255), nullable=False, default="")
+    # 绑定核心方：ai4ms=OpenEVA 登录收敛到本方账户；plane=只合并会话可见性
+    core = Column(String(16), nullable=False, default="ai4ms")
+    plane_email = Column(String(255), nullable=True)
+    synlora_username = Column(String(255), nullable=False, default="")
+    # 记录来源：repair=Plane 补账命令；self=用户自服务绑定
+    source = Column(String(16), nullable=False, default="repair")
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+    user = relationship("User")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "account_link_id": self.account_link_id,
+            "plane_workspace_id": self.plane_workspace_id,
+            "plane_user_id": self.plane_user_id,
+            "synlora_user_id": self.synlora_user_id,
+            "delegated_subject": self.delegated_subject,
+            "core": self.core,
+            "plane_email": self.plane_email,
+            "synlora_username": self.synlora_username,
+            "source": self.source,
+            "created_at": format_utc_datetime(self.created_at),
+            "updated_at": format_utc_datetime(self.updated_at),
+        }
+
+
 class CLIAuthSession(Base):
     """CLI 浏览器授权会话。"""
 

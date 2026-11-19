@@ -17,6 +17,7 @@ from server.routers.knowledge_router import knowledge
 from server.routers.mcp_router import mcp
 from server.routers.mention_router import mention_router
 from server.routers.model_provider_router import model_providers
+from server.routers.plane_compat_router import plane_compat
 from server.routers.project_router import projects
 from server.routers.scheduled_agent_router import scheduled_agents
 from server.routers.skill_router import skills, user_skills
@@ -31,6 +32,7 @@ router = APIRouter()
 # 基础系统接口：健康检查、配置、认证与聊天主链路。
 router.include_router(system)  # /api/system/* 系统状态与全局配置
 router.include_router(auth)  # /api/auth/* 登录、用户信息与 CLI 浏览器登录授权
+router.include_router(plane_compat)  # /api/health、/api/v1/* Plane(OpenEVA) 兼容面
 router.include_router(agent_router)  # /api/agent/* 智能体管理与运行态
 router.include_router(agent_invocation_call_router)  # /api/agent-invocation/agent-call/*
 router.include_router(agent_invocation_channel_router)  # /api/agent-invocation/channel/*

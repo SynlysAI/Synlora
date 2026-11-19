@@ -84,6 +84,18 @@ class UserRepository:
         result = await db.execute(select(User).where(User.uid == uid))
         return result.scalar_one_or_none()
 
+    async def get_active_by_id_with_db(self, db: AsyncSession, id: int) -> User | None:
+        """使用指定的 db 根据 ID 获取未删除用户。"""
+        result = await db.execute(select(User).where(User.id == id, User.is_deleted == 0))
+        return result.scalar_one_or_none()
+
+    async def get_active_by_username_with_db(self, db: AsyncSession, username: str) -> User | None:
+        """使用指定的 db 按用户名获取未删除用户。"""
+        result = await db.execute(
+            select(User).where(User.username == username, User.is_deleted == 0)
+        )
+        return result.scalar_one_or_none()
+
     async def list_by_uids(self, uids: list[str]) -> list[User]:
         """批量获取指定 uid 的用户。"""
         normalized_uids = sorted({str(uid).strip() for uid in uids if str(uid).strip()})
