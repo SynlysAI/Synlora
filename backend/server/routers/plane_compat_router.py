@@ -42,6 +42,7 @@ from yuxi.services.plane_context_service import (
 from yuxi.services.plane_session_compat_service import PlaneSessionCompatService
 from yuxi.storage.postgres.models_business import User
 from yuxi.utils.auth_utils import AuthUtils
+from yuxi.utils.logging_config import logger
 
 DELEGATED_AUTH_SCHEMA = "plane-delegated-auth.v1"
 ACCOUNT_LINK_REPAIR_SCHEMA = "plane-account-link-repair.v1"
@@ -291,8 +292,16 @@ class V1MessageBody(BaseModel):
 
 
 def _delta_frame(event_name: str, text: str, v1_run_id: str) -> str:
-    """构造瞬态增量帧（无 seq，客户端不回放）。"""
-    data = json.dumps({"text": text, "run_id": v1_run_id}, ensure_ascii=False)
+    """构造瞬态增量帧（统一信封格式，seq=0 不参与回放）。"""
+    data = json.dumps(
+        {
+            "seq": 0,
+            "type": event_name,
+            "payload": {"text": text, "run_id": v1_run_id},
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
+        },
+        ensure_ascii=False,
+    )
     return f"event: {event_name}\ndata: {data}\n\n"
 
 
@@ -480,6 +489,7 @@ async def plane_stream_events(
                 content = stream_event.get("content")
                 reasoning = stream_event.get("reasoning_content")
                 if content:
+                    logger.info(f"PLANE_SSE_DEBUG delta thread={thread_id[:8]} len={len(str(content))}")
                     frames.append(_delta_frame("llm/delta", str(content), v1_run_id))
                 if reasoning:
                     frames.append(_delta_frame("reasoning/delta", str(reasoning), v1_run_id))
