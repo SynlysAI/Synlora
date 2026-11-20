@@ -521,3 +521,30 @@ async def test_projection_duplicate_end_envelope_projects_once(monkeypatch):
     await svc.project_pending_events("t1")
     types = [row.event_type for row in svc.events.rows]
     assert types == ["assistant/message", "tool/result", "turn/end"]
+
+
+@pytest.mark.asyncio
+async def test_projection_emits_tool_call_started_events(monkeypatch):
+    """messages 信标中的 tool_call 终态块投影为 tool/call（Plane 耗时计算依赖）。"""
+    db = FakeDb(results=["run-internal"])
+    svc = _make_service(db, [_mapping()])
+    monkeypatch.setattr(service, "get_async_redis_client", lambda: _async(FakeRedis()))
+    chunk = {
+        "request_id": "r",
+        "response": None,
+        "thread_id": "t1",
+        "status": "loading",
+        "stream_event": {"type": "tool_call", "message_id": "m1", "tool_call_id": "tc-1", "name": "ls", "args": {"path": "/tmp"}, "index": 0},
+    }
+    import json as json_mod
+
+    events = [
+        _envelope("messages", {"items": [json_mod.dumps(chunk)]}),
+        _envelope("messages", {"chunk": chunk}),  # 单块形式
+    ]
+    monkeypatch.setattr(service, "list_run_stream_events", lambda *a, **k: _async_return(events))
+    await svc.project_pending_events("t1")
+    calls = [row for row in svc.events.rows if row.event_type == "tool/call"]
+    assert len(calls) == 2
+    assert calls[0].payload["tool_call"] == {"name": "ls", "id": "tc-1", "arguments": {"path": "/tmp"}}
+    assert calls[0].source_key.endswith(":call:tc-1")

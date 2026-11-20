@@ -622,7 +622,9 @@ class PlaneSessionCompatService:
             event = row.get("event_type")
             inner = (row.get("payload") or {}).get("payload") or {}
             source = f"{current_run_id}:{row['seq']}"
-            if event == "interrupt":
+            if event == "messages":
+                await self._project_tool_calls(thread_id, mapping.v1_run_id, inner, source)
+            elif event == "interrupt":
                 await self._project_interrupt(thread_id, mapping.v1_run_id, inner, source)
             elif event == "error":
                 chunk = inner.get("chunk") or {}
@@ -643,6 +645,38 @@ class PlaneSessionCompatService:
                     thread_id, mapping, str(inner.get("status") or ""), f"{current_run_id}:terminal"
                 )
             await redis.set(cursor_key, row["seq"], ex=7 * 24 * 3600)
+
+    async def _project_tool_calls(self, thread_id: str, v1_run_id: str, payload: dict, source: str) -> None:
+        """把 run 流中的 tool_call 终态块投影为 tool/call（Plane 按开始/结束事件算耗时）。"""
+        chunks = payload.get("items") or ([payload["chunk"]] if payload.get("chunk") else [])
+        for chunk in chunks:
+            if isinstance(chunk, str):
+                try:
+                    chunk = json.loads(chunk)
+                except ValueError:
+                    continue
+            if not isinstance(chunk, dict):
+                continue
+            stream_event = chunk.get("stream_event")
+            if not isinstance(stream_event, dict) or stream_event.get("type") != "tool_call":
+                continue
+            tool_call_id = str(stream_event.get("tool_call_id") or "")
+            if not tool_call_id:
+                continue
+            await self._append_event(
+                thread_id=thread_id,
+                event_type="tool/call",
+                run_id=v1_run_id,
+                payload={
+                    "tool_call": {
+                        "name": str(stream_event.get("name") or ""),
+                        "id": tool_call_id,
+                        "arguments": stream_event.get("args") or {},
+                    },
+                    "run_id": v1_run_id,
+                },
+                source_key=f"{source}:call:{tool_call_id}",
+            )
 
     async def _project_interrupt(self, thread_id: str, v1_run_id: str, payload: dict, source: str) -> None:
         chunk = payload.get("chunk") or {}
