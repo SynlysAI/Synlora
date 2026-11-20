@@ -638,7 +638,10 @@ class PlaneSessionCompatService:
                     source_key=source,
                 )
             elif event == "end":
-                await self._project_end(thread_id, mapping, str(inner.get("status") or ""), source)
+                # 终态按 run 只投影一次：worker 终态与 SSE 兜底可能各发一条 end 信标
+                await self._project_end(
+                    thread_id, mapping, str(inner.get("status") or ""), f"{current_run_id}:terminal"
+                )
             await redis.set(cursor_key, row["seq"], ex=7 * 24 * 3600)
 
     async def _project_interrupt(self, thread_id: str, v1_run_id: str, payload: dict, source: str) -> None:
@@ -652,6 +655,9 @@ class PlaneSessionCompatService:
                 args_preview = json.dumps(args, ensure_ascii=False)[:ARGS_PREVIEW_LIMIT]
             except (TypeError, ValueError):
                 args_preview = ""
+            # Plane 前端按 tool_call_id 渲染审批按钮，缺失即不显示；
+            # yuxi 中断负载的 action_requests 不带 id，用确定性合成 id（源键保证重投影稳定）
+            tool_call_id = str(first.get("id") or first.get("tool_call_id") or f"{v1_run_id}:{source}")
             await self._append_event(
                 thread_id=thread_id,
                 event_type="ask/user",
@@ -659,7 +665,7 @@ class PlaneSessionCompatService:
                 payload={
                     "kind": "approval",
                     "tool": first.get("name") or first.get("tool"),
-                    "tool_call_id": first.get("id") or first.get("tool_call_id"),
+                    "tool_call_id": tool_call_id,
                     "query": f"请求执行工具 {first.get('name') or first.get('tool') or ''}，是否允许？",
                     "args_preview": args_preview,
                     "run_id": v1_run_id,
@@ -678,6 +684,10 @@ class PlaneSessionCompatService:
     async def _project_end(self, thread_id: str, mapping: PlaneCompatRunModel, end_status: str, source: str) -> None:
         """终态投影：interrupted 补当轮工具结果不收尾；完成补最终回复后收尾。"""
         v1_run_id = mapping.v1_run_id
+        if await self.events.source_exists(thread_id, f"{source}:assistant") or await self.events.source_exists(
+            thread_id, f"{source}:end"
+        ):
+            return  # 该 run 的终态已投影（重复 end 信标）
         if end_status == "interrupted":
             # 审批等待前已执行的工具结果仍需可见（老平台按发生时落盘）
             await self._project_tool_results(thread_id, v1_run_id, mapping.current_run_id, source)

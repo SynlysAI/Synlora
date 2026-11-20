@@ -497,3 +497,27 @@ async def test_validate_research_context_detects_policy_inflation(monkeypatch):
     with pytest.raises(ResearchContextError) as exc:
         await context_service.validate_research_context(token="t", expected=_context())
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_projection_duplicate_end_envelope_projects_once(monkeypatch):
+    """worker 终态与 SSE 兜底各发一条 end 信标时，终态只投影一次。"""
+    db = FakeDb(
+        results=[
+            "run-internal",
+            SimpleNamespace(status="completed", output_message_id=11),
+            SimpleNamespace(id=9, content="回复"),
+            [SimpleNamespace(id=77, content="ls 输出", extra_metadata={"tool_name": "execute"})],
+        ]
+    )
+    svc = _make_service(db, [_mapping()])
+    redis = FakeRedis()
+    monkeypatch.setattr(service, "get_async_redis_client", lambda: _async(redis))
+    events = [
+        _envelope("end", {"status": "completed"}),
+        _envelope("end", {"status": "completed"}),
+    ]
+    monkeypatch.setattr(service, "list_run_stream_events", lambda *a, **k: _async_return(events))
+    await svc.project_pending_events("t1")
+    types = [row.event_type for row in svc.events.rows]
+    assert types == ["assistant/message", "tool/result", "turn/end"]
