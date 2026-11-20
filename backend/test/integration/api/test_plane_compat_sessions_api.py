@@ -236,7 +236,10 @@ async def test_plane_session_attaches_to_workspace_project(monkeypatch):
     app.dependency_overrides[get_db] = provide_db
     app.dependency_overrides[get_current_user] = provide_user
     try:
-        plane_meta = {"workspace": {"id": "ws-uuid-1", "slug": "ws", "name": "研发工作区"}, "target": {"type": "WORKSPACE"}}
+        plane_meta = {
+            "workspace": {"id": "ws-uuid-1", "slug": "ws", "name": "研发工作区"},
+            "target": {"type": "WORKSPACE"},
+        }
         research_context = {
             "schema_version": "agent-context.v3",
             "context_id": "ctx-1",
