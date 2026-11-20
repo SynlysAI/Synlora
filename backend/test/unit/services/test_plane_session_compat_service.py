@@ -539,8 +539,10 @@ async def test_projection_emits_tool_call_started_events(monkeypatch):
         "response": None,
         "thread_id": "t1",
         "status": "loading",
-        "stream_event": {"type": "tool_call", "message_id": "m1", "tool_call_id": "tc-1", "name": "ls", "args": {"path": "/tmp"}, "index": 0},
-    }
+            "stream_event": {
+                "type": "tool_call", "message_id": "m1", "tool_call_id": "tc-1", "name": "ls",
+                "args": {"path": "/tmp"}, "index": 0,
+            },    }
     import json as json_mod
 
     items_form = _envelope("messages", {"items": [json_mod.dumps(chunk)]})
