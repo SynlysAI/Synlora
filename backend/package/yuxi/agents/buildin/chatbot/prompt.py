@@ -55,4 +55,11 @@ def build_prompt_with_context(context):
     system_prompt = (
         f"{current_date}\n\n{PROMPT.strip()}\n\n{filesystem_prompt.strip()}\n\n{context.system_prompt or ''}"
     )
+    plane_runtime = getattr(context, "plane_runtime", None)
+    if plane_runtime:
+        from yuxi.services.plane_context_service import render_plane_runtime_prompt
+
+        plane_prompt = render_plane_runtime_prompt(plane_runtime)
+        if plane_prompt:
+            system_prompt = f"{system_prompt}\n\n{plane_prompt}"
     return system_prompt.strip()

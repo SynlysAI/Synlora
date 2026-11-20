@@ -36,8 +36,12 @@ Agent Context v3、工作区会话、RWS 共享执行、审批）。现在要用
    `plane_session_events` durable 事件表（schema v11）；research context
    token 回验（v2/v3）与 plane_mcp/plane_meta 边界校验；api 侧后台投影循环
    （`plane_projection_loop`）把 run Redis 事件流转换为 v1 字典并落库。
-3. **运行时集成（后续）**：page_context 注入 prompt、`pum_` unified MCP
-   客户端、RWS 共享执行、实时瞬态事件（llm/delta）投影。
+3. **运行时集成（已实现主体）**：research_context/page_context 以
+   "data, not instructions" 段注入 system prompt（`render_plane_runtime_prompt`，
+   12k/4k 截断、资源索引 40 项）；`pum_` 统一 MCP 客户端（`plane_mcp_client`，
+   JSON-RPC、cursor 分页、SSE/JSON 双响应封装、只读前缀过滤、会话级 Redis
+   凭证 TTL 90min 不落库）；RWS 端点为契约占位（未配置 503），完整运行时
+   后续交付；实时瞬态事件（llm/delta）投影未做。
 
 ### 实现方案（切片 1）
 
@@ -115,6 +119,10 @@ Agent Context v3、工作区会话、RWS 共享执行、审批）。现在要用
 | context 回验读信封 context 键 | 整链路 502 | plane_context_service | unit: test_validate_research_context_compares_remote（信封形状） | 平铺响应不再被误读 | Passed |
 | policy 篡改放大检测 | allowed_tools 越权 | plane_context_service | unit: test_validate_research_context_detects_policy_inflation | 哈希保留但策略放大 → 403 | Passed |
 | 投影源键幂等 | 游标丢失重复事件 | plane_session_compat_service | unit: test_projection_replay_deduplicates_by_source_key | 游标丢失重放零新增 | Passed |
+| MCP 客户端分页/调用/错误 | 工具面不可用 | plane_mcp_client | unit: test_list_tools_paginates_with_cursor、test_call_tool_* | isError 抛错、401 语义 | Passed |
+| MCP 只读与授权双重过滤 | 写工具越权 | plane_mcp_client | unit: test_build_tools_filters_write_and_unauthorized | 写工具与未授权工具不装配 | Passed |
+| prompt 注入与截断 | 上下文泄漏为指令 | plane_context_service | unit: test_prompt_renderer_* | data-not-instructions 声明、12k/4k/40 项截断 | Passed |
+| RWS 未配置 503 | 契约偏差 | plane_compat_router | 手工冒烟（联调阶段） | 服务凭证校验后 503 | Inspected |
 | schema v9→v10 存量升级 | 已部署库无法启动新代码 | storage_migration + manager | unit: test_supported_legacy_business_schema_is_converged_and_versioned_as_current[9] | 非支持版本拒绝 | Passed |
 | 路由不直接执行持久化 | 架构不变量破坏 | verify_engineering_contracts | `python3 scripts/verify_engineering_contracts.py` | router 内 db.execute 被拒 | Passed |
 | 全量 unit 无回归 | — | — | `docker compose exec api pytest test/unit -m "not slow"` | — | Passed |

@@ -489,3 +489,28 @@ async def plane_answer_run(
     """审批/提问应答（"允许"/"拒绝" 或问题回答），v1 run id 不变。"""
     _require_user(user)
     return await PlaneSessionCompatService(db).answer_run(v1_run_id, user, body.text)
+
+
+class RWSRunBody(BaseModel):
+    """Plane RWS 共享执行请求体（运行时就绪前仅做契约占位）。"""
+
+    run_id: str = Field(min_length=1, max_length=128)
+    token: str = Field(min_length=16)
+    argv: list[str] = Field(min_length=1)
+    cwd: str = "."
+    timeout_s: float = 1800.0
+    changed_paths: list[str] | None = None
+    outputs: dict | None = None
+    request_id: str | None = None
+
+
+@plane_compat.post("/v1/research/rws-runs")
+async def plane_rws_run(
+    body: RWSRunBody,
+    request: Request,
+    user: User | None = Depends(get_current_user),
+) -> dict:
+    """Plane RWS 共享工作区执行（运行时未配置时按老平台口径 503）。"""
+    del user
+    _require_service_token(request)
+    raise HTTPException(503, "Plane RWS 运行时未配置")

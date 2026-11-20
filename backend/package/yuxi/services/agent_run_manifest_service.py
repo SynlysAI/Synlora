@@ -167,6 +167,11 @@ async def prepare_run_execution(
         context.model = payload["model_spec"]
     if payload.get("tool_approval_mode"):
         context.tool_approval_mode = payload["tool_approval_mode"]
+    # Plane 兼容层运行时数据（research/page 上下文与 MCP 描述）：
+    # 非 schema 可配置字段，仅本次执行可见，不进入 manifest
+    plane_runtime = dict(getattr(run, "origin_metadata", None) or {}).get("plane") or None
+    if plane_runtime:
+        context.plane_runtime = plane_runtime
     if run.run_type == "subagent":
         parent_thread_id = str((payload.get("runtime") or {}).get("parent_thread_id") or "").strip()
         if not parent_thread_id:

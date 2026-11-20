@@ -28,6 +28,7 @@ from yuxi.services.agent_request_service import AgentRequestInput, RunOrigin, su
 from yuxi.services.agent_run_service import create_resume_run_view, request_cancel_agent_run
 from yuxi.services.conversation_service import create_thread_view
 from yuxi.services.input_message_service import build_chat_input_message
+from yuxi.services.plane_mcp_client import store_plane_mcp_token
 from yuxi.services.plane_context_service import (
     PlaneMcpRuntime,
     ResearchContextError,
@@ -249,6 +250,7 @@ class PlaneSessionCompatService:
                     raise HTTPException(exc.status_code, exc.message)
                 if not mcp_token:
                     raise HTTPException(401, "缺少 Plane MCP 令牌")
+                await store_plane_mcp_token(thread_id, mcp_token)
             if plane_meta is not None:
                 try:
                     validate_plane_metadata_scope(plane_meta, effective_context)

@@ -148,6 +148,19 @@ async def resolve_configured_runtime_tools(context) -> list[Any]:
             selected_tool_names.add(tool.name)
             selected_tool_sources[tool.name] = f"MCP '{server_name}'"
 
+    # Plane 统一 MCP（会话级短期凭证，只读工具面）；失败降级为空集不阻断装配
+    plane_runtime = getattr(context, "plane_runtime", None)
+    if plane_runtime and plane_runtime.get("plane_mcp"):
+        from yuxi.services.plane_mcp_client import build_plane_runtime_tools
+
+        for tool in await build_plane_runtime_tools(context.thread_id, plane_runtime["plane_mcp"]):
+            if tool.name in selected_tool_names:
+                logger.warning(f"Plane MCP 工具名冲突，跳过: {tool.name}")
+                continue
+            selected_tools.append(tool)
+            selected_tool_names.add(tool.name)
+            selected_tool_sources[tool.name] = "plane-mcp"
+
     # Skill 依赖的本地工具：必须随基础工具一起注册进 create_agent 的 ToolNode 才可执行，
     # 否则 Skill 激活后模型虽能发起调用，执行器仍报 "not a valid tool"。
     # 默认绑定给模型的可见性由 SkillsMiddleware 按 Skill 激活状态门控（保持按需加载）。
