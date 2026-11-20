@@ -317,7 +317,12 @@ class PlaneSessionCompatService:
                 return {"session_id": thread_id, "run_id": existing.v1_run_id}
 
         v1_run_id = str(uuid.uuid4())
-        approval_mode = _approval_mode_to_yuxi(plane_meta_store.get("approval_mode") or "ask_for_dangerous")
+        # PLANE_DEFAULT_APPROVAL_MODE=always_allow 时为覆盖语义（Plane 会显式传
+        # ask_for_dangerous，跨页面审批闭环未启用前一律完全信任）
+        if getattr(plane_config, "plane_default_approval_mode", "always_allow") == "always_allow":
+            approval_mode = "always_trust"
+        else:
+            approval_mode = _approval_mode_to_yuxi(plane_meta_store.get("approval_mode") or "ask_for_dangerous")
         origin_metadata = {
             "v1_run_id": v1_run_id,
             "external_run_id": external_run_id or None,
