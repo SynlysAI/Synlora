@@ -184,7 +184,8 @@ def _prop_annotation(prop: dict[str, Any], *, required: bool = False):
 
 def _build_args_schema(tool_def: dict[str, Any]) -> type | None:
     """把 MCP inputSchema 转换为 pydantic 模型（嵌套递归展开/enum/约束）。"""
-    return _build_object_model(tool_def.get("inputSchema") or {}, model_name=f"PlaneMcp_{tool_def.get('name') or 'tool'}", depth=0)
+    model_name = f"PlaneMcp_{tool_def.get('name') or 'tool'}"
+    return _build_object_model(tool_def.get("inputSchema") or {}, model_name=model_name, depth=0)
 
 
 def _build_object_model(schema: dict[str, Any], *, model_name: str, depth: int) -> type | None:
