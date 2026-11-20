@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from typing import Any
@@ -41,6 +40,7 @@ from yuxi.services.plane_context_service import (
 )
 from yuxi.services.project_service import create_project_record
 from yuxi.services.run_queue_service import list_run_stream_events
+from yuxi.workspace.paths import ensure_bound_user_workdir
 from yuxi.storage.redis import get_async_redis_client
 from yuxi.storage.postgres.models_business import AgentRun, Conversation, Message, Project, User
 from yuxi.storage.postgres.models_business import PlaneCompatRun as PlaneCompatRunModel
@@ -88,8 +88,9 @@ class PlaneSessionCompatService:
         workspace_id = str(workspace.get("id") or "")
         if not workspace_id:
             return None
-        digest = hashlib.sha256(f"{user.uid}:{workspace_id}".encode()).hexdigest()[:20]
-        project_id = f"plane-{digest}"
+        # Project id 必须是合法 UUID（workspace/paths 按 uuid.UUID 规范化）；
+        # uuid5 保证同 (uid, workspace) 确定性复用
+        project_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"plane:{user.uid}:{workspace_id}"))
         result = await self.db.execute(select(Project).where(Project.id == project_id, Project.uid == user.uid))
         existing = result.scalar_one_or_none()
         if existing is not None and existing.status == "active":
@@ -103,7 +104,7 @@ class PlaneSessionCompatService:
             await self.db.commit()
             return project_id
         try:
-            await create_project_record(
+            project = await create_project_record(
                 uid=user.uid,
                 name=f"Plane · {workspace.get('name') or workspace.get('slug')}"[:120],
                 directory_mode="managed",
@@ -112,8 +113,10 @@ class PlaneSessionCompatService:
                 project_id=project_id,
             )
             await self.db.commit()
+            # selectable Project 在会话绑定时要求目录已物化（Workdir.open_existing）
+            ensure_bound_user_workdir(str(user.uid), project.workdir_path)
         except IntegrityError:
-            await self.db.rollback()  # 并发建：幂等返回
+            await self.db.rollback()  # 并发建：幂等返回，目录由先到者物化
         return project_id
 
     async def create_session(self, *, user, body: dict[str, Any]) -> dict:

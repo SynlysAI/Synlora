@@ -176,3 +176,107 @@ async def test_plane_v1_sessions_http_round_trip(monkeypatch):
             await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         await scoped_engine.dispose()
         await admin_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plane_session_attaches_to_workspace_project(monkeypatch):
+    """带 plane_meta 的会话归属确定性 Plane 工作区项目（uuid5 确定性 id）。"""
+    import yuxi.services.plane_context_service as context_service
+    import yuxi.services.plane_session_compat_service as compat_service
+    from yuxi.services.plane_session_compat_service import PlaneSessionCompatService
+
+    schema = f"pytest_plane_proj_{uuid.uuid4().hex[:16]}"
+    admin_engine = create_async_engine(os.environ["POSTGRES_URL"], pool_pre_ping=True)
+    async with admin_engine.begin() as connection:
+        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    scoped_engine = create_async_engine(
+        os.environ["POSTGRES_URL"],
+        pool_pre_ping=True,
+        connect_args={"server_settings": {"search_path": schema}},
+    )
+    manager = object.__new__(PostgresManager)
+    PostgresManager.__init__(manager)
+    manager.async_engine = scoped_engine
+    manager._initialized = True
+    session_factory = async_sessionmaker(scoped_engine, expire_on_commit=False)
+
+    async def provide_db():
+        async with session_factory() as session:
+            yield session
+
+    test_user = SimpleNamespace(id=1, uid="plane:it-user", username="plane_it", role="user")
+
+    async def provide_user(authorization: str | None = Header(None)):
+        return test_user if authorization else None
+
+    async def fake_validate(*, token, expected):
+        return None
+
+    await manager.create_business_tables()
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO users (username, uid, password_hash, role, is_deleted, login_failed_count)"
+                " VALUES ('plane_it', 'plane:it-user', 'x', 'user', 0, 0)"
+            )
+        )
+        await session.execute(
+            text(
+                "INSERT INTO agents (slug, backend_id, name, pics, config_json, share_config, is_default, is_subagent)"
+                " VALUES ('default-chatbot', 'chatbot', 'IT', '[]'::jsonb, '{}'::jsonb,"
+                " ('{ \"version\": 2, \"read_scope\": { \"access_level\": \"global\","
+                " \"department_ids\": [], \"user_uids\": [] } }')::jsonb, TRUE, FALSE)"
+            )
+        )
+        await session.commit()
+
+    monkeypatch.setattr(context_service, "validate_research_context", fake_validate)
+    import server.routers.plane_compat_router as router_mod
+
+    monkeypatch.setattr(router_mod, "validate_research_context", fake_validate)
+    previous_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[get_db] = provide_db
+    app.dependency_overrides[get_current_user] = provide_user
+    try:
+        plane_meta = {"workspace": {"id": "ws-uuid-1", "slug": "ws", "name": "研发工作区"}, "target": {"type": "WORKSPACE"}}
+        research_context = {
+            "schema_version": "agent-context.v3",
+            "context_id": "ctx-1",
+            "context_hash": "h1",
+            "issuer": "http://plane.test",
+            "target": {"type": "WORKSPACE", "workspace_id": "ws-uuid-1", "workspace_slug": "ws"},
+            "subject": {"plane_user_id": "u1"},
+            "policy": {"policy_id": "p1", "policy_hash": "ph1", "allowed_tools": []},
+        }
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/v1/sessions",
+                json={"title": "项目归属", "plane_meta": plane_meta, "research_context": research_context},
+                headers={"Authorization": "Bearer test", "X-Research-Context-Token": "t"},
+            )
+            assert created.status_code == 201, created.text
+            project_id = created.json()["project_id"]
+            import uuid as uuid_mod
+
+            assert str(uuid_mod.UUID(project_id)) == project_id  # 必须是合法 UUID
+            async with session_factory() as session:
+                row = await session.execute(
+                    text("SELECT id, name, selection_status FROM projects WHERE id = :pid"), {"pid": project_id}
+                )
+                project = row.one()
+            assert project.name.startswith("Plane · ")
+            assert project.selection_status == "selectable"
+            # 再次创建同工作区会话 → 复用同一项目
+            again = await client.post(
+                "/api/v1/sessions",
+                json={"title": "第二会话", "plane_meta": plane_meta, "research_context": research_context},
+                headers={"Authorization": "Bearer test", "X-Research-Context-Token": "t"},
+            )
+            assert again.json()["project_id"] == project_id
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous_overrides)
+        async with admin_engine.begin() as connection:
+            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        await scoped_engine.dispose()
+        await admin_engine.dispose()
