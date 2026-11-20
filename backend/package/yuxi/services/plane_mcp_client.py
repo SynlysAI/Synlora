@@ -163,17 +163,17 @@ def _prop_annotation(prop: dict[str, Any], *, required: bool = False):
         constraints["le"] = prop["maximum"]
 
     enum_values = prop.get("enum")
-    if isinstance(enum_values, list) and enum_values and prop_type == "string":
+    if isinstance(enum_values, list) and enum_values and prop_type in ("string", None):
         from typing import Literal
 
         literal = Literal[tuple(str(value) for value in enum_values)]  # type: ignore[valid-type]
         return literal, FieldInfo(default=default, description=description)
     if prop_type == "string":
-        return str, FieldInfo(default=None, description=description, **constraints)
+        return str, FieldInfo(default=default, description=description, **constraints)
     if prop_type == "integer":
-        return int, FieldInfo(default=None, description=description, **constraints)
+        return int, FieldInfo(default=default, description=description, **constraints)
     if prop_type == "number":
-        return float, FieldInfo(default=None, description=description, **constraints)
+        return float, FieldInfo(default=default, description=description, **constraints)
     if prop_type == "boolean":
         return bool, FieldInfo(default=default, description=description)
     if prop_type == "array":
@@ -183,20 +183,32 @@ def _prop_annotation(prop: dict[str, Any], *, required: bool = False):
 
 
 def _build_args_schema(tool_def: dict[str, Any]) -> type | None:
-    """把 MCP inputSchema 转换为 pydantic 模型（嵌套/enum/约束宽容降级）。"""
-    schema = tool_def.get("inputSchema") or {}
+    """把 MCP inputSchema 转换为 pydantic 模型（嵌套递归展开/enum/约束）。"""
+    return _build_object_model(tool_def.get("inputSchema") or {}, model_name=f"PlaneMcp_{tool_def.get('name') or 'tool'}", depth=0)
+
+
+def _build_object_model(schema: dict[str, Any], *, model_name: str, depth: int) -> type | None:
+    """递归把 JSON Schema object 转换为 pydantic 模型；超深或无字段返回 None。"""
     properties = schema.get("properties") or {}
-    if not isinstance(properties, dict) or not properties:
+    if not isinstance(properties, dict) or not properties or depth > 3:
         return None
     required = set(schema.get("required") or [])
     fields: dict[str, tuple] = {}
     for key, prop in properties.items():
         if not isinstance(prop, dict):
             prop = {}
+        if prop.get("type") == "object":
+            nested = _build_object_model(prop, model_name=f"{model_name}_{key}", depth=depth + 1)
+            if nested is not None:
+                default = ... if key in required else prop.get("default", None)
+                fields[key] = (nested, FieldInfo(default=default, description=str(prop.get("description") or "")[:200]))
+                continue
         annotation, field_info = _prop_annotation(prop, required=key in required)
         fields[key] = (annotation, field_info)
+    if not fields:
+        return None
     try:
-        return create_model(f"PlaneMcp_{tool_def['name']}", **fields)
+        return create_model(model_name, **fields)
     except (TypeError, ValueError):
         return None
 
