@@ -505,12 +505,7 @@ class RWSRunBody(BaseModel):
 
 
 @plane_compat.post("/v1/research/rws-runs")
-async def plane_rws_run(
-    body: RWSRunBody,
-    request: Request,
-    user: User | None = Depends(get_current_user),
-) -> dict:
-    """Plane RWS 共享工作区执行（运行时未配置时按老平台口径 503）。"""
-    del user
+async def plane_rws_run(body: RWSRunBody, request: Request) -> dict:
+    """Plane RWS 共享工作区执行（仅服务凭证；未配置时按老平台口径 503）。"""
     _require_service_token(request)
     raise HTTPException(503, "Plane RWS 运行时未配置")
