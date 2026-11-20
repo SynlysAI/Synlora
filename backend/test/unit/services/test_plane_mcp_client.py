@@ -150,3 +150,24 @@ def test_prompt_renderer_sections_and_limits():
 
 def test_prompt_renderer_empty_returns_empty():
     assert context_mod.render_plane_runtime_prompt({}) == ""
+
+
+def test_context_metadata_accepts_null_v2_compat_fields():
+    """Plane 对 WORKSPACE 级上下文返回 null 的 v2 兼容字段，必须可解析。"""
+    from yuxi.services.plane_context_service import ResearchContextMetadata
+
+    sample = {
+        "schema_version": "agent-context.v3",
+        "context_id": "ctx-1",
+        "context_hash": "h1",
+        "issuer": "http://plane.test",
+        "target": {"type": "WORKSPACE", "workspace_id": "ws-1", "workspace_slug": "demo"},
+        "subject": {"plane_user_id": "u1"},
+        "policy": {"policy_id": "p1", "policy_hash": "ph1", "allowed_tools": []},
+        "workspace_id": "ws-1",
+        "workspace_slug": None,
+        "research_project_id": None,
+        "chain_node_id": None,
+    }
+    parsed = ResearchContextMetadata.model_validate(sample)
+    assert parsed.normalized_projection()["target"]["workspace_id"] == "ws-1"

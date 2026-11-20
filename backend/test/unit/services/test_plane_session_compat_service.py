@@ -138,7 +138,11 @@ def _make_service(db, mappings):
 @pytest.mark.asyncio
 async def test_projection_converts_full_lifecycle(monkeypatch):
     db = FakeDb(
-        results=[SimpleNamespace(status="completed", output_message_id=11), SimpleNamespace(id=9, content="最终回复")]
+        results=[
+            "run-internal",
+            SimpleNamespace(status="completed", output_message_id=11),
+            SimpleNamespace(id=9, content="最终回复"),
+        ]
     )
     db.results.append(
         [SimpleNamespace(id=88, content="工具输出", extra_metadata={"tool_name": "web_search", "tool_call_id": "tc1"})]
@@ -162,7 +166,7 @@ async def test_projection_converts_full_lifecycle(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_projection_is_idempotent_via_cursor(monkeypatch):
-    db = FakeDb(results=[SimpleNamespace(status="completed", output_message_id=None), None])
+    db = FakeDb(results=[None, SimpleNamespace(status="completed", output_message_id=None), None])
     svc = _make_service(db, [_mapping()])
     redis = FakeRedis()
     redis.store["plane:proj:run-internal"] = "1-end"
@@ -181,9 +185,14 @@ async def test_projection_is_idempotent_via_cursor(monkeypatch):
 async def test_projection_replay_deduplicates_by_source_key(monkeypatch):
     """游标丢失（如 Redis 重启）整批重放时，源键幂等保证不产生重复事件。"""
     db = FakeDb(
-        results=[SimpleNamespace(status="completed", output_message_id=11), SimpleNamespace(id=9, content="回复")]
+        results=[
+            "run-internal",
+            SimpleNamespace(status="completed", output_message_id=11),
+            SimpleNamespace(id=9, content="回复"),
+        ]
     )
     db.results.append([])
+    db2 = FakeDb(results=[None])
     svc = _make_service(db, [_mapping()])
     redis = FakeRedis()
     monkeypatch.setattr(service, "get_async_redis_client", lambda: _async(redis))
@@ -201,7 +210,7 @@ async def test_projection_replay_deduplicates_by_source_key(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_projection_maps_interrupt_and_aborted(monkeypatch):
-    db = FakeDb(results=[None])
+    db = FakeDb(results=["run-internal", None])
     svc = _make_service(db, [_mapping()])
     monkeypatch.setattr(service, "get_async_redis_client", lambda: _async(FakeRedis()))
     events = [
@@ -228,7 +237,7 @@ async def test_projection_maps_interrupt_and_aborted(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_projection_maps_question_interrupt(monkeypatch):
-    db = FakeDb(results=[])
+    db = FakeDb(results=["run-internal"])
     svc = _make_service(db, [_mapping()])
     monkeypatch.setattr(service, "get_async_redis_client", lambda: _async(FakeRedis()))
     events = [
@@ -268,9 +277,10 @@ async def test_answer_allows_and_rejects_approval(monkeypatch):
     for text, expected in (("允许", "approve"), ("拒绝", "reject"), ("随便", "reject")):
         db = FakeDb(
             results=[
+                "run-internal",
                 SimpleNamespace(
                     status="interrupted", error_type="human_approval_required", agent_slug="default-chatbot"
-                )
+                ),
             ]
         )
         svc = _make_service(db, [_mapping()])
@@ -289,7 +299,9 @@ async def test_answer_allows_and_rejects_approval(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_answer_rejects_when_not_interrupted():
-    db = FakeDb(results=[SimpleNamespace(status="completed", error_type=None, agent_slug="default-chatbot")])
+    db = FakeDb(
+        results=["run-internal", SimpleNamespace(status="completed", error_type=None, agent_slug="default-chatbot")]
+    )
     svc = _make_service(db, [_mapping()])
     with pytest.raises(HTTPException) as exc:
         await svc.answer_run("v1-run", USER, "允许")
@@ -298,7 +310,9 @@ async def test_answer_rejects_when_not_interrupted():
 
 @pytest.mark.asyncio
 async def test_cancel_on_running_requests_cancel(monkeypatch):
-    db = FakeDb(results=[SimpleNamespace(status="running", error_type=None, agent_slug="default-chatbot")])
+    db = FakeDb(
+        results=["run-internal", SimpleNamespace(status="running", error_type=None, agent_slug="default-chatbot")]
+    )
     svc = _make_service(db, [_mapping()])
     cancelled = {}
 
@@ -314,7 +328,9 @@ async def test_cancel_on_running_requests_cancel(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cancel_on_terminal_returns_not_ok():
-    db = FakeDb(results=[SimpleNamespace(status="completed", error_type=None, agent_slug="default-chatbot")])
+    db = FakeDb(
+        results=["run-internal", SimpleNamespace(status="completed", error_type=None, agent_slug="default-chatbot")]
+    )
     svc = _make_service(db, [_mapping()])
     assert await svc.cancel_run("v1-run", USER) == {"ok": False}
 
@@ -323,7 +339,10 @@ async def test_cancel_on_terminal_returns_not_ok():
 async def test_cancel_on_question_interrupt_rejected():
     db = FakeDb(
         results=[
-            SimpleNamespace(status="interrupted", error_type="ask_user_question_required", agent_slug="default-chatbot")
+            "run-internal",
+            SimpleNamespace(
+                status="interrupted", error_type="ask_user_question_required", agent_slug="default-chatbot"
+            ),
         ]
     )
     svc = _make_service(db, [_mapping()])

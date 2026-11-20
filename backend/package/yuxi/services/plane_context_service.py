@@ -50,11 +50,11 @@ class ResearchContextMetadata(BaseModel):
     subject: dict[str, Any] | None = None
     policy: dict[str, Any] | None = None
     manifest: dict[str, Any] | None = None
-    # v2 扁平字段
-    workspace_id: str = ""
-    workspace_slug: str = ""
-    research_project_id: str = ""
-    chain_node_id: str = ""
+    # v2 扁平字段（Plane 对 WORKSPACE 级上下文会把无值字段返回为 null）
+    workspace_id: str | None = None
+    workspace_slug: str | None = None
+    research_project_id: str | None = None
+    chain_node_id: str | None = None
 
     def normalized_projection(self) -> dict[str, Any]:
         """比较用投影：v3 只比身份字段（manifest 仅 version+hash），v2 合成嵌套。"""
@@ -164,6 +164,11 @@ async def validate_research_context(*, token: str, expected: ResearchContextMeta
         payload = response.json()
         remote = ResearchContextMetadata.model_validate(payload.get("context") or payload)
     except ValueError as exc:
+        logger.warning(
+            f"plane context response invalid: status={response.status_code}"
+            f" keys={sorted(payload)[:12] if isinstance(payload, dict) else type(payload).__name__}"
+            f" error={str(exc)[:200]}"
+        )
         raise ResearchContextError(502, "科研上下文校验响应不合法") from exc
     if remote.normalized_projection() != expected.normalized_projection():
         raise ResearchContextError(403, "科研上下文与请求元数据不一致")

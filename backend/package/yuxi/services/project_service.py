@@ -51,6 +51,7 @@ async def create_project_record(
     db,
     workdir_path: str | None = None,
     idempotency_key: str | None = None,
+    project_id: str | None = None,
 ) -> Project:
     """在当前事务内创建 Project，但不提交或物化 managed 目录。"""
     normalized_name = _normalize_project_name(name, required=selection_status == "selectable")
@@ -59,7 +60,7 @@ async def create_project_record(
     if selection_status not in {"implicit", "selectable"}:
         raise HTTPException(status_code=422, detail="selection_status 非法")
 
-    project_id = str(uuid.uuid4())
+    project_id = project_id or str(uuid.uuid4())
     if directory_mode == "managed":
         if workdir_path is not None:
             raise HTTPException(status_code=422, detail="managed Project 不接受 workdir_path")

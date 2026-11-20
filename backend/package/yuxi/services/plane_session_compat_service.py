@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from typing import Any
@@ -28,6 +29,7 @@ from yuxi.services.agent_request_service import AgentRequestInput, RunOrigin, su
 from yuxi.services.agent_run_service import create_resume_run_view, request_cancel_agent_run
 from yuxi.services.conversation_service import create_thread_view
 from yuxi.services.input_message_service import build_chat_input_message
+from yuxi.services.plane_auth_service import plane_config
 from yuxi.services.plane_mcp_client import store_plane_mcp_token
 from yuxi.services.plane_context_service import (
     PlaneMcpRuntime,
@@ -37,9 +39,10 @@ from yuxi.services.plane_context_service import (
     validate_plane_metadata_scope,
     validate_research_context,
 )
+from yuxi.services.project_service import create_project_record
 from yuxi.services.run_queue_service import list_run_stream_events
 from yuxi.storage.redis import get_async_redis_client
-from yuxi.storage.postgres.models_business import AgentRun, Conversation, Message, User
+from yuxi.storage.postgres.models_business import AgentRun, Conversation, Message, Project, User
 from yuxi.storage.postgres.models_business import PlaneCompatRun as PlaneCompatRunModel
 from yuxi.utils.datetime_utils import utc_now_naive
 from yuxi.utils.logging_config import logger
@@ -79,9 +82,48 @@ class PlaneSessionCompatService:
     # 会话
     # ------------------------------------------------------------------
 
+    async def ensure_plane_project(self, user, plane_meta: dict[str, Any] | None) -> str | None:
+        """按 Plane 工作区确定性建共享项目（对齐老平台 ensure_plane_project）。"""
+        workspace = (plane_meta or {}).get("workspace") or {}
+        workspace_id = str(workspace.get("id") or "")
+        if not workspace_id:
+            return None
+        digest = hashlib.sha256(f"{user.uid}:{workspace_id}".encode()).hexdigest()[:20]
+        project_id = f"plane-{digest}"
+        result = await self.db.execute(select(Project).where(Project.id == project_id, Project.uid == user.uid))
+        existing = result.scalar_one_or_none()
+        if existing is not None and existing.status == "active":
+            if existing.name != f"Plane · {workspace.get('name') or workspace.get('slug')}"[:120]:
+                existing.name = f"Plane · {workspace.get('name') or workspace.get('slug')}"[:120]
+                await self.db.commit()
+            return project_id
+        if existing is not None:  # 已删除：恢复
+            existing.status = "active"
+            existing.deleted_at = None
+            await self.db.commit()
+            return project_id
+        try:
+            await create_project_record(
+                uid=user.uid,
+                name=f"Plane · {workspace.get('name') or workspace.get('slug')}"[:120],
+                directory_mode="managed",
+                selection_status="selectable",
+                db=self.db,
+                project_id=project_id,
+            )
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()  # 并发建：幂等返回
+        return project_id
+
     async def create_session(self, *, user, body: dict[str, Any]) -> dict:
         """创建 v1 会话：落 yuxi Conversation，plane 专属字段进 metadata。"""
         request_id = str(uuid.uuid4())
+        if not body.get("approval_mode"):
+            body = {
+                **body,
+                "approval_mode": getattr(plane_config, "plane_default_approval_mode", "always_allow"),
+            }
         metadata = {
             "source": PLANE_SESSION_SOURCE,
             "plane": {
@@ -99,12 +141,13 @@ class PlaneSessionCompatService:
                 )
             },
         }
+        plane_project_id = await self.ensure_plane_project(user, body.get("plane_meta"))
         result = await create_thread_view(
             agent_slug=body.get("assistant_id") or "default-chatbot",
             request_id=request_id,
             title=(body.get("title") or "").strip() or None,
             metadata=metadata,
-            project_id=body.get("project_id") or None,
+            project_id=plane_project_id or body.get("project_id") or None,
             db=self.db,
             current_uid=user.uid,
         )
@@ -256,8 +299,14 @@ class PlaneSessionCompatService:
                     validate_plane_metadata_scope(plane_meta, effective_context)
                 except ResearchContextError as exc:
                     raise HTTPException(exc.status_code, exc.message)
+                plane_project_id = await self.ensure_plane_project(user, plane_meta)
+                if plane_project_id and conversation.project_id != plane_project_id:
+                    conversation.project_id = plane_project_id
+                    await self.db.commit()
         elif plane_mcp is not None:
             raise HTTPException(403, "Plane MCP 需要有效的科研上下文")
+        if plane_meta is not None:
+            plane_meta_store["plane_meta"] = plane_meta
 
         if external_run_id:
             existing = await self.runs.get_by_external_run_id(external_run_id)
@@ -336,10 +385,38 @@ class PlaneSessionCompatService:
         await ConversationRepository(self.db).update_conversation(conversation.thread_id, title=text[:24])
         await self.db.commit()
 
+    async def _dynamic_current_run_id(
+        self, thread_id: str, uid: str, agent_slug: str, fallback: str | None
+    ) -> str | None:
+        """按线程最新 chat/resume run 解析当前内部 run（Synlora 原生审批/续跑会换 run）。
+
+        映射表记录的 current_run_id 只反映兼容层可见的换 run（answer 桥）；
+        Synlora 页面直接点允许产生的 resume run 不经过兼容层，必须动态解析，
+        否则投影与审批桥会停在旧 run 上。
+        """
+        del agent_slug  # 顶层 run 以 thread+uid 唯一定位，无需 slug 过滤
+        try:
+            result = await self.db.execute(
+                select(AgentRun.id)
+                .where(
+                    AgentRun.conversation_thread_id == thread_id,
+                    AgentRun.uid == str(uid),
+                    AgentRun.run_type.in_(("chat", "resume")),
+                )
+                .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+                .limit(1)
+            )
+            run_id = result.scalar_one_or_none()
+        except Exception:
+            run_id = None
+        return run_id or fallback
+
     async def answer_run(self, v1_run_id: str, user, text: str) -> dict:
         """审批/提问应答：映射为内部 resume run，v1 run id 保持不变。"""
         mapping = await self._own_mapping(v1_run_id, user)
-        current_run_id = mapping.current_run_id or ""
+        current_run_id = (
+            await self._dynamic_current_run_id(mapping.thread_id, user.uid, mapping.uid, mapping.current_run_id) or ""
+        )
         repo = AgentRunRepository(self.db)
         run = await repo.get_run_for_user(current_run_id, str(user.uid)) if current_run_id else None
         if run is None or run.status != "interrupted":
@@ -369,7 +446,9 @@ class PlaneSessionCompatService:
     async def cancel_run(self, v1_run_id: str, user) -> dict:
         """取消 run；审批等待中的 run 以拒绝工具恢复，释放线程。"""
         mapping = await self._own_mapping(v1_run_id, user)
-        current_run_id = mapping.current_run_id or ""
+        current_run_id = (
+            await self._dynamic_current_run_id(mapping.thread_id, user.uid, mapping.uid, mapping.current_run_id) or ""
+        )
         repo = AgentRunRepository(self.db)
         run = await repo.get_run_for_user(current_run_id, str(user.uid)) if current_run_id else None
         if run is None:
@@ -519,7 +598,11 @@ class PlaneSessionCompatService:
         if not rows:
             return
         mapping = rows[-1]
-        current_run_id = mapping.current_run_id
+        current_run_id = await self._dynamic_current_run_id(thread_id, mapping.uid, "", mapping.current_run_id)
+        if current_run_id and current_run_id != mapping.current_run_id:
+            # 自愈：Synlora 原生 resume 换了 run，同步映射，投影/审批桥随最新 run 走
+            await self.runs.set_current_run_id(mapping, current_run_id)
+            await self.db.commit()
         if not current_run_id:
             return
         redis = await get_async_redis_client()

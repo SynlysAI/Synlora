@@ -143,21 +143,58 @@ def _is_read_only(name: str) -> bool:
     return name.startswith(PLANE_READ_ONLY_PREFIXES)
 
 
+def _prop_annotation(prop: dict[str, Any], *, required: bool = False):
+    """把单个 JSON Schema 属性映射为 (注解, FieldInfo)；复杂类型宽容降级。
+
+    default 必须在 FieldInfo 构造时给定：构造后改写 default 不会被
+    create_model 采纳（pydantic v2 行为）。
+    """
+    prop_type = prop.get("type")
+    description = str(prop.get("description") or "")[:200]
+    default = ... if required else prop.get("default", None)
+    constraints: dict[str, Any] = {}
+    if prop.get("minLength") is not None:
+        constraints["min_length"] = prop["minLength"]
+    if prop.get("maxLength") is not None:
+        constraints["max_length"] = prop["maxLength"]
+    if prop.get("minimum") is not None:
+        constraints["ge"] = prop["minimum"]
+    if prop.get("maximum") is not None:
+        constraints["le"] = prop["maximum"]
+
+    enum_values = prop.get("enum")
+    if isinstance(enum_values, list) and enum_values and prop_type == "string":
+        from typing import Literal
+
+        literal = Literal[tuple(str(value) for value in enum_values)]  # type: ignore[valid-type]
+        return literal, FieldInfo(default=default, description=description)
+    if prop_type == "string":
+        return str, FieldInfo(default=None, description=description, **constraints)
+    if prop_type == "integer":
+        return int, FieldInfo(default=None, description=description, **constraints)
+    if prop_type == "number":
+        return float, FieldInfo(default=None, description=description, **constraints)
+    if prop_type == "boolean":
+        return bool, FieldInfo(default=default, description=description)
+    if prop_type == "array":
+        return list, FieldInfo(default=default, description=description)
+    # object / 未声明类型：宽容接受任意结构（嵌套 schema 不展开，模型按描述填写）
+    return dict, FieldInfo(default=default, description=description)
+
+
 def _build_args_schema(tool_def: dict[str, Any]) -> type | None:
-    """把 MCP inputSchema 转换为 pydantic 模型（基础类型；复杂 schema 返回 None 走 infer）。"""
+    """把 MCP inputSchema 转换为 pydantic 模型（嵌套/enum/约束宽容降级）。"""
     schema = tool_def.get("inputSchema") or {}
     properties = schema.get("properties") or {}
     if not isinstance(properties, dict) or not properties:
         return None
-    type_map = {"string": str, "integer": int, "number": float, "boolean": bool}
-    fields: dict[str, tuple] = {}
     required = set(schema.get("required") or [])
+    fields: dict[str, tuple] = {}
     for key, prop in properties.items():
-        if not isinstance(prop, dict) or prop.get("type") not in type_map:
-            return None
-        annotation = type_map[prop["type"]]
-        default = ... if key in required else prop.get("default", None)
-        fields[key] = (annotation, FieldInfo(default=default, description=str(prop.get("description") or "")[:200]))
+        if not isinstance(prop, dict):
+            prop = {}
+        annotation, field_info = _prop_annotation(prop, required=key in required)
+        fields[key] = (annotation, field_info)
     try:
         return create_model(f"PlaneMcp_{tool_def['name']}", **fields)
     except (TypeError, ValueError):
@@ -196,8 +233,10 @@ def _make_tool(client: PlaneUnifiedMcpClient, tool_def: dict[str, Any]) -> Struc
     description = str(tool_def.get("description") or "")[:1000]
 
     async def _call(**kwargs: Any) -> str:
+        # 模型省略的可选参数会以 None 传入，剔除后再发给 JSON-RPC
+        arguments = {key: value for key, value in kwargs.items() if value is not None}
         try:
-            return await client.call_tool(name, kwargs)
+            return await client.call_tool(name, arguments)
         except PlaneMcpError as exc:
             return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
