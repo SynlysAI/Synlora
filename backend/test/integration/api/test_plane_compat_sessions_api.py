@@ -182,8 +182,6 @@ async def test_plane_v1_sessions_http_round_trip(monkeypatch):
 async def test_plane_session_attaches_to_workspace_project(monkeypatch):
     """带 plane_meta 的会话归属确定性 Plane 工作区项目（uuid5 确定性 id）。"""
     import yuxi.services.plane_context_service as context_service
-    import yuxi.services.plane_session_compat_service as compat_service
-    from yuxi.services.plane_session_compat_service import PlaneSessionCompatService
 
     schema = f"pytest_plane_proj_{uuid.uuid4().hex[:16]}"
     admin_engine = create_async_engine(os.environ["POSTGRES_URL"], pool_pre_ping=True)
