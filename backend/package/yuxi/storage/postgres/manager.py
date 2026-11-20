@@ -23,7 +23,7 @@ from yuxi.utils import logger
 from yuxi.utils.singleton import SingletonMeta
 
 AGENT_RUN_TERMINAL_STATUS_SQL = ", ".join(f"'{status}'" for status in AGENT_RUN_TERMINAL_STATUSES)
-BUSINESS_SCHEMA_VERSION = 10
+BUSINESS_SCHEMA_VERSION = 12
 KNOWLEDGE_SCHEMA_VERSION = 2
 SCHEMA_VERSION_TABLE = "yuxi_schema_migrations"
 AGENT_RUN_LEASE_SCHEMA_STATEMENTS = (
@@ -125,6 +125,49 @@ PLANE_COMPAT_SCHEMA_STATEMENTS = (
     (
         "CREATE INDEX IF NOT EXISTS ix_plane_account_links_plane_workspace_id "
         "ON plane_account_links(plane_workspace_id)"
+    ),
+)
+PLANE_SESSION_COMPAT_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS plane_compat_runs (
+        id SERIAL PRIMARY KEY,
+        v1_run_id VARCHAR(64) NOT NULL UNIQUE,
+        thread_id VARCHAR(64) NOT NULL,
+        uid VARCHAR(64) NOT NULL,
+        external_run_id VARCHAR(128),
+        current_run_id VARCHAR(64),
+        label VARCHAR(255),
+        created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+        updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_plane_compat_runs_thread ON plane_compat_runs(thread_id)",
+    "CREATE INDEX IF NOT EXISTS ix_plane_compat_runs_uid ON plane_compat_runs(uid)",
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_plane_compat_runs_external_run_id "
+        "ON plane_compat_runs(external_run_id) WHERE external_run_id IS NOT NULL"
+    ),
+    """
+    CREATE TABLE IF NOT EXISTS plane_session_events (
+        id SERIAL PRIMARY KEY,
+        thread_id VARCHAR(64) NOT NULL,
+        seq BIGINT NOT NULL,
+        event_type VARCHAR(32) NOT NULL,
+        run_id VARCHAR(64) NOT NULL,
+        source_key VARCHAR(160),
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+        ts TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT uq_plane_session_events_thread_seq UNIQUE (thread_id, seq)
+    )
+    """,
+    (
+        "CREATE INDEX IF NOT EXISTS ix_plane_session_events_thread_seq "
+        "ON plane_session_events(thread_id, seq)"
+    ),
+    "ALTER TABLE IF EXISTS plane_session_events ADD COLUMN IF NOT EXISTS source_key VARCHAR(160)",
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_plane_session_events_thread_source "
+        "ON plane_session_events(thread_id, source_key) WHERE source_key IS NOT NULL"
     ),
 )
 WORKDIR_PATH_SCHEMA_STATEMENTS = (
@@ -541,7 +584,7 @@ class PostgresManager(metaclass=SingletonMeta):
             )
 
     async def upgrade_plane_compat_schema(self) -> None:
-        """创建 Plane 兼容层账户绑定表并原子记录 business 版本 10。"""
+        """创建 Plane 兼容层表并原子记录 business 当前版本。"""
         self._check_initialized()
         async with self.async_engine.begin() as conn:
             version = await conn.scalar(
@@ -549,9 +592,11 @@ class PostgresManager(metaclass=SingletonMeta):
             )
             if version == BUSINESS_SCHEMA_VERSION:
                 return
-            if version not in (None, 9):
+            if version not in (None, 9, 10, 11):
                 raise RuntimeError(f"Unsupported business schema version: {version}")
             for statement in PLANE_COMPAT_SCHEMA_STATEMENTS:
+                await conn.execute(text(statement))
+            for statement in PLANE_SESSION_COMPAT_SCHEMA_STATEMENTS:
                 await conn.execute(text(statement))
             await conn.execute(
                 text(f"""

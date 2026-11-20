@@ -24,7 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from yuxi.storage.minio.client import normalize_public_minio_url
-from yuxi.utils.datetime_utils import duration_ms, format_utc_datetime, utc_now_naive
+from yuxi.utils.datetime_utils import duration_ms, format_utc_datetime, utc_now, utc_now_naive
 
 Base = declarative_base()
 
@@ -1121,6 +1121,46 @@ class PlaneAccountLink(Base):
             "created_at": format_utc_datetime(self.created_at),
             "updated_at": format_utc_datetime(self.updated_at),
         }
+
+
+class PlaneCompatRun(Base):
+    """Plane 兼容层稳定 run 映射（v1 run id ↔ 当前内部 AgentRun）。"""
+
+    __tablename__ = "plane_compat_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 兼容层对外稳定 run id（= 提交时的 request_id）；审批 resume 后内部 run 变化但对外不变
+    v1_run_id = Column(String(64), nullable=False, unique=True, index=True)
+    thread_id = Column(String(64), nullable=False, index=True)
+    uid = Column(String(64), nullable=False, index=True)
+    # Plane Agent Dock 的 run UUID（对账键，非 Plane 提交为空）
+    external_run_id = Column(String(128), nullable=True)
+    # 当前内部 AgentRun id；resume 后更新
+    current_run_id = Column(String(64), nullable=True)
+    label = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=utc_now_naive)
+    updated_at = Column(DateTime, default=utc_now_naive, onupdate=utc_now_naive)
+
+
+class PlaneSessionEvent(Base):
+    """Plane 兼容层会话事件 durable 投影（session 级单调 seq）。"""
+
+    __tablename__ = "plane_session_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    thread_id = Column(String(64), nullable=False, index=True)
+    seq = Column(BigInteger, nullable=False)
+    event_type = Column(String(32), nullable=False)
+    # v1 run id（跨内部 resume 保持稳定）
+    run_id = Column(String(64), nullable=False)
+    # 幂等源键（内部 run 事件 seq 或提交键），防并发投影重复落库
+    source_key = Column(String(160), nullable=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    ts = Column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+    __table_args__ = (
+        Index("uq_plane_session_events_thread_seq", thread_id, seq, unique=True),
+    )
 
 
 class CLIAuthSession(Base):

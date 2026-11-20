@@ -24,14 +24,20 @@ Agent Context v3、工作区会话、RWS 共享执行、审批）。现在要用
 （`plane/research/services/agent_runtime.py`、`plane/app/views/assistant/client.py`）
 逐条实现协议，分三个切片交付：
 
-1. **身份与凭证地基（本次已实现）**：`/api/health`（带 deployment_id）、
+1. **身份与凭证地基（已实现）**：`/api/health`（带 deployment_id）、
    `/api/v1/auth/me`、`/api/v1/auth/plane-login`（三步登录代理）、
    `/api/v1/research/delegated-token`、`/api/v1/research/account-links`、
    `plane_account_links` 表（schema v10）。
-2. **v1 Sessions 兼容层（后续）**：会话/运行/事件端点全家桶、durable 事件表与
-   事件字典转换、`run_id` 同步创建与 `external_run_id` 对账、审批桥。
-3. **运行时集成（后续）**：research context 校验、page_context 注入、
-   `pum_` unified MCP 客户端、RWS 共享执行。
+2. **v1 Sessions 兼容层（已实现）**：`/api/v1/sessions` 全家（创建/列表/
+   PATCH/DELETE）、`POST .../runs`（202 同步返回稳定 run id + `external_run_id`
+   幂等对账）、`GET .../runs`、`GET .../events`（durable 回放）、
+   `GET .../events/stream`（会话级 SSE：durable 轮询 + 15s 心跳 + 30 分钟上限）、
+   `POST /v1/runs/{id}/cancel|answer`（审批桥）；`plane_compat_runs` 映射表与
+   `plane_session_events` durable 事件表（schema v11）；research context
+   token 回验（v2/v3）与 plane_mcp/plane_meta 边界校验；api 侧后台投影循环
+   （`plane_projection_loop`）把 run Redis 事件流转换为 v1 字典并落库。
+3. **运行时集成（后续）**：page_context 注入 prompt、`pum_` unified MCP
+   客户端、RWS 共享执行、实时瞬态事件（llm/delta）投影。
 
 ### 实现方案（切片 1）
 
@@ -43,7 +49,24 @@ Agent Context v3、工作区会话、RWS 共享执行、审批）。现在要用
 | `package/yuxi/storage/postgres/models_business.py` | `PlaneAccountLink` 模型（core 分流、source；`plane_email`/`synlora_username` 为切片 P1 自服务绑定端点的既定消费字段，FK 级联 CASCADE） |
 | `storage_migration.py` + `manager.py` | business schema v9→v10：`upgrade_plane_compat_schema()` 原子建表并记录版本 |
 
-关键语义决策：
+关键语义决策（切片 2 新增）：
+
+- **v1 run id 稳定映射**：v1 run id = 兼容层生成的 uuid（= 提交 request_id，
+  天然幂等）；审批 resume 产生的内部新 AgentRun 只更新
+  `plane_compat_runs.current_run_id`，对外 id 与事件关联不变——Plane 按
+  payload.run_id 关联消息，否则审批后续跑在其侧"失联"。
+- **事件投影在 api 侧**（`plane_session_compat_service` + lifespan 后台循环），
+  不改 worker 写入路径；Redis 游标 `plane:proj:{run_id}` 保证幂等；
+  瞬态增量（llm/delta）切片 2 不投影，最终内容与工具结果在终态从 PG 批量补。
+- **审批桥**：`answer "允许"`→resume decisions approve，其余文本一律 reject
+  （老平台口径）；提问中断以 `{"answers":[{"answer": text}]}` 恢复（简化格式，
+  未带 question_id）；cancel 对审批等待中的 run 以拒绝工具收尾并释放线程
+  （yuxi 的 interrupted 是终态且锁定线程，直接取消无法解锁）。
+- **上下文校验为会话门槛**：research_context 存在时必须带
+  `X-Research-Context-Token` 回验 Plane（v2/v3 归一化投影全等比较），
+  plane_meta 无 context → 403、plane_mcp 域名/工具越权 → 403。
+
+关键语义决策（切片 1）：
 
 - **Plane 身份 = 真实 users 行**（uid=`plane:<pid>`，首登自动建号，默认部门
   `PLANE_DEFAULT_DEPARTMENT`），复用 OIDC 联邦先例；不引入老平台的虚拟
@@ -81,6 +104,17 @@ Agent Context v3、工作区会话、RWS 共享执行、审批）。现在要用
 | core 分流收敛/回落/建号语义 | 身份错绑或 401 循环 | plane_auth_service | unit: test_login_resolution_*、test_delegated_resolution_*、test_get_or_create_*、test_unique_plane_username_* | 绑定删除回落、core=plane 跳过、用户名碰撞加后缀 | Passed |
 | 服务凭证非 ASCII 拒绝 | TypeError 成 500 | plane_compat_router | unit: test_delegated_token_rejects_non_ascii_bearer_without_500 | 403 | Passed |
 | 请求体 schema_version 冻结 | 未知协议被静默接受 | plane_compat_router | unit: test_delegated_body_rejects_unknown_schema_version、test_repair_body_* | 422 | Passed |
+| 事件投影转换矩阵（turn/ask/error/aborted/终态补齐） | 事件字典错乱 | plane_session_compat_service | unit: test_projection_*（4 例） | interrupted 不收尾 turn、cancelled→turn/aborted | Passed |
+| 投影 Redis 游标幂等 | 重复消费/事件丢失 | plane_session_compat_service | unit: test_projection_is_idempotent_via_cursor | 游标后空读 | Passed |
+| 审批桥（允许/拒绝/兜底 reject） | 审批语义错判 | plane_session_compat_service | unit: test_answer_allows_and_rejects_approval | 非 interrupted → 409 | Passed |
+| 取消三分支（running/终态/提问中断） | 线程死锁或误报 | plane_session_compat_service | unit: test_cancel_*（3 例） | 提问中断 409 | Passed |
+| context/plane_mcp/plane_meta 边界 | 越权上下文注入 | plane_context_service | unit: test_plane_mcp_scope_validation 等（5 例） | 外部 issuer 403、工具越权 403、远端不一致 403 | Passed |
+| schema v11 存量升级幂等 | 已部署库无法启动 | storage_migration + manager | 集成：test_plane_compat_schema_upgrade_is_idempotent[None/9/10] | 非支持版本拒绝 | Passed |
+| 后台投影循环容错 | 单轮失败致死循环 | plane_projection_loop | unit: test_loop_tolerates_iteration_failures | 首轮异常后续继续 | Passed |
+| v1 端点真实 HTTP 闭环 | mock 掩盖真实路径 | plane_compat_router | 集成：test_plane_compat_sessions_api（隔离 PG + ASGI 全链路：CRUD/提交幂等/事件回放/取消/404） | 未带凭证 401、删除后 404 | Passed |
+| context 回验读信封 context 键 | 整链路 502 | plane_context_service | unit: test_validate_research_context_compares_remote（信封形状） | 平铺响应不再被误读 | Passed |
+| policy 篡改放大检测 | allowed_tools 越权 | plane_context_service | unit: test_validate_research_context_detects_policy_inflation | 哈希保留但策略放大 → 403 | Passed |
+| 投影源键幂等 | 游标丢失重复事件 | plane_session_compat_service | unit: test_projection_replay_deduplicates_by_source_key | 游标丢失重放零新增 | Passed |
 | schema v9→v10 存量升级 | 已部署库无法启动新代码 | storage_migration + manager | unit: test_supported_legacy_business_schema_is_converged_and_versioned_as_current[9] | 非支持版本拒绝 | Passed |
 | 路由不直接执行持久化 | 架构不变量破坏 | verify_engineering_contracts | `python3 scripts/verify_engineering_contracts.py` | router 内 db.execute 被拒 | Passed |
 | 全量 unit 无回归 | — | — | `docker compose exec api pytest test/unit -m "not slow"` | — | Passed |
@@ -96,6 +130,11 @@ Agent Context v3、工作区会话、RWS 共享执行、审批）。现在要用
 - **deployment_id 必须显式固定**：未配置 `SYNLORA_DEPLOYMENT_ID` 时按
   `YUXI_INSTANCE_ID` 派生，开发环境该值随进程漂移会导致 Plane 侧绑定失配；
   接入 Plane 的部署必须在 .env 中显式设置。
+- **切片 2 已知偏差**：同会话并发提交按老平台口径 429（yuxi reject 策略，
+  不排队）；提问中断不可 cancel（仅可 answer，409）；瞬态 llm/delta 不投影
+  （老平台亦不落盘）；tool/result 与最终回复在终态批量投影（非逐事件实时）；
+  issuer 归一化不保留 path 前缀（当前部署无 path 前缀，切片 3 再对齐）；
+  审批等待中的 run 被 cancel 时以拒绝工具收尾（run 继续完成而非中止）。
 - **委托令牌即时建号**：任何配置了集成的工作区用户首次触发委托调用都会在
   本方建号；若不希望如此，需要后续引入白名单——当前按 OIDC auto_create 语义
   保持开放。

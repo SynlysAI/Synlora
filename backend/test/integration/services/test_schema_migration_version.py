@@ -282,7 +282,7 @@ async def test_v072_business_converges_current_schema_idempotently() -> None:
             "ix_scheduled_agent_runs_job_created",
             "ix_scheduled_agent_runs_dispatching",
         }.issubset(scheduled_indexes)
-        assert BUSINESS_SCHEMA_VERSION == 10
+        assert BUSINESS_SCHEMA_VERSION == 12
         async with scoped_engine.connect() as connection:
             assert await connection.scalar(text("SELECT to_regclass('plane_account_links') IS NOT NULL"))
     finally:
@@ -599,7 +599,7 @@ async def test_resource_selection_migration_is_atomic_and_does_not_repeat(fail_v
         await _drop_isolated_schema(schema, admin_engine, engine)
 
 
-@pytest.mark.parametrize("initial_version", [None, 9])
+@pytest.mark.parametrize("initial_version", [None, 9, 10, 11])
 async def test_plane_compat_schema_upgrade_is_idempotent(initial_version: int | None) -> None:
     """Plane 兼容层建表在未版本化与 v9 存量库上幂等收敛到当前版本。"""
     schema, admin_engine, scoped_engine, manager = await _create_isolated_manager("plane_compat")

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from yuxi.agents.mcp.service import ensure_builtin_mcp_servers_in_db
 from yuxi.models.providers.service import ensure_builtin_model_providers_in_db
+from yuxi.services.plane_projection_loop import start_plane_projection_loop, stop_plane_projection_loop
 from yuxi.services.run_queue_service import close_queue_clients, get_redis_client
 from yuxi.storage.postgres.manager import pg_manager
 from yuxi.utils import logger
@@ -170,6 +171,8 @@ async def _startup(app: FastAPI) -> None:
         operation=init_sandbox_provider,
     )
 
+    await start_plane_projection_loop(app)
+
     app.state.startup_complete = True
     logger.info(f"""
 
@@ -215,6 +218,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         app.state.startup_complete = False
+        await _shutdown_component("plane_projection", lambda: stop_plane_projection_loop(app))
         await _shutdown_component("sandbox_provider", shutdown_sandbox_provider)
         await _shutdown_component("queue_clients", close_queue_clients)
         await _shutdown_component("neo4j", _close_neo4j_connection)

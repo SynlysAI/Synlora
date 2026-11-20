@@ -56,6 +56,7 @@ class PlaneConfig:
 
     plane_base_url: str = ""
     plane_auth_base_url: str = ""
+    plane_allowed_issuers: str = ""
     plane_service_token: str = ""
     plane_request_timeout_seconds: float = 3.0
     plane_default_department: str = "OpenEVA用户"
@@ -70,6 +71,7 @@ class PlaneConfig:
         return cls(
             plane_base_url=_env("PLANE_BASE_URL"),
             plane_auth_base_url=_env("PLANE_AUTH_BASE_URL"),
+            plane_allowed_issuers=_env("PLANE_ALLOWED_ISSUERS"),
             plane_service_token=_env("PLANE_SERVICE_TOKEN"),
             plane_request_timeout_seconds=float(os.environ.get("PLANE_REQUEST_TIMEOUT_SECONDS", "3.0") or "3.0"),
             plane_default_department=_env("PLANE_DEFAULT_DEPARTMENT", "OpenEVA用户"),
