@@ -626,6 +626,7 @@ class PlaneSessionCompatService:
         cursor_key = f"plane:proj:{current_run_id}"
         raw_cursor = await redis.get(cursor_key)
         cursor = raw_cursor.decode() if isinstance(raw_cursor, bytes) else str(raw_cursor or "0-0")
+        await self._project_live_tool_results(thread_id, mapping.v1_run_id, current_run_id, redis)
         envelopes = await list_run_stream_events(current_run_id, after_seq=cursor, limit=500)
         for row in envelopes:
             event = row.get("event_type")
@@ -767,6 +768,38 @@ class PlaneSessionCompatService:
             payload={"reason": reason, "run_id": v1_run_id},
             source_key=f"{source}:aborted",
         )
+
+    async def _project_live_tool_results(self, thread_id: str, v1_run_id: str, current_run_id: str, redis) -> None:
+        """按消息表轮询投影新完成的工具结果（工具完成即刻可见，不等终态）。"""
+        marker_key = f"plane:proj:tools:{current_run_id}"
+        raw_marker = await redis.get(marker_key)
+        marker = int(raw_marker) if raw_marker else 0
+        result = await self.db.execute(
+            select(Message)
+            .where(Message.run_id == current_run_id, Message.role == "tool", Message.id > marker)
+            .order_by(Message.id.asc())
+            .limit(50)
+        )
+        messages = list(result.scalars().all())
+        if not messages:
+            return
+        for message in messages:
+            metadata = message.extra_metadata or {}
+            await self._append_event(
+                thread_id=thread_id,
+                event_type="tool/result",
+                run_id=v1_run_id,
+                payload={
+                    "name": metadata.get("tool_name") or "tool",
+                    "tool_call_id": metadata.get("tool_call_id"),
+                    "ok": True,
+                    "content": message.content,
+                    "run_id": v1_run_id,
+                },
+                source_key=f"{current_run_id}:terminal:tool:{message.id}",
+            )
+            marker = max(marker, message.id)
+        await redis.set(marker_key, marker, ex=7 * 24 * 3600)
 
     async def _project_tool_results(
         self, thread_id: str, v1_run_id: str, current_run_id: str | None, source: str

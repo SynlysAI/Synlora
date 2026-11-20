@@ -17,6 +17,11 @@ from yuxi.services.plane_context_service import (  # noqa: E402
 USER = SimpleNamespace(id=7, uid="plane:p1", username="alice", role="user")
 
 
+class _Scalars(list):
+    def all(self):
+        return list(self)
+
+
 class FakeResult:
     def __init__(self, value):
         self._value = value
@@ -25,7 +30,7 @@ class FakeResult:
         return self._value
 
     def scalars(self):
-        return iter(self._value if isinstance(self._value, list) else [])
+        return _Scalars(self._value if isinstance(self._value, list) else [])
 
 
 class FakeDb:
@@ -35,8 +40,6 @@ class FakeDb:
 
     async def execute(self, _query):
         value = self.results.pop(0) if self.results else None
-        if isinstance(value, list):
-            return SimpleNamespace(scalars=lambda: iter(value), scalar_one_or_none=lambda: value[0] if value else None)
         return FakeResult(value)
 
     async def commit(self):
@@ -140,6 +143,7 @@ async def test_projection_converts_full_lifecycle(monkeypatch):
     db = FakeDb(
         results=[
             "run-internal",
+            [],
             SimpleNamespace(status="completed", output_message_id=11),
             SimpleNamespace(id=9, content="最终回复"),
         ]
@@ -192,7 +196,7 @@ async def test_projection_replay_deduplicates_by_source_key(monkeypatch):
         ]
     )
     db.results.append([])
-    db2 = FakeDb(results=[None])
+    db2 = FakeDb(results=[None, []])
     svc = _make_service(db, [_mapping()])
     redis = FakeRedis()
     monkeypatch.setattr(service, "get_async_redis_client", lambda: _async(redis))
@@ -210,7 +214,7 @@ async def test_projection_replay_deduplicates_by_source_key(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_projection_maps_interrupt_and_aborted(monkeypatch):
-    db = FakeDb(results=["run-internal", None])
+    db = FakeDb(results=["run-internal", [], None])
     svc = _make_service(db, [_mapping()])
     monkeypatch.setattr(service, "get_async_redis_client", lambda: _async(FakeRedis()))
     events = [
@@ -505,6 +509,7 @@ async def test_projection_duplicate_end_envelope_projects_once(monkeypatch):
     db = FakeDb(
         results=[
             "run-internal",
+            [],
             SimpleNamespace(status="completed", output_message_id=11),
             SimpleNamespace(id=9, content="回复"),
             [SimpleNamespace(id=77, content="ls 输出", extra_metadata={"tool_name": "execute"})],
