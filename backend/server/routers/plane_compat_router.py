@@ -454,7 +454,10 @@ async def plane_stream_events(
             return []
         if live_state.get("run") != internal_run_id:
             live_state["run"] = internal_run_id
-            live_state["cursor"] = "0-0"
+            # delta 是 live-only：新 run（或连接建立）时从流末尾开始，不重放历史增量
+            from yuxi.services.run_queue_service import get_last_run_stream_seq
+
+            live_state["cursor"] = await get_last_run_stream_seq(internal_run_id)
         envelopes = await list_run_stream_events(
             internal_run_id, after_seq=live_state.get("cursor") or "0-0", limit=200
         )
