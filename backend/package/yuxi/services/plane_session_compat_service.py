@@ -529,6 +529,15 @@ class PlaneSessionCompatService:
             )
         return docs
 
+    async def current_stream_context(self, thread_id: str) -> tuple[str, str | None]:
+        """返回会话当前 (v1_run_id, 内部 run id)，供 SSE 实时增量转发。"""
+        rows = await self.runs.list_for_thread(thread_id)
+        if not rows:
+            return "", None
+        mapping = rows[-1]
+        run_id = await self._dynamic_current_run_id(thread_id, mapping.uid, "", mapping.current_run_id)
+        return mapping.v1_run_id, run_id
+
     async def events_after(self, thread_id: str, user, after_seq: int) -> list[dict]:
         """durable 事件回放（先做懒投影补齐最新事件；投影失败不阻断回放）。"""
         await self.get_own_session(thread_id, user)

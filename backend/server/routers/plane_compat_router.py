@@ -231,6 +231,7 @@ async def plane_repair_account_link(
 
 SSE_STREAM_MAX_SECONDS = 30 * 60
 SSE_POLL_SECONDS = 1.0
+SSE_LIVE_POLL_SECONDS = 0.25
 SSE_HEARTBEAT_SECONDS = 15.0
 
 
@@ -287,6 +288,12 @@ class V1MessageBody(BaseModel):
         if not value.strip():
             raise ValueError("text 不能为空")
         return value.strip()
+
+
+def _delta_frame(event_name: str, text: str, v1_run_id: str) -> str:
+    """构造瞬态增量帧（无 seq，客户端不回放）。"""
+    data = json.dumps({"text": text, "run_id": v1_run_id}, ensure_ascii=False)
+    return f"event: {event_name}\ndata: {data}\n\n"
 
 
 def _require_user(user: User | None) -> User:
@@ -436,30 +443,70 @@ async def plane_stream_events(
     started = time.monotonic()
     last_heartbeat = time.monotonic()
 
-    async def _poll_events(cursor: int) -> list[dict]:
-        # 每轮短会话：常驻流不得长时间持有请求级连接（idle-in-transaction 拖垮池）
-        from yuxi.storage.postgres.manager import pg_manager
+    async def _live_deltas(poll_db, live_state: dict):
+        """从当前内部 run 的 Redis 流转发实时增量（瞬态不落库，无 seq）。"""
+        from yuxi.services.plane_session_compat_service import PlaneSessionCompatService
+        from yuxi.services.run_queue_service import list_run_stream_events
 
-        async with pg_manager.get_async_session_context() as poll_db:
-            return await PlaneSessionCompatService(poll_db).events_after(thread_id, user, cursor)
+        v1_run_id, internal_run_id = await PlaneSessionCompatService(poll_db).current_stream_context(thread_id)
+        if not internal_run_id:
+            live_state["run"] = None
+            return []
+        if live_state.get("run") != internal_run_id:
+            live_state["run"] = internal_run_id
+            live_state["cursor"] = "0-0"
+        envelopes = await list_run_stream_events(
+            internal_run_id, after_seq=live_state.get("cursor") or "0-0", limit=200
+        )
+        frames: list[str] = []
+        for row in envelopes:
+            live_state["cursor"] = row["seq"]
+            if row.get("event_type") != "messages":
+                continue
+            inner = (row.get("payload") or {}).get("payload") or {}
+            chunks = inner.get("items") or ([inner["chunk"]] if inner.get("chunk") else [])
+            for chunk in chunks:
+                if isinstance(chunk, str):
+                    try:
+                        chunk = json.loads(chunk)
+                    except ValueError:
+                        continue
+                stream_event = chunk.get("stream_event") if isinstance(chunk, dict) else None
+                if not isinstance(stream_event, dict) or stream_event.get("type") != "message_delta":
+                    continue
+                content = stream_event.get("content")
+                reasoning = stream_event.get("reasoning_content")
+                if content:
+                    frames.append(_delta_frame("llm/delta", str(content), v1_run_id))
+                if reasoning:
+                    frames.append(_delta_frame("reasoning/delta", str(reasoning), v1_run_id))
+        return frames
 
     async def event_stream():
         nonlocal last_heartbeat
         cursor = after_seq
+        live_state: dict = {"run": None, "cursor": "0-0"}
         while time.monotonic() - started < SSE_STREAM_MAX_SECONDS:
             if await request.is_disconnected():
                 return
-            for event in await _poll_events(cursor):
+            from yuxi.storage.postgres.manager import pg_manager
+
+            async with pg_manager.get_async_session_context() as poll_db:
+                durable = await PlaneSessionCompatService(poll_db).events_after(thread_id, user, cursor)
+                live = await _live_deltas(poll_db, live_state)
+            for event in durable:
                 cursor = max(cursor, event["seq"])
                 data = json.dumps(
                     {"seq": event["seq"], "type": event["type"], "payload": event["payload"], "ts": event["ts"]},
                     ensure_ascii=False,
                 )
                 yield f"event: {event['type']}\ndata: {data}\nid: {event['seq']}\n\n"
+            for frame in live:
+                yield frame
             if time.monotonic() - last_heartbeat >= SSE_HEARTBEAT_SECONDS:
                 last_heartbeat = time.monotonic()
                 yield ": heartbeat\n\n"
-            await asyncio.sleep(SSE_POLL_SECONDS)
+            await asyncio.sleep(SSE_LIVE_POLL_SECONDS if live_state.get("run") else SSE_POLL_SECONDS)
 
     return StreamingResponse(
         event_stream(),
