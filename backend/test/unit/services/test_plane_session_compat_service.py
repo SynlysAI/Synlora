@@ -538,10 +538,9 @@ async def test_projection_emits_tool_call_started_events(monkeypatch):
     }
     import json as json_mod
 
-    events = [
-        _envelope("messages", {"items": [json_mod.dumps(chunk)]}),
-        _envelope("messages", {"chunk": chunk}),  # 单块形式
-    ]
+    items_form = _envelope("messages", {"items": [json_mod.dumps(chunk)]})
+    single_form = dict(_envelope("messages", {"chunk": chunk}), seq="2-messages")  # 单块形式
+    events = [items_form, single_form]
     monkeypatch.setattr(service, "list_run_stream_events", lambda *a, **k: _async_return(events))
     await svc.project_pending_events("t1")
     calls = [row for row in svc.events.rows if row.event_type == "tool/call"]
