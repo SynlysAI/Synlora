@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import traceback
+
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
@@ -58,5 +60,6 @@ class ToolErrorGuardMiddleware(AgentMiddleware):
         # 工具异常文本可能包含凭据或私有路径，不能进入模型上下文或日志。
         error_type = type(exc).__name__
         logger.warning("[tool-error-guard] 工具 %s 执行异常：%s", name, error_type)
+        logger.warning("[tool-error-guard-traceback] %s", traceback.format_exc(limit=8))
         content = f"工具 {name} 执行失败：{error_type}\n{_ERROR_HINT}"
         return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")

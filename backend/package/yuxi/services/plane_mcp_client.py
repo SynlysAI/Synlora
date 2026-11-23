@@ -246,8 +246,13 @@ def _make_tool(client: PlaneUnifiedMcpClient, tool_def: dict[str, Any]) -> Struc
     description = str(tool_def.get("description") or "")[:1000]
 
     async def _call(**kwargs: Any) -> str:
-        # 模型省略的可选参数会以 None 传入，剔除后再发给 JSON-RPC
-        arguments = {key: value for key, value in kwargs.items() if value is not None}
+        # 模型省略的可选参数会以 None 传入，剔除；嵌套参数经 pydantic 校验后
+        # 是模型实例而非 dict，需 model_dump 才能进 JSON-RPC 序列化
+        arguments = {
+            key: (value.model_dump(exclude_none=True) if hasattr(value, "model_dump") else value)
+            for key, value in kwargs.items()
+            if value is not None
+        }
         try:
             return await client.call_tool(name, arguments)
         except PlaneMcpError as exc:
