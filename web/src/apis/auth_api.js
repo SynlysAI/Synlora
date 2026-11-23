@@ -160,7 +160,9 @@ export const authApi = {
   getUserAccessOptions,
   exchangeOIDCCode,
   getCLIAuthSession,
-  approveCLIAuthSession
+  approveCLIAuthSession,
+  planeLogin,
+  fetchMeWithToken
 }
 
-export { planeLogin, fetchMeWithToken }
+
