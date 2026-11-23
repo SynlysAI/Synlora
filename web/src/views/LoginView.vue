@@ -188,6 +188,29 @@
                   >
                     <a-input-password v-model:value="planeLoginForm.password" placeholder="OpenEVA 密码" />
                   </a-form-item>
+                  <a-form-item v-if="showAgreementConsent" class="agreement-form-item">
+                    <div class="agreement-row">
+                      <a-checkbox v-model:checked="agreementAccepted">
+                        登录即代表同意
+                        <a
+                          class="agreement-link"
+                          :href="userAgreementUrl"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          @click.stop
+                          >《用户协议》</a
+                        >
+                        <a
+                          class="agreement-link"
+                          :href="privacyPolicyUrl"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          @click.stop
+                          >《隐私协议》</a
+                        >
+                      </a-checkbox>
+                    </div>
+                  </a-form-item>
                   <a-form-item>
                     <a-button type="primary" html-type="submit" :loading="loading" block
                       >OpenEVA 登录</a-button
