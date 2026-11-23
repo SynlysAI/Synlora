@@ -36,6 +36,15 @@ export const useUserStore = defineStore('user', () => {
     localStorage.setItem('user_token', data.access_token)
   }
 
+  // OpenEVA(Plane) 联邦登录：换令牌后拉取本方用户信息并应用会话
+  async function planeLogin({ email, password }) {
+    const result = await authApi.planeLogin({ email, password })
+    const token = result.token
+    const profile = await authApi.fetchMeWithToken(token)
+    applySession({ ...profile, access_token: token })
+    return true
+  }
+
   async function login(credentials) {
     try {
       const data = await authApi.login(credentials)
@@ -233,6 +242,7 @@ export const useUserStore = defineStore('user', () => {
 
     // 方法
     login,
+    planeLogin,
     logout,
     initialize,
     checkFirstRun,

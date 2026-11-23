@@ -54,6 +54,16 @@ async function exchangeOIDCCode(code) {
   return apiPost('/api/auth/oidc/exchange-code', { code }, {}, false)
 }
 
+// OpenEVA(Plane) 联邦登录：返回 { token, username, role }
+async function planeLogin({ email, password }) {
+  return apiPost('/api/v1/auth/plane-login', { email, password }, {}, false)
+}
+
+// 用指定令牌拉取当前用户完整信息（联邦登录后补全会话）
+async function fetchMeWithToken(token) {
+  return apiGet('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } }, false)
+}
+
 async function login(credentials) {
   const formData = new FormData()
   formData.append('username', credentials.loginId)
@@ -152,3 +162,5 @@ export const authApi = {
   getCLIAuthSession,
   approveCLIAuthSession
 }
+
+export { planeLogin, fetchMeWithToken }

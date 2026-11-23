@@ -157,7 +157,44 @@
 
               <!-- 登录表单 -->
               <div v-else class="login-form">
-                <a-form :model="loginForm" @finish="handleLogin" layout="vertical">
+                <a-segmented
+                  v-model:value="loginSource"
+                  :options="loginSourceOptions"
+                  block
+                  style="margin-bottom: 18px"
+                />
+                <a-form
+                  v-if="loginSource === 'openeva'"
+                  :model="planeLoginForm"
+                  @finish="handlePlaneLogin"
+                  layout="vertical"
+                >
+                  <a-form-item
+                    label="OpenEVA 邮箱"
+                    name="email"
+                    :rules="[
+                      { required: true, message: '请输入 OpenEVA 邮箱' },
+                      { type: 'email', message: '邮箱格式不正确' }
+                    ]"
+                  >
+                    <a-input v-model:value="planeLoginForm.email" placeholder="OpenEVA 邮箱">
+                      <template #prefix><mail-icon size="18" /></template>
+                    </a-input>
+                  </a-form-item>
+                  <a-form-item
+                    label="密码"
+                    name="password"
+                    :rules="[{ required: true, message: '请输入密码' }]"
+                  >
+                    <a-input-password v-model:value="planeLoginForm.password" placeholder="OpenEVA 密码" />
+                  </a-form-item>
+                  <a-form-item>
+                    <a-button type="primary" html-type="submit" :loading="loading" block
+                      >OpenEVA 登录</a-button
+                    >
+                  </a-form-item>
+                </a-form>
+                <a-form v-else :model="loginForm" @finish="handleLogin" layout="vertical">
                   <a-form-item
                     label="登录账号"
                     name="loginId"
@@ -284,6 +321,7 @@ import { healthApi } from '@/apis/system_api'
 import { authApi } from '@/apis/auth_api'
 import {
   User as UserIcon,
+  Mail as MailIcon,
   Lock as LockIcon,
   Key as KeyIcon,
   AlertCircle as ExclamationCircleIcon
@@ -349,6 +387,14 @@ const loginForm = reactive({
   loginId: '', // 支持uid或phone_number登录
   password: ''
 })
+
+// 登录身份源：本方账号 / OpenEVA(Plane) 联邦账号
+const loginSource = ref('account')
+const loginSourceOptions = [
+  { label: '账号登录', value: 'account' },
+  { label: 'OpenEVA 登录', value: 'openeva' }
+]
+const planeLoginForm = reactive({ email: '', password: '' })
 
 // 管理员初始化表单
 const adminForm = reactive({
@@ -426,6 +472,29 @@ const ensureAgreementAccepted = () => {
 }
 
 // 处理登录
+const handlePlaneLogin = async () => {
+  if (!ensureAgreementAccepted()) {
+    return
+  }
+  try {
+    loading.value = true
+    errorMessage.value = ''
+    const result = await userStore.planeLogin({
+      email: planeLoginForm.email.trim().toLowerCase(),
+      password: planeLoginForm.password
+    })
+    if (result) {
+      message.success(`欢迎，${userStore.username || 'OpenEVA 用户'}`)
+      router.push(sanitizeRedirect(route.query.redirect) || '/agent')
+    }
+  } catch (error) {
+    errorMessage.value = error?.response?.data?.detail || 'OpenEVA 登录失败'
+    message.error(errorMessage.value)
+  } finally {
+    loading.value = false
+  }
+}
+
 const handleLogin = async () => {
   // 如果当前被锁定，不允许登录
   if (isLocked.value) {
