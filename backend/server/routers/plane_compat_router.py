@@ -489,7 +489,6 @@ async def plane_stream_events(
                 content = stream_event.get("content")
                 reasoning = stream_event.get("reasoning_content")
                 if content:
-                    logger.info(f"PLANE_SSE_DEBUG delta thread={thread_id[:8]} len={len(str(content))}")
                     frames.append(_delta_frame("llm/delta", str(content), v1_run_id))
                 if reasoning:
                     frames.append(_delta_frame("reasoning/delta", str(reasoning), v1_run_id))
